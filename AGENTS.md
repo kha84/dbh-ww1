@@ -5,9 +5,18 @@
 **DBH-WW1** is a 3D first-person game built with 3js
 The game features:
 - An endless road ("drive beyond horizons") through procedurally streamed terrain, with villages, towns,
-  gas stations and tank repair stations along it
-- First-person on foot; in tanks (T-55, Abrams, Chieftain AVRE, Mark V) third-person / gunner-sight, or first person
-  inside the crew compartment with commander / gunner / driver stations
+  gas stations and tank repair stations along it; every game gets a random world seed (`?seed=N` replays one)
+- First-person on foot; in tanks (Pz.II, T-26, Mark V, T-44, IS-2, T-55, Chieftain AVRE, Leopard 2, Abrams) third-person /
+  gunner-sight, or first person inside the crew compartment with commander / gunner / driver stations
+- Tank types are ordered by combat value (`TANK_TIERS`): the spawn has two Pz.II / T-26, further down the road the enemy
+  (and the spare parts at repair stations) get more advanced
+- Enemy infantry (roadside posts, garrisons, escorts, tank crews bailing out of burning tanks) with small arms and grenades
+- Small arms: 10 pistols, 10 revolvers, 10 compact SMGs, 10 rifles, 10 automatics, 10 machine guns + grenades (incl. anti-tank);
+  one small + one big weapon carried, cartridges by calibre; weapons / ammo can be stowed in and taken out of tanks
+- Every tank has a removable machine gun on a pintle (fed from the cartridges in the tank's stowage)
+- Fuel is carried only in the external fuel tanks (it travels with them); fuel cans found along the road refill them
+- Sandbags heaped on a tank add armour (front / side) and weight, are visible and can be taken off / knocked off by hits
+- Knocked-out vehicles along the road can be looted (stowage, parts; burnt ones leave loot on the ground)
 - Procedural ("vector") models for all tanks; every replaceable part is its own object
 - Frankenstein tanks: engine, gun, external fuel tanks and turret drive are swapped by hand in the field, the turret
   with the crane at a repair station; performance is computed from the parts (power, weight, drive/turret match)
@@ -43,30 +52,42 @@ web/js/models.js        # procedural models: hulls, turrets, guns, engines, fuel
 web/js/tanks.js         # Tank class: composition (setPart / removeTurret / installTurret), physics, gun laying with
                         #   ballistics, systems damage, engine bay, interior toggle, hit marks (decals)
 web/js/workshop.js      # repair-station overhead crane: turret stands 1/2, control panel options, lift animation
+web/js/weapons.js       # small arms catalog (WEAPONS / GRENADES / CALIBERS), procedural weapon models, Guns: hitscan
+                        #   bullets with tracers vs tanks / infantry / player / world, thrown grenades
+web/js/infantry.js      # Soldier (low-poly model, AI: guard / engage / flee from tanks / grenades) + Infantry director
+web/js/loot.js          # difficulty along the road, tank type / weapon / loot picks by difficulty
 web/js/combat.js        # shells, hit tests, armour penetration -> module/crew damage, fires, particle effects
-web/js/ai.js            # EnemyDirector: encounters along the road (patrols / ambushes in caponiers) + tank AI
+web/js/ai.js            # EnemyDirector: encounters along the road (patrols / ambushes in caponiers, infantry posts,
+                        #   knocked-out vehicles with loot) + tank AI (main gun, pintle MG against men on foot)
 web/js/items.js         # inventory, world pickups, armour plate carried in hands
 web/js/audio.js         # synthesized WebAudio sfx
 web/js/noise.js         # perlin/fbm, hash, seeded rng
 ```
 
 ## Controls (web)
-- On foot: WASD move, SHIFT run, C crouch, SPACE jump, E enter/exit tank (only crewless ones),
+- On foot: WASD move, SHIFT run, C crouch, SPACE jump, 1/2/3 small weapon / big weapon / grenades (again = holster,
+  3 again = next grenade type), LMB fire / throw, RMB aim, R reload (no weapon drawn: repair kit menu), G drops what is
+  in the hands (or the drawn weapon), E enter/exit tank (only crewless ones),
   F pick up / tank stowage menu (kits, torches, spare plates, a box of shells; digits pick) / hold to weld a plate,
   E with a plate or a shells box in hands next to a crewless tank - stow the plate / load the shells (same calibre
-  only), G drop what is in hands, hold T cut a plate with the cutter, R repair kit menu. Looking at a part slot of a crewless tank: F takes the part into hands / installs the carried
-  part, Q (or F) opens / closes the engine bay (the engine won't run while it is open). F at the crane panel opens
+  only), E with a sandbag - heap it on the tank, hold F with a fuel can next to a tank - pour the fuel, hold T cut a plate
+  with the cutter. Tank stowage menu (F): page "Оружие и патроны" (digit 6) stows / takes weapons, cartridges, grenades
+  (0 = back). Looking at a part slot of a crewless tank: F takes the part into hands / installs the carried
+  part (the MG pintle: takes the MG into the big-weapon slot / mounts a carried MG; the fuel tanks show the fuel left),
+  Q (or F) opens / closes the engine bay (the engine won't run while it is open). F at the crane panel opens
   the crane menu (digits 1-4).
-- In tank: W/S throttle, A/D steer, SPACE brake, mouse aims (turret follows), LMB fire, RMB gunner sight,
+- In tank: W/S throttle, A/D steer, SPACE brake, mouse aims (turret follows), LMB fire, RMB gunner sight, X main gun / MG
+  (hold LMB for bursts),
   F fire extinguisher, R repair kit menu (digits choose the system), V third person / inside view, ESC pause.
   Inside: Q stand up / sit at the nearest station, 1/2/3 commander / gunner / driver. Commander = full control,
   gunner = gun only, driver = driving only; standing up = WASD moves around the compartment.
 
 ## Web debugging
-URL params: `?nowater=1&noclouds=1&notrees=1&notanks=1&noenemies=1&noshadows=1&nofog=1&waterred=1&watery=N&noaa=1&logdepth=1`
-`?seed=N` world seed, `?start=Z` start further down the road, `?god=1` invulnerable player, `?view=N` chunk radius.
-`window.game` exposes state/tanks/world/items/combat; `game.frame(dt)` advances the simulation without rendering
-(handy for headless tests).
+URL params: `?nowater=1&noclouds=1&notrees=1&notanks=1&noenemies=1&noinfantry=1&noshadows=1&nofog=1&waterred=1&watery=N&noaa=1&logdepth=1`
+`?seed=N` world seed (random without it; shown in the pause menu), `?start=Z` start further down the road, `?god=1`
+invulnerable player, `?view=N` chunk radius, `?shot=1` preserveDrawingBuffer (canvas screenshots).
+`window.game` exposes state/tanks/world/items/combat/guns/infantry; `game.frame(dt)` advances the simulation without
+rendering (handy for headless tests; `game.state.noLock = true` lets small arms fire without pointer lock).
 
 ## Web notes
 - World is endless: road runs along +Z, `world.roadX(z)` is the centreline. Terrain is flattened to `roadH(z)`
@@ -99,3 +120,16 @@ URL params: `?nowater=1&noclouds=1&notrees=1&notanks=1&noenemies=1&noshadows=1&n
 - Tools: `items.charge[tool]` is the gas left in the tool in use; `items.useTool` switches to a spare when it runs dry.
 - Enemy fuel/ammo hit kills the crew (tank stops, can be captured); for the player's tank it starts a fire
   that must be put out with F before the timer runs out, otherwise game over.
+- Difficulty `loot.difficultyAt(z)` = z / 9 km (clamped): tank types come from `TANK_TIERS` around the matching tier, small
+  arms by era (WW1 / WW2 / post-war). Settlement loot, wrecks, soldier kits and repair-station parts all use it.
+- Fuel: `tank.fuel` is a getter onto `parts.fuel.fuel` (litres); no fuel part or a destroyed one = no fuel. Engines burn
+  `fuelUse` l/s at full throttle (player's tank only). Fuel cans: `items.hands === 'canister'`, `items.handCan.fuel`.
+- Machine guns: `tank.mg` is a weapon object ({ key, mag }) on `tank.mgPivot` (turret `mgPos` from models.js, `hull.mgAt`
+  when the turret is off); it aims at `tank.mgTarget || tank.aimPoint`, `tank.fireMG()` takes rounds from
+  `tank.cargo.ammo[calibre]`. `tank.cargo = { weapons, ammo, grenades }` is the small-arms stowage.
+- Sandbags: `tank.addSandbag()` / `removeSandbag(face)`, slots are found by raycasting the hull (front first, then fenders);
+  `computeSpec(hull, parts, { front, side })` adds armour and weight. Hits on a face with bags may tear one off.
+- Small arms are hitscan (`Guns.trace`): tanks (sparks only), soldiers / player (vertical capsules, head x2.2), obstacles,
+  trees, terrain. Player takes 50% bullet damage. Shells and grenades call `onExplosion` -> `Infantry.explosion`.
+- Soldiers are culled beyond 700 m, bodies after ~2 min; dropped loot (`drop:*` pickups) beyond 1.2 km.
+- Tanks lose speed when knocking down a tree / ramming a house (`tank.bump` slows them for a moment), more for light ones.

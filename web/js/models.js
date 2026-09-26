@@ -24,6 +24,11 @@ const PAL = {
   abrams: { main: 0xb39a6b, dark: 0x8d784f, engine: 0x8c8c86 },
   avre:   { main: 0x4b5739, dark: 0x343d28, engine: 0x5a6258 },
   markV:  { main: 0x66643f, dark: 0x4a4a2e, engine: 0x3d3a36 },
+  pz2:    { main: 0x5b5f5c, dark: 0x45484a, engine: 0x5b5e57 },
+  t26:    { main: 0x505b35, dark: 0x3a4426, engine: 0x575d4c },
+  t44:    { main: 0x4a5a32, dark: 0x37432a, engine: 0x565f4a },
+  is2:    { main: 0x525e36, dark: 0x3c4728, engine: 0x5a6250 },
+  leo2:   { main: 0x4b5338, dark: 0x2f3327, engine: 0x77796f },
 };
 
 function rivetTexture(base, dark) {
@@ -456,13 +461,182 @@ function hullMarkV() {
     fuelAt: new THREE.Vector3(0, 1.1, -3.32), fuelRot: 0,
     driveAt: new THREE.Vector3(0, 2.25, 2.3),
     ringHole: null,
+    mgAt: new THREE.Vector3(0.45, 0.3, -0.5),         // on the cab roof, relative to the gun mount
   };
 }
 
-const HULL_BUILDERS = { t55: hullT55, abrams: hullAbrams, avre: hullAvre, markV: hullMarkV };
+// ---- WW2 light tanks
+// return rollers above the wheels
+function returnRollers(root, P, x, zs, y, r = 0.07) {
+  for (const sx of [-1, 1]) for (const z of zs) add(root, U.cylX, P.dark, sx * x, y, z, 0.2, r, r);
+}
+
+function hullPz2() {
+  const P = mats('pz2');
+  const root = new THREE.Group();
+  add(root, hullProfile([[-2.3, 0.36], [1.95, 0.36], [2.4, 0.78], [2.25, 1.0], [1.55, 1.05], [1.5, 1.42], [-2.1, 1.42], [-2.35, 1.0]], 1.72), P.main);
+  add(root, U.box, P.main, 0, 1.23, -0.3, 2.2, 0.38, 3.6);                                        // superstructure over the tracks
+  for (const sx of [-1, 1]) {
+    add(root, U.box, P.dark, sx * 0.98, 1.03, 0.05, 0.38, 0.04, 4.6);                             // fenders
+    add(root, U.box, P.dark, sx * 1.02, 1.12, -1.2, 0.2, 0.16, 0.9);                              // tool boxes
+  }
+  const wheels = runningGear(root, P, {
+    x: 0.98, w: 0.3, wheels: [1.3, 0.55, -0.2, -0.95, -1.7], wr: 0.29, wy: 0.31,
+    idler: [2.02, 0.6, 0.22], sprocket: [-2.2, 0.5, 0.22],
+  });
+  returnRollers(root, P, 0.98, [0.95, 0.2, -0.55, -1.3], 0.86);
+  add(root, U.box, P.dark, 0.45, 1.26, 1.52, 0.55, 0.16, 0.06);                                   // driver visor
+  add(root, U.box, P.glass, 0.45, 1.26, 1.555, 0.3, 0.03, 0.02);
+  add(root, U.box, P.dark, -0.45, 1.26, 1.52, 0.4, 0.14, 0.05);                                   // hull MG plate
+  add(root, U.cyl, P.glass, 0.72, 1.12, 2.1, 0.08, 0.08, 0.08, PI / 2 - 0.5, 0, 0);               // Notek light
+  add(root, U.cylX, P.rust, 0, 0.78, -2.42, 0.9, 0.11, 0.11);                                     // muffler
+  add(root, U.box, P.grille, 0, 1.43, -1.95, 1.0, 0.02, 0.25);
+  const bay = engineDeck(root, P, new THREE.Vector3(0, 1.42, -1.25), 1.2, 1.05);
+  bay.engineTop = 1.5;
+  const ring = { pos: new THREE.Vector3(0, 1.42, 0.35), r: 0.72 };
+  return {
+    root, wheels, wheelR: 0.29, ring, bay,
+    box: new THREE.Box3(new THREE.Vector3(-1.12, 0.1, -2.42), new THREE.Vector3(1.12, 1.48, 2.42)),
+    fuelAt: new THREE.Vector3(0, 1.02, -2.56), fuelRot: 0,
+    driveAt: ring.pos.clone(),
+    ringHole: ringHole(root, P, ring.pos, 0.7),
+  };
+}
+
+function hullT26() {
+  const P = mats('t26');
+  const root = new THREE.Group();
+  add(root, hullProfile([[-2.25, 0.4], [1.95, 0.4], [2.35, 0.75], [2.3, 0.95], [1.6, 1.1], [1.55, 1.4], [-2.05, 1.4], [-2.3, 1.08]], 1.62), P.main);
+  add(root, U.box, P.main, 0, 1.22, -0.25, 2.1, 0.36, 3.6);                                       // superstructure
+  for (const sx of [-1, 1]) {
+    add(root, U.box, P.dark, sx * 1.02, 1.01, 0.05, 0.5, 0.04, 4.7);                              // fenders
+    for (const z of [1.275, 0.375, -0.525, -1.425]) add(root, U.box, P.dark, sx * 1.2, 0.36, z, 0.1, 0.24, 0.5);   // bogies
+    add(root, U.box, P.dark, sx * 1.12, 1.1, 0.9, 0.22, 0.14, 0.8);                               // stowage
+  }
+  const wheels = runningGear(root, P, {
+    x: 1.02, w: 0.28, wheels: [1.45, 1.1, 0.55, 0.2, -0.35, -0.7, -1.25, -1.6], wr: 0.19, wy: 0.21,
+    idler: [2.12, 0.56, 0.25], sprocket: [-2.15, 0.55, 0.26],
+  });
+  returnRollers(root, P, 1.02, [1.2, 0.3, -0.6, -1.5], 0.76, 0.06);
+  add(root, U.box, P.metal, -0.45, 1.41, 1.15, 0.5, 0.04, 0.45);                                   // driver hatch
+  add(root, U.box, P.glass, -0.45, 1.3, 1.565, 0.3, 0.03, 0.02);
+  for (const x of [0.5, -0.5]) add(root, U.cylZ, P.glass, x, 1.2, 2.15, 0.08, 0.08, 0.05);          // headlights
+  add(root, U.box, P.dark, 0, 0.95, -2.35, 1.3, 0.3, 0.12);                                       // exhaust box
+  add(root, U.box, P.grille, 0, 1.41, -1.95, 1.1, 0.02, 0.2);
+  const bay = engineDeck(root, P, new THREE.Vector3(0, 1.4, -1.25), 1.2, 1.05);
+  bay.engineTop = 1.5;
+  const ring = { pos: new THREE.Vector3(-0.1, 1.4, 0.3), r: 0.74 };
+  return {
+    root, wheels, wheelR: 0.19, ring, bay,
+    box: new THREE.Box3(new THREE.Vector3(-1.22, 0.1, -2.38), new THREE.Vector3(1.22, 1.46, 2.4)),
+    fuelAt: new THREE.Vector3(0, 1.0, -2.55), fuelRot: 0,
+    driveAt: ring.pos.clone(),
+    ringHole: ringHole(root, P, ring.pos, 0.72),
+  };
+}
+
+// ---- WW2 medium / heavy tanks
+function hullT44() {
+  const P = mats('t44');
+  const root = new THREE.Group();
+  add(root, hullProfile([[-3.0, 0.42], [2.6, 0.42], [3.08, 0.9], [1.95, 1.5], [-2.85, 1.5], [-3.05, 1.1]], 2.1), P.main);
+  for (const sx of [-1, 1]) {
+    add(root, U.box, P.dark, sx * 1.34, 1.06, -0.05, 0.62, 0.05, 6.1);                             // fenders
+    add(root, U.box, P.dark, sx * 1.36, 1.25, -1.6, 0.5, 0.35, 1.2);                               // bins
+  }
+  const wheels = runningGear(root, P, {
+    x: 1.34, w: 0.58, wheels: [2.15, 1.02, -0.12, -1.26, -2.35], wr: 0.42, wy: 0.46,
+    idler: [2.82, 0.6, 0.3], sprocket: [-2.72, 0.62, 0.33],
+  });
+  add(root, U.box, P.metal, 0.55, 1.53, 1.62, 0.5, 0.06, 0.42, 0.28, 0, 0);                       // driver hatch
+  for (const x of [0.42, 0.68]) add(root, U.box, P.glass, x, 1.52, 1.88, 0.12, 0.05, 0.06);
+  add(root, U.cyl, P.glass, 0.78, 1.25, 2.55, 0.1, 0.1, 0.1, PI / 2 - 0.7, 0, 0);
+  add(root, U.cylX, P.wood, 0, 1.6, -2.7, 2.7, 0.12, 0.12);                                        // unditching log
+  add(root, U.box, P.grille, 0, 1.51, -2.6, 1.6, 0.03, 0.35);
+  const bay = engineDeck(root, P, new THREE.Vector3(0, 1.5, -1.8), 1.6, 1.3);
+  bay.engineTop = 1.6;
+  const ring = { pos: new THREE.Vector3(0, 1.5, 0.35), r: 1.02 };
+  return {
+    root, wheels, wheelR: 0.42, ring, bay,
+    box: new THREE.Box3(new THREE.Vector3(-1.64, 0.1, -3.5), new THREE.Vector3(1.64, 1.58, 3.1)),
+    fuelAt: new THREE.Vector3(0, 1.2, -3.25), fuelRot: 0,
+    driveAt: ring.pos.clone(),
+    ringHole: ringHole(root, P, ring.pos, 1.0),
+  };
+}
+
+function hullIs2() {
+  const P = mats('is2');
+  const root = new THREE.Group();
+  add(root, hullProfile([[-3.3, 0.45], [2.9, 0.45], [3.35, 0.85], [3.3, 1.05], [2.1, 1.62], [-3.2, 1.62], [-3.4, 1.2]], 2.1), P.main);
+  for (const sx of [-1, 1]) {
+    add(root, U.box, P.main, sx * 1.3, 1.37, -0.45, 0.62, 0.5, 5.3);                               // hull sides over the tracks
+    add(root, U.box, P.dark, sx * 1.32, 1.1, 0.0, 0.7, 0.05, 6.5);                                 // fenders
+    add(root, U.box, P.dark, sx * 1.35, 1.72, 1.2, 0.45, 0.2, 0.9);                                // spare track / bins
+  }
+  const wheels = runningGear(root, P, {
+    x: 1.32, w: 0.62, wheels: [2.35, 1.45, 0.55, -0.35, -1.25, -2.15], wr: 0.38, wy: 0.42,
+    idler: [3.0, 0.66, 0.3], sprocket: [-3.1, 0.72, 0.35],
+  });
+  returnRollers(root, P, 1.32, [1.9, 0.1, -1.7], 0.95, 0.08);
+  add(root, U.box, P.dark, 0, 1.52, 2.32, 0.55, 0.12, 0.2, -0.8, 0, 0);                           // driver visor
+  add(root, U.box, P.glass, 0, 1.54, 2.43, 0.3, 0.04, 0.02, -0.8, 0, 0);
+  for (const x of [-0.8, 0.8]) add(root, U.cyl, P.glass, x, 1.28, 2.75, 0.09, 0.09, 0.09, PI / 2 - 0.7, 0, 0);
+  add(root, U.box, P.grille, 0, 1.63, -2.95, 1.7, 0.03, 0.4);
+  for (const sx of [-1, 1]) add(root, U.cylZ, P.rust, sx * 0.7, 1.4, -3.3, 0.1, 0.1, 0.3);          // exhausts
+  const bay = engineDeck(root, P, new THREE.Vector3(0, 1.62, -2.0), 1.7, 1.5);
+  bay.engineTop = 1.72;
+  const ring = { pos: new THREE.Vector3(0, 1.62, 0.45), r: 1.06 };
+  return {
+    root, wheels, wheelR: 0.38, ring, bay,
+    box: new THREE.Box3(new THREE.Vector3(-1.66, 0.1, -3.75), new THREE.Vector3(1.66, 1.7, 3.4)),
+    fuelAt: new THREE.Vector3(0, 1.3, -3.62), fuelRot: 0,
+    driveAt: ring.pos.clone(),
+    ringHole: ringHole(root, P, ring.pos, 1.04),
+  };
+}
+
+function hullLeo2() {
+  const P = mats('leo2');
+  const root = new THREE.Group();
+  add(root, hullProfile([[-3.8, 0.45], [3.35, 0.45], [3.95, 1.0], [3.95, 1.15], [2.4, 1.62], [-3.8, 1.62], [-3.9, 0.95]], 2.3), P.main);
+  const wheels = runningGear(root, P, {
+    x: 1.52, w: 0.64, wheels: [2.6, 1.75, 0.9, 0.05, -0.8, -1.65, -2.5], wr: 0.34, wy: 0.38,
+    idler: [3.3, 0.64, 0.3], sprocket: [-3.4, 0.72, 0.36], wheelMat: P.dark,
+  });
+  for (const sx of [-1, 1]) {
+    add(root, U.box, P.main, sx * 1.52, 1.4, 0, 0.76, 0.05, 7.8);                                   // fender
+    add(root, U.box, P.main, sx * 1.88, 0.95, -0.4, 0.06, 0.9, 6.6);                                // skirt
+    add(root, U.box, P.dark, sx * 1.86, 0.96, 3.05, 0.16, 0.95, 1.5);                               // heavy front skirt
+    for (let z = -3.2; z < 2.4; z += 1.1) add(root, U.box, P.dark, sx * 1.915, 0.95, z, 0.01, 0.85, 0.03);
+    add(root, U.box, P.dark, sx * 1.45, 1.5, 3.75, 0.3, 0.14, 0.12);                                // light clusters
+    add(root, U.box, P.glass, sx * 1.45, 1.5, 3.82, 0.22, 0.08, 0.02);
+    add(root, U.box, P.red, sx * 1.4, 1.42, -3.83, 0.16, 0.1, 0.04);
+    add(root, U.cylZ8, P.metal, sx * 0.9, 0.62, 3.72, 0.07, 0.07, 0.3);
+  }
+  add(root, U.box, P.grille, 0, 1.63, -3.3, 2.0, 0.02, 0.9);                                         // rear deck grilles
+  add(root, U.box, P.grille, 0, 1.2, -3.84, 1.8, 0.45, 0.04);
+  add(root, U.cyl, P.metal, -0.6, 1.63, 2.35, 0.32, 0.05, 0.32);                                    // driver hatch
+  for (const x of [-0.8, -0.6, -0.4]) add(root, U.box, P.glass, x, 1.64, 2.72, 0.14, 0.05, 0.07);
+  const bay = engineDeck(root, P, new THREE.Vector3(0, 1.62, -2.35), 1.9, 1.5);
+  bay.engineTop = 1.72;
+  const ring = { pos: new THREE.Vector3(0, 1.62, 0.35), r: 1.2 };
+  return {
+    root, wheels, wheelR: 0.34, ring, bay,
+    box: new THREE.Box3(new THREE.Vector3(-1.92, 0.1, -4.3), new THREE.Vector3(1.92, 1.7, 3.96)),
+    fuelAt: new THREE.Vector3(0, 1.1, -4.12), fuelRot: 0,
+    driveAt: ring.pos.clone(),
+    ringHole: ringHole(root, P, ring.pos, 1.17),
+  };
+}
+
+const HULL_BUILDERS = { t55: hullT55, abrams: hullAbrams, avre: hullAvre, markV: hullMarkV,
+                        pz2: hullPz2, t26: hullT26, t44: hullT44, is2: hullIs2, leo2: hullLeo2 };
 export function buildHull(key) {
   const h = HULL_BUILDERS[key]();
   h.key = key;
+  // machine-gun pintle left on the turret ring when the turret is lifted off (turret-yaw-pivot local)
+  if (!h.mgAt) h.mgAt = new THREE.Vector3(h.ring.r * 0.62, 0.02, -0.25);
   bake(h.root);
   h.root.userData.markHost = true;
   return h;
@@ -480,14 +654,12 @@ function turretT55() {
   add(g, U.cyl, P.glass, 0.52, 0.87, -0.3, 0.35, 0.08, 0.35);
   add(g, U.cyl, P.metal, 0.52, 0.96, -0.3, 0.3, 0.05, 0.3);
   add(g, U.cyl, P.main, -0.48, 0.78, -0.35, 0.3, 0.06, 0.3);         // loader hatch
-  add(g, U.cyl, P.metal, -0.48, 1.0, -0.35, 0.03, 0.4, 0.03);        // AA MG
-  add(g, U.cylZ, P.metal, -0.48, 1.18, -0.1, 0.03, 0.03, 0.9);
   add(g, U.box, P.dark, 0, 0.38, -1.25, 1.4, 0.3, 0.3);              // rear stowage
   add(g, U.cylZ, P.dark, -0.55, 0.62, 0.95, 0.15, 0.15, 0.3);         // IR searchlight
   add(g, U.cylZ, P.glass, -0.55, 0.62, 1.11, 0.13, 0.13, 0.02);
   add(g, U.cyl, P.metal, 0.75, 0.6, 0.9, 0.05, 0.14, 0.05);          // gunner sight
   return {
-    group: g, gunPos: new THREE.Vector3(0, 0.42, 1.15), sightY: 1.0,
+    group: g, gunPos: new THREE.Vector3(0, 0.42, 1.15), sightY: 1.0, mgPos: new THREE.Vector3(-0.48, 0.81, -0.35),
     box: new THREE.Box3(new THREE.Vector3(-1.2, 0, -1.4), new THREE.Vector3(1.2, 0.96, 1.35)),
   };
 }
@@ -504,10 +676,8 @@ function turretAbrams() {
   add(g, U.cyl, P.dark, -0.72, 1.08, -0.25, 0.34, 0.05, 0.34);
   add(g, U.box, P.metal, -0.72, 1.16, 0.0, 0.14, 0.14, 0.4);
   add(g, U.cylZ, P.metal, -0.72, 1.18, 0.55, 0.035, 0.035, 0.9);
-  // loader hatch + M240
+  // loader hatch (MG pintle)
   add(g, U.cyl, P.main, 0.72, 0.83, -0.3, 0.32, 0.05, 0.32);
-  add(g, U.cyl, P.metal, 0.95, 0.98, -0.15, 0.025, 0.3, 0.025);
-  add(g, U.cylZ, P.metal, 0.95, 1.12, 0.2, 0.025, 0.025, 0.7);
   // gunner's primary sight, CITV-like head, wind sensor
   add(g, U.box, P.main, -0.72, 0.93, 1.1, 0.5, 0.3, 0.55);
   add(g, U.box, P.glass, -0.72, 0.93, 1.38, 0.4, 0.2, 0.02);
@@ -525,7 +695,7 @@ function turretAbrams() {
   add(g, U.box, P.dark, 0, 0.26, -3.1, 3.0, 0.04, 0.55);
   add(g, U.box, P.wood, 0, 0.45, -3.1, 2.6, 0.36, 0.4);
   return {
-    group: g, gunPos: new THREE.Vector3(0, 0.42, 1.95), sightY: 1.08,
+    group: g, gunPos: new THREE.Vector3(0, 0.42, 1.95), sightY: 1.08, mgPos: new THREE.Vector3(0.72, 0.85, -0.3),
     box: new THREE.Box3(new THREE.Vector3(-1.85, 0, -2.85), new THREE.Vector3(1.85, 0.82, 1.95)),
   };
 }
@@ -536,12 +706,10 @@ function turretAvre() {
   const g = new THREE.Group();
   add(g, new THREE.CylinderGeometry(1.15, 1.2, 0.1, 30), P.dark, 0, 0.02, 0);
   add(g, prism(AVRE_PLAN, 0.85, 0.72, -0.25), P.main, 0, 0.02, 0);
-  // commander cupola (right side) with MG
+  // commander cupola (right side)
   add(g, U.cyl, P.main, -0.55, 0.95, -0.55, 0.36, 0.42, 0.36);
   add(g, U.cyl, P.glass, -0.55, 1.03, -0.55, 0.37, 0.08, 0.37);
   add(g, U.cyl, P.dark, -0.55, 1.18, -0.55, 0.33, 0.05, 0.33);
-  add(g, U.box, P.metal, -0.3, 1.14, -0.4, 0.12, 0.14, 0.4);
-  add(g, U.cylZ, P.metal, -0.3, 1.16, 0.05, 0.03, 0.03, 0.6);
   add(g, U.cyl, P.main, 0.5, 0.88, -0.55, 0.3, 0.05, 0.3);                // loader hatch
   add(g, U.box, P.main, -0.5, 0.9, 0.62, 0.3, 0.2, 0.35);                // gunner sight
   add(g, U.box, P.glass, -0.5, 0.9, 0.8, 0.22, 0.12, 0.02);
@@ -555,12 +723,129 @@ function turretAvre() {
   add(g, U.box, P.dark, 0, 0.45, -1.98, 1.5, 0.4, 0.2);
   add(g, U.cyl, P.metal, 0.6, 1.3, -1.2, 0.015, 1.0, 0.015);             // antenna
   return {
-    group: g, gunPos: new THREE.Vector3(0, 0.4, 1.72), sightY: 1.12,
+    group: g, gunPos: new THREE.Vector3(0, 0.4, 1.72), sightY: 1.12, mgPos: new THREE.Vector3(0.5, 0.9, -0.55),
     box: new THREE.Box3(new THREE.Vector3(-1.5, 0, -1.95), new THREE.Vector3(1.5, 0.92, 1.75)),
   };
 }
 
-const TURRET_BUILDERS = { t55: turretT55, abrams: turretAbrams, avre: turretAvre };
+// oval plan [x, z] for cast turrets: half width rx, front zf, rear zr
+export function ovalPlan(rx, zf, zr, n = 16) {
+  const pts = [];
+  for (let i = 0; i < n; i++) {
+    const a = (i + 0.5) / n * PI * 2;
+    const c = Math.cos(a);
+    pts.push([rx * Math.sin(a), c * (c > 0 ? zf : zr)]);
+  }
+  return pts;
+}
+const scalePlan = (plan, k) => plan.map(([x, z]) => [x * k, z * k]);
+const planBox = (plan, h) => {
+  const xs = plan.map(p => p[0]), zs = plan.map(p => p[1]);
+  return new THREE.Box3(new THREE.Vector3(Math.min(...xs), 0, Math.min(...zs)), new THREE.Vector3(Math.max(...xs), h, Math.max(...zs)));
+};
+// cupola: cylinder with a vision band
+function cupola(g, P, x, z, r, y0, band, top) {
+  add(g, U.cyl, P.main, x, (y0 + band[0]) / 2, z, r, band[0] - y0, r);
+  add(g, U.cyl, P.glass, x, (band[0] + band[1]) / 2, z, r * 0.97, band[1] - band[0], r * 0.97);
+  add(g, U.cyl, P.main, x, (band[1] + top) / 2, z, r, top - band[1], r);
+  add(g, U.cyl, P.dark, x, top + 0.02, z, r * 0.9, 0.04, r * 0.9);
+}
+
+const PZ2_PLAN = [[0.35, 0.88], [0.72, 0.55], [0.75, -0.55], [0.5, -0.82], [-0.5, -0.82], [-0.75, -0.55], [-0.72, 0.55], [-0.35, 0.88]];
+function turretPz2() {
+  const P = mats('pz2');
+  const g = new THREE.Group();
+  add(g, new THREE.CylinderGeometry(0.72, 0.74, 0.08, 24), P.dark, 0, 0.02, 0);
+  add(g, prism(PZ2_PLAN, 0.6, 0.9), P.main, 0, 0.02, 0);
+  cupola(g, P, 0, -0.35, 0.25, 0.6, [0.64, 0.76], 0.86);
+  for (const sx of [-1, 1]) add(g, U.box, P.dark, sx * 0.7, 0.35, 0.05, 0.05, 0.12, 0.25, 0, 0, sx * 0.1);   // vision ports
+  add(g, U.box, P.dark, 0, 0.25, -0.86, 0.8, 0.22, 0.1);
+  return {
+    group: g, gunPos: new THREE.Vector3(0, 0.32, 0.9), sightY: 0.72, mgPos: new THREE.Vector3(0.38, 0.62, -0.15),
+    box: planBox(PZ2_PLAN, 0.86),
+  };
+}
+
+function turretT26() {
+  const P = mats('t26');
+  const g = new THREE.Group();
+  add(g, new THREE.CylinderGeometry(0.74, 0.76, 0.08, 24), P.dark, 0, 0.02, 0);
+  add(g, new THREE.CylinderGeometry(0.72, 0.72, 0.58, 28), P.main, 0, 0.31, 0);
+  add(g, sizedBox(0.9, 0.42, 0.45), P.main, 0, 0.3, -0.88);                                        // bustle
+  cupola(g, P, -0.32, -0.25, 0.25, 0.58, [0.6, 0.7], 0.76);
+  add(g, new THREE.TorusGeometry(0.88, 0.012, 4, 30).rotateX(PI / 2), P.metal, 0, 0.68, -0.1);   // frame antenna
+  for (let i = 0; i < 6; i++) {
+    const a = i / 6 * PI * 2 + 0.5;
+    add(g, U.cyl, P.metal, Math.sin(a) * 0.8, 0.64, Math.cos(a) * 0.8 - 0.1, 0.01, 0.1, 0.01);
+  }
+  add(g, U.cyl, P.dark, 0.3, 0.62, 0.2, 0.06, 0.1, 0.06);                                            // periscope
+  return {
+    group: g, gunPos: new THREE.Vector3(0, 0.3, 0.72), sightY: 0.72, mgPos: new THREE.Vector3(0.32, 0.6, -0.12),
+    box: new THREE.Box3(new THREE.Vector3(-0.74, 0, -1.13), new THREE.Vector3(0.74, 0.78, 0.74)),
+  };
+}
+
+const T44_PLAN = ovalPlan(1.05, 1.1, 1.3);
+function turretT44() {
+  const P = mats('t44');
+  const g = new THREE.Group();
+  add(g, new THREE.CylinderGeometry(1.02, 1.06, 0.1, 30), P.dark, 0, 0.02, 0);
+  add(g, prism(T44_PLAN, 0.85, 0.78, -0.05), P.main, 0, 0.02, 0);
+  cupola(g, P, 0.45, -0.35, 0.33, 0.8, [0.86, 0.98], 1.1);
+  add(g, U.cyl, P.main, -0.45, 0.86, -0.3, 0.3, 0.05, 0.3);                                         // loader hatch
+  add(g, U.cyl, P.dark, -0.3, 0.9, 0.45, 0.08, 0.12, 0.08);                                         // periscope
+  for (const sx of [-1, 1]) add(g, U.box, P.dark, sx * 0.55, 0.35, -1.25, 0.5, 0.3, 0.2);          // bins
+  for (const sx of [-1, 1]) add(g, U.box, P.metal, sx * 0.9, 0.5, -0.3, 0.05, 0.05, 0.5);          // hand rails
+  return {
+    group: g, gunPos: new THREE.Vector3(0, 0.42, 1.12), sightY: 1.05, mgPos: new THREE.Vector3(-0.45, 0.88, -0.3),
+    box: planBox(T44_PLAN, 0.9),
+  };
+}
+
+const IS2_PLAN = ovalPlan(1.12, 1.0, 1.5);
+function turretIs2() {
+  const P = mats('is2');
+  const g = new THREE.Group();
+  add(g, new THREE.CylinderGeometry(1.06, 1.1, 0.1, 30), P.dark, 0, 0.02, 0);
+  add(g, prism(IS2_PLAN, 0.9, 0.74), P.main, 0, 0.02, 0);
+  cupola(g, P, 0.5, -0.45, 0.34, 0.86, [0.92, 1.04], 1.14);
+  add(g, U.cyl, P.main, -0.5, 0.92, -0.35, 0.3, 0.05, 0.3);                                         // loader hatch
+  add(g, U.cyl, P.dark, -0.2, 0.95, 0.35, 0.08, 0.12, 0.08);
+  add(g, U.cylZ, P.dark, 0, 0.45, -1.52, 0.1, 0.1, 0.12);                                          // rear MG ball
+  for (const sx of [-1, 1]) add(g, U.box, P.metal, sx * 0.95, 0.55, -0.4, 0.05, 0.05, 0.6);
+  return {
+    group: g, gunPos: new THREE.Vector3(0, 0.42, 1.02), sightY: 1.1, mgPos: new THREE.Vector3(-0.5, 0.94, -0.35),
+    box: planBox(IS2_PLAN, 0.95),
+  };
+}
+
+const LEO2_PLAN = [[0.9, 2.0], [1.9, 1.55], [1.9, -1.6], [1.65, -2.9], [-1.65, -2.9], [-1.9, -1.6], [-1.9, 1.55], [-0.9, 2.0]];
+function turretLeo2() {
+  const P = mats('leo2');
+  const g = new THREE.Group();
+  add(g, new THREE.CylinderGeometry(1.2, 1.24, 0.1, 30), P.dark, 0, 0.02, 0);
+  add(g, prism(LEO2_PLAN, 0.8, 0.98), P.main, 0, 0.02, 0);
+  cupola(g, P, -0.72, -0.3, 0.38, 0.8, [0.9, 1.02], 1.1);                                           // commander (right)
+  add(g, U.cyl, P.main, 0.75, 0.84, -0.3, 0.34, 0.05, 0.34);                                        // loader hatch
+  add(g, U.box, P.main, -0.85, 0.92, 1.2, 0.5, 0.26, 0.6);                                          // gunner's sight
+  add(g, U.box, P.glass, -0.85, 0.92, 1.51, 0.4, 0.16, 0.02);
+  add(g, U.cyl, P.dark, 0.25, 0.92, 0.2, 0.14, 0.24, 0.14);                                         // PERI
+  add(g, U.box, P.glass, 0.25, 1.02, 0.3, 0.16, 0.08, 0.02);
+  for (const sx of [-1, 1]) {
+    for (let i = 0; i < 4; i++) add(g, U.cylZ8, P.black, sx * 1.95, 0.45 + (i % 2) * 0.13, 0.7 - Math.floor(i / 2) * 0.16, 0.05, 0.05, 0.15, -0.4, sx * 0.3, 0);
+    add(g, U.box, P.dark, sx * 1.93, 0.4, -1.8, 0.06, 0.4, 1.4);                                   // side stowage
+  }
+  add(g, U.box, P.dark, 0, 0.5, -3.05, 3.2, 0.45, 0.3);                                             // bustle basket
+  add(g, U.cyl, P.metal, 1.2, 1.2, -2.3, 0.015, 0.9, 0.015);                                        // antennas
+  add(g, U.cyl, P.metal, -1.2, 1.2, -2.3, 0.015, 0.9, 0.015);
+  return {
+    group: g, gunPos: new THREE.Vector3(0, 0.42, 2.0), sightY: 1.08, mgPos: new THREE.Vector3(0.75, 0.87, -0.3),
+    box: planBox(LEO2_PLAN, 0.84),
+  };
+}
+
+const TURRET_BUILDERS = { t55: turretT55, abrams: turretAbrams, avre: turretAvre,
+                          pz2: turretPz2, t26: turretT26, t44: turretT44, is2: turretIs2, leo2: turretLeo2 };
 export function buildTurret(key) {
   const t = TURRET_BUILDERS[key]();
   t.key = key;
@@ -644,7 +929,69 @@ function gunMarkV() {
   return { group: g, muzzleLen: 1.47 };
 }
 
-const GUN_BUILDERS = { t55: gunT55, abrams: gunAbrams, avre: gunAvre, markV: gunMarkV };
+function gunPz2() {
+  const P = mats('pz2');
+  const g = new THREE.Group();
+  add(g, U.box, P.main, 0, 0, 0.05, 0.55, 0.34, 0.18);                  // mantlet
+  add(g, U.cylZ, P.dark, 0, 0, 0.2, 0.07, 0.07, 0.2);
+  add(g, U.cylZ, P.metal, 0, 0, 0.85, 0.028, 0.028, 1.3);
+  add(g, U.cylZ, P.dark, 0, 0, 1.46, 0.04, 0.04, 0.12);                 // flash hider
+  add(g, U.cylZ, P.metal, -0.18, 0.02, 0.2, 0.025, 0.025, 0.2);         // coax MG port
+  breech(g, P, 0.14, 0.16, 0.4);
+  return { group: g, muzzleLen: 1.52 };
+}
+
+function gunT26() {
+  const P = mats('t26');
+  const g = new THREE.Group();
+  add(g, U.box, P.main, 0, 0, 0.04, 0.45, 0.34, 0.14);
+  add(g, new THREE.CylinderGeometry(0.034, 0.045, 2.1, 12).rotateX(PI / 2), P.main, 0, 0, 1.12);
+  add(g, U.cylZ, P.metal, 0, 0, 2.18, 0.045, 0.045, 0.06);
+  add(g, U.cylZ, P.metal, 0.16, 0, 0.18, 0.025, 0.025, 0.2);
+  breech(g, P, 0.2, 0.2, 0.55);
+  return { group: g, muzzleLen: 2.2 };
+}
+
+function gunT44() {
+  const P = mats('t44');
+  const g = new THREE.Group();
+  const mantlet = new THREE.SphereGeometry(0.36, 14, 10, 0, PI * 2, 0, PI);
+  mantlet.scale(1.1, 0.8, 0.6);
+  add(g, mantlet, P.main, 0, 0, 0.05);
+  add(g, U.box, P.main, 0, 0, 0.12, 0.6, 0.42, 0.2);
+  add(g, new THREE.CylinderGeometry(0.055, 0.075, 3.6, 14).rotateX(PI / 2), P.main, 0, 0, 2.0);
+  add(g, U.cylZ, P.metal, 0, 0, 3.82, 0.07, 0.07, 0.1);
+  breech(g, P, 0.3, 0.3, 0.85);
+  return { group: g, muzzleLen: 3.87 };
+}
+
+function gunIs2() {
+  const P = mats('is2');
+  const g = new THREE.Group();
+  add(g, U.box, P.main, 0, 0, 0.1, 0.95, 0.6, 0.3);                     // mantlet
+  add(g, U.cylZ, P.main, 0, 0, 0.35, 0.3, 0.3, 0.3);
+  add(g, new THREE.CylinderGeometry(0.075, 0.09, 4.3, 14).rotateX(PI / 2), P.main, 0, 0, 2.55);
+  add(g, U.box, P.main, 0, 0, 4.72, 0.3, 0.2, 0.38);                    // muzzle brake
+  for (const sx of [-1, 1]) add(g, U.box, P.black, sx * 0.151, 0, 4.72, 0.01, 0.12, 0.26);
+  breech(g, P, 0.42, 0.42, 1.0);
+  return { group: g, muzzleLen: 4.92 };
+}
+
+function gunLeo2() {
+  const P = mats('leo2');
+  const g = new THREE.Group();
+  add(g, U.box, P.main, 0, 0, 0.12, 1.1, 0.5, 0.36);                    // mantlet
+  add(g, U.box, P.dark, 0, 0.02, 0.32, 0.55, 0.42, 0.06);
+  add(g, U.cylZ, P.main, 0, 0, 2.8, 0.086, 0.086, 5.0);
+  for (const z of [1.3, 2.0, 3.4, 4.2, 4.9]) add(g, U.cylZ, P.dark, 0, 0, z, 0.096, 0.096, 0.08);
+  add(g, U.cylZ, P.main, 0, 0, 2.6, 0.13, 0.13, 0.7);                   // fume extractor
+  add(g, U.cylZ, P.metal, 0, 0, 5.3, 0.1, 0.1, 0.1);
+  breech(g, P, 0.46, 0.46, 1.05);
+  return { group: g, muzzleLen: 5.35 };
+}
+
+const GUN_BUILDERS = { t55: gunT55, abrams: gunAbrams, avre: gunAvre, markV: gunMarkV,
+                       pz2: gunPz2, t26: gunT26, t44: gunT44, is2: gunIs2, leo2: gunLeo2 };
 export function buildGun(key) {
   const v = GUN_BUILDERS[key]();
   v.key = key;
@@ -696,7 +1043,24 @@ function engineMarkV(g, P, E) {                        // straight-six petrol
   add(g, U.cylZ, P.rust, -0.2, 0.9, 0, 0.05, 0.05, 1.3);               // exhaust manifold
   return 1.0;
 }
-const ENGINE_BUILDERS = { t55: engineT55, abrams: engineAbrams, avre: engineAvre, markV: engineMarkV };
+function enginePetrol(g, P, E, n, s) {             // small inline petrol engine (n cylinders, scale s)
+  const len = (0.25 + n * 0.2) * s;
+  add(g, U.box, E, 0, 0.2 * s, 0, 0.5 * s, 0.4 * s, len);
+  for (let i = 0; i < n; i++) {
+    const z = -len / 2 + (i + 0.5) * len / n;
+    add(g, U.cyl, E, 0, 0.6 * s, z, 0.1 * s, 0.4 * s, 0.1 * s);
+    add(g, U.cyl, P.brass, 0, 0.84 * s, z, 0.05 * s, 0.06 * s, 0.05 * s);
+  }
+  add(g, U.cylZ, P.metal, 0, 0.4 * s, -len / 2 - 0.05, 0.36 * s, 0.36 * s, 0.1);
+  add(g, U.box, P.brass, 0.28 * s, 0.5 * s, len * 0.2, 0.12, 0.18, 0.18);
+  add(g, U.cylZ, P.rust, -0.2 * s, 0.8 * s, 0, 0.05, 0.05, len * 0.9);
+  return 0.9 * s;
+}
+const ENGINE_BUILDERS = {
+  t55: engineT55, abrams: engineAbrams, avre: engineAvre, markV: engineMarkV,
+  pz2: (g, P, E) => enginePetrol(g, P, E, 6, 0.85), t26: (g, P, E) => enginePetrol(g, P, E, 4, 0.8),
+  t44: engineT55, is2: engineT55, leo2: engineAvre,
+};
 export function buildEngine(key) {
   const P = mats(key);
   const g = new THREE.Group();
@@ -735,6 +1099,40 @@ export function buildFuel(key) {
     }
     add(g, U.box, P.metal, 0, 0.1, 0.3, 1.9, 0.08, 0.04);
     groundY = 0.43;
+  } else if (key === 'pz2') {
+    add(g, U.box, P.dark, 0, -0.24, 0, 1.9, 0.04, 0.3);
+    for (let i = 0; i < 6; i++) {
+      const x = -0.8 + i * 0.32;
+      add(g, U.box, P.main, x, 0, 0, 0.28, 0.45, 0.15);
+      add(g, U.box, P.dark, x, 0.24, 0.04, 0.1, 0.04, 0.05);
+    }
+    groundY = 0.24;
+  } else if (key === 't26') {
+    add(g, sizedBox(1.5, 0.5, 0.4), P.main, 0, 0, 0);
+    add(g, U.cyl, P.brass, 0.5, 0.27, 0, 0.07, 0.05, 0.07);
+    for (const x of [-0.6, 0.6]) add(g, U.box, P.dark, x, 0, 0.21, 0.06, 0.52, 0.03);
+    groundY = 0.25;
+  } else if (key === 't44') {
+    for (const x of [-0.55, 0.55]) {
+      add(g, U.cylX, P.dark, x, 0, 0, 0.92, 0.29, 0.29);
+      for (const dx of [-0.3, 0.3]) add(g, U.cylX, P.main, x + dx, 0, 0, 0.04, 0.3, 0.3);
+      add(g, U.cyl, P.metal, x + 0.35, 0.29, 0, 0.05, 0.04, 0.05);
+    }
+    add(g, U.box, P.metal, 0, -0.27, 0.1, 2.1, 0.04, 0.08);
+  } else if (key === 'is2') {
+    for (const x of [-0.66, 0, 0.66]) {
+      add(g, U.cylX, P.main, x, 0, 0, 0.6, 0.25, 0.25);
+      add(g, U.cyl, P.metal, x + 0.2, 0.25, 0, 0.05, 0.04, 0.05);
+    }
+    add(g, U.box, P.dark, 0, -0.23, 0.12, 2.0, 0.04, 0.08);
+    groundY = 0.26;
+  } else if (key === 'leo2') {
+    for (const x of [-0.5, 0.5]) {
+      add(g, sizedBox(0.88, 0.5, 0.36), P.main, x, 0, 0);
+      add(g, U.cyl, P.metal, x + 0.3, 0.27, 0, 0.05, 0.04, 0.05);
+    }
+    add(g, U.box, P.dark, 0, -0.26, 0, 2.0, 0.04, 0.4);
+    groundY = 0.27;
   } else {
     add(g, sizedBox(1.6, 0.75, 0.66), P.main, 0, 0, 0);
     add(g, U.cyl, P.brass, 0.5, 0.4, 0, 0.08, 0.06, 0.08);
@@ -747,7 +1145,7 @@ export function buildFuel(key) {
 }
 
 // ===================================================================== turret drives (origin: ring centre)
-const DRIVE_R = { t55: 1.0, abrams: 1.05, avre: 1.0 };
+const DRIVE_R = { t55: 1.0, abrams: 1.05, avre: 1.0, pz2: 0.66, t26: 0.68, t44: 0.95, is2: 1.0, leo2: 1.12 };
 export function buildDrive(key) {
   const P = mats(key);
   const g = new THREE.Group();
@@ -946,6 +1344,14 @@ const TI = {
   avre: {
     poly: [[0.42, 1.55], [1.2, 0.95], [1.38, -0.2], [1.28, -1.45], [0.8, -1.78], [-0.8, -1.78], [-1.28, -1.45], [-1.38, -0.2], [-1.2, 0.95], [-0.42, 1.55]], h: 0.82,
     cupola: { x: -0.55, z: -0.55, r: 0.3, y0: 0.8, band: [0.95, 1.08], top: 1.14 },
+  },
+  pz2: { poly: scalePlan(PZ2_PLAN, 0.85), h: 0.56, cupola: { x: 0, z: -0.35, r: 0.2, y0: 0.56, band: [0.64, 0.76], top: 0.8 } },
+  t26: { poly: ovalPlan(0.66, 0.66, 0.66), h: 0.54, cupola: { x: -0.32, z: -0.25, r: 0.2, y0: 0.54, band: [0.6, 0.7], top: 0.72 } },
+  t44: { poly: scalePlan(T44_PLAN, 0.72), h: 0.8, cupola: { x: 0.45, z: -0.35, r: 0.28, y0: 0.8, band: [0.86, 0.98], top: 1.04 } },
+  is2: { poly: scalePlan(IS2_PLAN, 0.68), h: 0.85, cupola: { x: 0.5, z: -0.45, r: 0.3, y0: 0.85, band: [0.92, 1.04], top: 1.1 } },
+  leo2: {
+    poly: [[0.85, 1.9], [1.8, 1.5], [1.8, -1.5], [-1.8, -1.5], [-1.8, 1.5], [-0.85, 1.9]], h: 0.76,
+    cupola: { x: -0.72, z: -0.3, r: 0.32, y0: 0.78, band: [0.9, 1.02], top: 1.06 },
   },
 };
 

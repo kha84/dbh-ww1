@@ -133,6 +133,7 @@ export class Combat {
     this.listener = new THREE.Vector3();
     this.onEvent = () => {};
     this.onPlayerDamage = () => {};
+    this.onExplosion = () => {};     // (pos, radius, dmg, owner): infantry takes blast damage
     this.god = false;
     const tg = new THREE.CylinderGeometry(0.07, 0.07, 3.0, 5);
     this.tracerGeo = tg;
@@ -251,6 +252,7 @@ export class Combat {
       if (best.kind === 'foot' && !this.god) this.onPlayerDamage(200, s.owner);
     }
     this.splashDamage(hp, s);
+    if (best.kind !== 'water') this.onExplosion(hp, 3 + 5 * Math.sqrt(s.dmg), 150 * s.dmg, s.owner);
     return true;
   }
 
@@ -359,12 +361,23 @@ export class Combat {
     }
     tank.lastHitT = performance.now() / 1000;
     tank.addMark(hitPoint, dir, res.ricochet ? 'scrape' : res.pen ? 'hole' : 'dent');
+    // sandbags on the struck face get torn off
+    if (vol.part === 'hull' && (face === 'front' || face === 'side') && tank.bagCount(face) > 0 &&
+        Math.random() < (res.pen ? 0.65 : 0.4)) {
+      tank.removeSandbag(face);
+      res.bagLost = true;
+      this.fx.spawn('dust', hitPoint, null, 0.8);
+    }
 
     // consequences
     if (res.fire) {
       if (tank.team === 'player') tank.startFire(res.fire, false);
       else {
-        if (tank.crew) { tank.killCrew(); res.crewKilled = true; }
+        // the crew of a burning enemy tank may bail out (and fight on foot) - or die in it
+        if (tank.crew) {
+          if (Math.random() < 0.6) { tank.crew = false; res.bail = true; }
+          else { tank.killCrew(); res.crewKilled = true; }
+        }
         tank.startFire(res.fire, true);
       }
     }
@@ -391,6 +404,8 @@ export function describeHit(res) {
   if (res.destroyed) return 'Танк уничтожен!';
   const parts = [];
   if (res.crewKilled) parts.push('экипаж уничтожен');
+  if (res.bail) parts.push('экипаж покидает танк');
+  if (res.bagLost) parts.push('сорван мешок с песком');
   if (res.fire) parts.push(res.fire === 'ammo' ? 'детонация боеукладки' : 'пожар');
   const mods = res.modules.map(m => MODULE_NAMES[m].toLowerCase());
   if (res.ricochet) return 'Рикошет' + (mods.length ? ': ' + mods.join(', ') : '');

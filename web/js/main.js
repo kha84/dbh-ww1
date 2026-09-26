@@ -2,19 +2,24 @@
 import * as THREE from 'three';
 import { World, WATER_LEVEL, segBox, pushOut } from './world.js';
 import { Tank, MODULE_IDS, MODULE_NAMES, SYSTEM_IDS, G, partVisual } from './tanks.js';
-import { HULLS, GUNS, SYSTEM_PART, PART_NAMES, ORIGIN_NAMES, makePart, partLabel } from './parts.js';
+import { HULLS, GUNS, SYSTEM_PART, PART_NAMES, ORIGIN_NAMES, SANDBAG, makePart, partLabel } from './parts.js';
 import { turretCeiling } from './models.js';
 import { Combat, Effects, describeHit } from './combat.js';
 import { EnemyDirector } from './ai.js';
-import { Items, ITEM_DEFS, TOOL_USE, SHELLS_PER_BOX, buildItemMesh, shellsLabel } from './items.js';
+import { Items, ITEM_DEFS, TOOL_USE, SHELLS_PER_BOX, CANISTER_L, buildItemMesh, shellsLabel, ammoLabel, grenadeLabel } from './items.js';
 import { Workshop } from './workshop.js';
 import { Sfx } from './audio.js';
 import { SETTLEMENT_LABEL } from './settlements.js';
+import { Guns, WEAPONS, GRENADES, CAT_NAMES, isSmall, makeWeapon, weaponMesh, buildGrenadeMesh, weaponLabel } from './weapons.js';
+import { Infantry } from './infantry.js';
+import { difficultyAt, soldierKit } from './loot.js';
+import { rng } from './noise.js';
 
-// debug flags: ?nowater=1 ?noclouds=1 ?notrees=1 ?notanks=1 ?noenemies=1 ?noshadows=1 ?nofog=1
+// debug flags: ?nowater=1 ?noclouds=1 ?notrees=1 ?notanks=1 ?noenemies=1 ?noinfantry=1 ?noshadows=1 ?nofog=1
 //              ?waterred=1 ?watery=N ?noaa=1 ?logdepth=1 ?seed=N ?god=1 ?start=Z ?view=N
 const dbg = new URLSearchParams(location.search);
-const SEED = parseInt(dbg.get('seed') || '1337', 10);
+// every game gets its own world unless a seed is given (?seed=N replays a world)
+const SEED = dbg.has('seed') ? parseInt(dbg.get('seed'), 10) : Math.floor(Math.random() * 999999) + 1;
 
 // ================== state ==================
 const state = {
@@ -35,8 +40,13 @@ const state = {
   aimYaw: 0, aimPitch: -0.04,    // in-tank look / aim
   velY: 0, onGround: false, crouch: false,
   hp: 100, lastDamageT: -1e9,
-  kills: 0, startZ: 0, maxZ: 0,
+  kills: 0, infKills: 0, startZ: 0, maxZ: 0,
   sight: false, fireReq: false,
+  wsel: 'gun',                   // in a tank: 'gun' | 'mg' (X toggles)
+  mgHeld: false,
+  fireHeld: false, fireLatch: false, aim: false, aimK: 0,   // on foot: small arms
+  wCool: 0, reloadT: 0, kick: 0, runOverT: 0,
+  stashPage: 'main',
   hold: null,
   repairOpen: false, repairTarget: null,
   nearTank: null, nearItem: null,
@@ -127,14 +137,52 @@ const fx = new Effects(scene);
 const sfx = new Sfx();
 const combat = new Combat(scene, world, fx, sfx);
 combat.god = dbg.get('god') === '1';
-const director = new EnemyDirector(world, scene, SEED);
+const guns = new Guns(scene, world, fx, sfx);
+const infantry = new Infantry(scene, world, guns);
+const director = new EnemyDirector(world, scene, SEED, infantry);
+director.guns = guns;
 const items = new Items(scene, world);
 const workshop = new Workshop(scene, world);
 const tanks = [];
 
+// data of a loot item (settlements, wrecks) -> the object the pickup carries
+function itemData(it) {
+  if (!it) return null;
+  switch (it.type) {
+    case 'part': return makePart(it.kind, it.key, it.hp);
+    case 'weapon': return makeWeapon(it.key, it.mag);
+    case 'ammo': return { cal: it.cal, n: it.n };
+    case 'grenade': return { key: it.key, n: it.n || 1 };
+    case 'canister': return { fuel: it.fuel ?? CANISTER_L };
+    default: return null;
+  }
+}
+director.onLoot = (id, type, x, z, data) => {
+  if (type === 'ammo' && !data) return;
+  items.add(id, type, x, z, itemData({ ...(data || {}), type }));
+};
+
+// garrisons: some settlements further down the road are held by enemy infantry (once per game)
+const garrisoned = new Set();
+function garrison(s) {
+  const plan = s.plan;
+  if (plan.k < 2 || garrisoned.has(plan.k) || dbg.get('noinfantry') === '1' || dbg.get('noenemies') === '1') return;
+  garrisoned.add(plan.k);
+  const r = rng((plan.seed ^ 0x9e3779b9) >>> 0);
+  const d = difficultyAt(plan.z);
+  if (r() > 0.3 + d * 0.45 || !s.houses.length) return;
+  const n = plan.type === 'town' ? 4 + Math.floor(r() * 3) : plan.type === 'repair' ? 2 : 2 + Math.floor(r() * 3);
+  const h = s.houses[Math.floor(r() * s.houses.length)].f;
+  const kits = [];
+  for (let i = 0; i < n; i++) kits.push(soldierKit(r, d));
+  const side = h.x > world.roadX(h.z) ? -1 : 1;
+  infantry.spawnSquad(h.x + side * 7 * Math.cos(h.rot), h.z - side * 7 * Math.sin(h.rot), kits, h.rot, r);
+}
+
 world.onSettlementBuilt = s => {
-  for (const it of s.items) items.add(it.id, it.type, it.x, it.z, it.type === 'part' ? makePart(it.kind, it.key, it.hp) : null);
+  for (const it of s.items) items.add(it.id, it.type, it.x, it.z, itemData(it));
   workshop.onBuilt(s);
+  garrison(s);
 };
 world.onHouseRuined = (x, y, z, size) => {
   const p = new THREE.Vector3(x, y, z);
@@ -156,6 +204,24 @@ scene.add(cabinLight);
 const player = new THREE.Object3D();
 const playerVel = new THREE.Vector3();
 scene.add(player);
+
+// fuel can / sandbag carried in hands
+const handCan = buildItemMesh('canister');
+handCan.remove(handCan.userData.glow);
+handCan.position.set(0.25, -0.75, -0.8);
+handCan.rotation.set(0.1, -0.4, 0);
+handCan.visible = false;
+camera.add(handCan);
+const handBag = buildItemMesh('sandbag');
+handBag.remove(handBag.userData.glow);
+handBag.position.set(0.0, -0.62, -0.9);
+handBag.rotation.set(0.35, 0.2, 0);
+handBag.visible = false;
+camera.add(handBag);
+// weapon in hands (first-person view model)
+const viewModel = new THREE.Group();
+camera.add(viewModel);
+let vmKey = null, vmMuzzle = 0.3, vmTop = 0.05;
 
 // plate carried in hands (child of the camera)
 const handPlate = buildItemMesh('plate');
@@ -215,13 +281,16 @@ function flashDamage() {
 
 // ================== combat events ==================
 combat.onEvent = res => {
-  const mine = state.vehicle && res.shooter === state.vehicle;
+  const mine = (state.vehicle && res.shooter === state.vehicle) || !!(res.shooter && res.shooter.player);
   if (mine) showHit(describeHit(res));
-  if ((res.crewKilled || res.destroyed) && res.tank.team === 'enemy' && !res.tank.counted) {
+  if (res.bail) bailOut(res.tank);
+  if ((res.crewKilled || res.destroyed || res.bail) && res.tank.team === 'enemy' && !res.tank.counted) {
     res.tank.counted = true;
     if (mine) {
       state.kills++;
-      msg(res.destroyed ? `${res.tank.def.name} противника уничтожен` : `Экипаж ${res.tank.def.name} уничтожен — танк можно захватить`, '#9fe07f');
+      msg(res.destroyed ? `${res.tank.def.name} противника уничтожен`
+        : res.bail ? `Экипаж горящего ${res.tank.def.name} выскакивает из танка!`
+        : `Экипаж ${res.tank.def.name} уничтожен — танк можно захватить`, '#9fe07f');
     }
   }
   if (res.tank === state.vehicle) {
@@ -234,9 +303,47 @@ combat.onEvent = res => {
   }
 };
 combat.onPlayerDamage = (amount) => damagePlayer(amount);
+combat.onExplosion = (pos, r, dmg, owner) => infantry.explosion(pos, r, dmg, owner);
 
-function damagePlayer(amount) {
+// crew of a burning enemy tank jumps out and fights on foot
+function bailOut(t) {
+  if (dbg.get('noinfantry') === '1') return;
+  const d = difficultyAt(t.root.position.z);
+  const n = 2 + (Math.random() < 0.5 ? 1 : 0);
+  const kits = [];
+  for (let i = 0; i < n; i++) kits.push(soldierKit(Math.random, d, true));
+  infantry.spawnCrew(t, kits);
+}
+
+// small arms / grenades
+guns.onPlayerHit = (amount) => damagePlayer(amount, true);
+guns.onExplosion = (pos, r, dmg, owner) => {
+  infantry.explosion(pos, r, dmg, owner);
+  if (state.mode === 'walk' && !combat.god) {
+    const d = pos.distanceTo(player.position.clone().setY(player.position.y + 0.8));
+    if (d < r) damagePlayer(dmg * (1 - d / r) * 0.9);
+  }
+};
+guns.onGrenadeTank = (t, point, dir, D, owner) => {
+  const vol = t.hitVolumes()[0];
+  combat.hitTank(t, vol, point, dir, { pen: D.pen, dmg: 0.8, owner });
+};
+infantry.onDeath = (s, owner) => {
+  const p = s.pos;
+  const a = Math.random() * 6.28;
+  items.drop('weapon', p.x + Math.sin(a) * 0.7, p.z + Math.cos(a) * 0.7, s.weapon);
+  const W = WEAPONS[s.weapon.key];
+  if (Math.random() < 0.8) items.drop('ammo', p.x + Math.sin(a + 2) * 0.8, p.z + Math.cos(a + 2) * 0.8, { cal: W.cal, n: Math.round(Math.max(10, W.mag) * (0.6 + Math.random())) });
+  for (const [k, n] of Object.entries(s.grenades)) if (n > 0) items.drop('grenade', p.x + Math.sin(a + 4) * 0.8, p.z + Math.cos(a + 4) * 0.8, { key: k, n });
+  if (owner && (owner.player || (owner.tank && owner.tank === state.vehicle))) {
+    state.infKills++;
+    showHit(owner.tank ? 'Пехотинец уничтожен' : 'Противник убит');
+  }
+};
+
+function damagePlayer(amount, bullet = false) {
   if (state.over || combat.god) return;
+  if (bullet && state.mode === 'walk' && Math.random() < 0.3) msg('Вы ранены!', '#ff9a7a');
   state.hp -= amount;
   state.lastDamageT = state.time;
   flashDamage();
@@ -251,7 +358,8 @@ function gameOver(reason) {
   if (state.over) return;
   state.over = true;
   $('goReason').textContent = reason;
-  $('goStats').textContent = `Пройдено: ${((state.maxZ - state.startZ) / 1000).toFixed(2)} км · Уничтожено танков: ${state.kills}`;
+  $('goStats').textContent = `Пройдено: ${((state.maxZ - state.startZ) / 1000).toFixed(2)} км · Уничтожено танков: ${state.kills}` +
+    ` · пехоты: ${state.infKills} · мир #${SEED}`;
   $('gameover').classList.remove('hidden');
   if (document.pointerLockElement) document.exitPointerLock();
   sfx.setEngine(false, 0);
@@ -278,14 +386,23 @@ document.addEventListener('keydown', e => {
   if (e.code === 'KeyG') dropHeld();
   if (e.code === 'KeyV' && state.mode === 'drive') toggleView();
   if (e.code === 'KeyQ') pressQ();
-  if (e.code === 'KeyR') { if (state.repairOpen) closeRepair(); else openRepair(); }
-  const dg = /^Digit([1-9])$/.exec(e.code);
+  if (e.code === 'KeyR') {
+    if (state.repairOpen) closeRepair();
+    else if (state.mode === 'walk' && !state.crane && !state.stash && startReload()) { /* reloading */ }
+    else if (state.mode === 'walk' && items.drawnWeapon() && !state.nearTank) {
+      const { w, W } = items.drawnWeapon();
+      if (w.mag >= W.mag) msg('Магазин полон');
+    } else openRepair();
+  }
+  if (e.code === 'KeyX' && state.mode === 'drive') toggleTankWeapon();
+  const dg = /^Digit([0-9])$/.exec(e.code);
   if (dg) {
-    const n = parseInt(dg[1], 10) - 1;
+    const n = (parseInt(dg[1], 10) + 9) % 10;          // 1..9 -> 0..8, 0 -> 9
     if (state.repairOpen) doRepair(n);
     else if (state.crane) doCrane(n);
     else if (state.stash) doStash(n);
     else if (state.mode === 'drive' && state.view === 'inside' && n < SEAT_KEYS.length) sitAt(SEAT_KEYS[n]);
+    else if (state.mode === 'walk' && n < 3) selectWeapon(n);
   }
 });
 
@@ -327,11 +444,14 @@ canvas.addEventListener('contextmenu', e => e.preventDefault());
 document.addEventListener('mousedown', e => {
   if (!state.started || state.paused || state.over) return;
   sfx.resume();
-  if (e.button === 0 && locked && state.mode === 'drive') state.fireReq = true;
+  if (e.button === 0 && locked && state.mode === 'drive') { if (state.wsel === 'mg') state.mgHeld = true; else state.fireReq = true; }
+  if (e.button === 0 && locked && state.mode === 'walk') state.fireHeld = true;
   if (e.button === 2 && canGun()) state.sight = true;
+  if (e.button === 2 && state.mode === 'walk') state.aim = true;
 });
 document.addEventListener('mouseup', e => {
-  if (e.button === 2) state.sight = false;
+  if (e.button === 2) { state.sight = false; state.aim = false; }
+  if (e.button === 0) { state.fireHeld = false; state.mgHeld = false; }
 });
 document.addEventListener('pointerlockchange', () => {
   locked = document.pointerLockElement === canvas;
@@ -456,12 +576,16 @@ function tryToggleVehicle() {
     if (v.crew) { msg('В этом танке живой экипаж!', '#ff9a7a'); return; }
     if (items.hands === 'plate') { stowPlate(v); return; }
     if (items.hands === 'shells') { loadShells(v); return; }
+    if (items.hands === 'sandbag') { placeSandbag(v); return; }
+    if (items.hands === 'canister') { msg('Удерживай F у танка — залить топливо в баки'); return; }
     if (items.hands) { msg('Руки заняты — брось ношу (G)'); return; }
     closeStash();
     closeCrane();
     state.mode = 'drive';
     state.vehicle = v;
     v.playerInside = true;
+    state.fireHeld = false; state.aim = false; state.reloadT = 0;
+    state.wsel = 'gun';
     if (v.team !== 'player') {
       msg(v.team === 'enemy' ? `Захвачен ${v.def.name} противника` : `Танк ${v.def.name} ваш`, '#9fe07f');
       v.team = 'player';
@@ -476,6 +600,7 @@ function tryToggleVehicle() {
     if (prefView === 'inside') enterInside();
     if (v.bayOpen) msg('Моторный отсек открыт — двигатель не заведётся. Выйди и закрой его (Q)', '#e8c96a');
     if (!v.parts.engine) msg('В танке нет двигателя', '#ff9a7a');
+    else if (v.fuel <= 0) msg(v.parts.fuel ? 'Баки пусты — нужна заправка или канистра' : 'Нет топливных баков — топливо некуда залить', '#ff9a7a');
   } else {
     const v = state.vehicle;
     const b = v.vis.hullBox;
@@ -640,6 +765,7 @@ function tankSlots(t) {
     { kind: 'fuel', pos: t.root.localToWorld(h.fuelAt.clone()), r: 0.85 },
   ];
   if (t.canMountGun()) res.push({ kind: 'gun', pos: t.gun.localToWorld(new THREE.Vector3(0, 0, 0.5)), r: 0.75 });
+  if (!t.wrecked) res.push({ kind: 'mg', pos: t.mgPivot.localToWorld(new THREE.Vector3(0, 0, t.mg ? 0.2 : 0)), r: 0.5 });
   if (!t.turretless && !t.parts.turret) res.push({ kind: 'drive', pos: t.root.localToWorld(h.ring.pos.clone()), r: 1.1 });
   return res;
 }
@@ -708,10 +834,40 @@ function standGunAction(st) {
   msg(`В руках: ${partLabel(gun)} — ${Math.round(gun.hp)}%`, '#e8c96a');
 }
 
+// machine gun on the pintle: take it off (into the big-weapon slot, filled from the tank's belts) / mount one
+function mgAction(t) {
+  if (!t.mg) {
+    const b = items.big;
+    if (!b || WEAPONS[b.key].cat !== 'mg') { msg('Пулемёта нет — поставить можно пулемёт (большое оружие), F'); return; }
+    items.big = null;
+    if (items.drawn === 'big') items.drawn = null;
+    t.setMG(b);
+    sfx.click();
+    msg(`Установлен пулемёт ${WEAPONS[b.key].name} на ${t.def.name} — питание от патронов ${WEAPONS[b.key].cal} в укладке (${t.mgAmmo})`, '#9fe07f');
+    return;
+  }
+  if (items.big && WEAPONS[items.big.key].cat !== 'mg') {
+    msg(`Место для большого оружия занято (${WEAPONS[items.big.key].name}) — положи его в танк или брось (G)`);
+    return;
+  }
+  const w = t.mg, W = WEAPONS[w.key];
+  const n = Math.min(W.mag - w.mag, t.cargo.ammo[W.cal] || 0);
+  w.mag += n;
+  t.cargo.ammo[W.cal] = (t.cargo.ammo[W.cal] || 0) - n;
+  const old = items.big;
+  t.setMG(old);
+  items.big = w;
+  items.drawn = 'big';
+  state.reloadT = 0;
+  sfx.click();
+  msg(`Снят пулемёт ${W.name} (${w.mag}/${W.mag})` + (old ? ` — вместо него поставлен ${WEAPONS[old.key].name}` : ''), '#e8c96a');
+}
+
 function slotAction(sl) {
   if (sl.stand) { standGunAction(sl.stand); return; }
   const t = sl.tank, kind = sl.kind;
   if (t.crew) { msg('В этом танке живой экипаж!', '#ff9a7a'); return; }
+  if (kind === 'mg') { mgAction(t); return; }
   if (kind === 'engine' && !t.bayOpen) { t.setBay(true); sfx.click(); msg(`Моторный отсек ${t.def.hullName} открыт`); return; }
   const part = t.parts[kind];
   if (!part) { msg(`${PART_NAMES[kind]}: пусто — принеси подходящую деталь`); return; }
@@ -756,6 +912,12 @@ function pressF() {
   }
   if (state.crane) { closeCrane(); return; }
   if (items.hands === 'plate') return;         // welding is a hold action
+  if (items.hands === 'canister') { if (!state.nearTank) msg('Подойди к танку и удерживай F — залить топливо'); return; }
+  if (items.hands === 'sandbag') {
+    const t = state.nearTank;
+    if (t && !t.wrecked && !t.crew) placeSandbag(t); else msg('Подойди к танку, чтобы положить мешок');
+    return;
+  }
   if (items.hands === 'shells') {
     const t = state.nearTank;
     if (t && !t.wrecked && !t.crew) loadShells(t); else msg('Подойди к танку, чтобы зарядить снаряды');
@@ -781,6 +943,15 @@ function pressF() {
 const PLATES_MAX = 4;
 const shellKey = t => t.parts.gun ? t.parts.gun.key : t.key;
 
+function placeSandbag(t) {
+  if (!t.addSandbag()) { msg(`На ${t.def.name} больше не уложить — ${SANDBAG.max} мешков максимум`); return; }
+  items.hands = null;
+  sfx.click();
+  const f = t.bagCount('front'), sd = t.bagCount('side');
+  msg(`Мешок с песком уложен на ${t.def.name} (${t.bags.length}/${SANDBAG.max}): лоб +${f * SANDBAG.front} мм, борт +${sd * SANDBAG.side} мм, ` +
+      `масса ${t.def.weight.toFixed(1)} т`, '#c9b48a');
+}
+
 function stowPlate(t) {
   if (t.plates >= PLATES_MAX) { msg(`В ${t.def.name} больше не уложить — ${PLATES_MAX} бронелиста максимум`); return; }
   t.plates++;
@@ -792,7 +963,7 @@ function stowPlate(t) {
 function loadShells(t) {
   const b = items.handShells;
   if (!t.parts.gun) { msg('В танке нет орудия — снаряды некуда заряжать'); return; }
-  if (t.parts.gun.key !== b.key) {
+  if (GUNS[t.parts.gun.key].caliber !== b.caliber) {
     msg(`Снаряды ${b.caliber} не подходят к орудию ${GUNS[t.parts.gun.key].caliber}`, '#ff9a7a');
     return;
   }
@@ -806,10 +977,41 @@ function loadShells(t) {
   msg(`Загружено снарядов: ${n} (${Math.floor(t.ammo)}/${t.def.ammoMax})` + (b.n > 0 ? ` — в ящике осталось ${b.n}` : ''), '#9fe07f');
 }
 
+const sumAmmo = o => Object.entries(o).filter(([, n]) => n > 0);
+const ammoText = o => sumAmmo(o).map(([c, n]) => `${c}×${n}`).join(', ') || 'нет';
+const grenText = o => sumAmmo(o).map(([k, n]) => `${GRENADES[k].name.split(' ')[0]}×${n}`).join(', ');
+
+function armsOptions(t) {
+  const c = t.cargo;
+  const full = c.weapons.length >= 5;
+  const put = slot => {
+    const w = items[slot];
+    return { id: 'put', slot, label: `Положить: ${w ? WEAPONS[w.key].name : slot === 'small' ? 'малое оружие' : 'большое оружие'}`,
+             ok: !!w && !full, note: !w ? 'нет' : full ? 'места нет (5)' : `${w.mag}/${WEAPONS[w.key].mag}` };
+  };
+  const mine = new Set([items.small, items.big].filter(Boolean).map(w => WEAPONS[w.key].cal));
+  const takeable = sumAmmo(c.ammo).filter(([cal]) => mine.has(cal));
+  const res = [
+    put('small'), put('big'),
+    { id: 'putAmmo', label: 'Выложить свои патроны и гранаты', ok: sumAmmo(items.ammo).length + sumAmmo(items.grenades).length > 0,
+      note: [ammoText(items.ammo), grenText(items.grenades)].filter(x => x && x !== 'нет').join('; ') || 'нет' },
+    { id: 'takeAmmo', label: 'Забрать патроны к своему оружию и гранаты', ok: takeable.some(([k, n]) => n > 1 || !t.mg || WEAPONS[t.mg.key].cal !== k) || sumAmmo(c.grenades).length > 0,
+      note: [takeable.map(([k, n]) => `${k}×${n}`).join(', '), grenText(c.grenades)].filter(Boolean).join('; ') || 'нет' },
+  ];
+  c.weapons.forEach((w, i) => {
+    const W = WEAPONS[w.key], slot = isSmall(w.key) ? 'small' : 'big';
+    res.push({ id: 'take', i, label: `Взять: ${W.name}`, ok: true,
+               note: `${CAT_NAMES[W.cat].toLowerCase()}, ${w.mag}/${W.mag}` + (items[slot] ? ' — обмен' : '') });
+  });
+  return res;
+}
+
 function stashOptions(t) {
+  if (state.stashPage === 'arms') return armsOptions(t);
   const kits = t.loot.repair_kit, torches = t.loot.torch || 0;
   const ammo = Math.floor(t.ammo), key = shellKey(t);
   const handsFree = !items.hands;
+  const nw = t.cargo.weapons.length;
   return [
     { id: 'kits', label: 'Ремкомплекты', ok: kits > 0, note: kits > 0 ? `×${kits} — забрать` : 'нет' },
     { id: 'torch', label: 'Газовые горелки', ok: torches > 0, note: torches > 0 ? `×${torches} — забрать` : 'нет' },
@@ -817,6 +1019,10 @@ function stashOptions(t) {
       note: t.plates > 0 ? `${t.plates}/${PLATES_MAX}` + (handsFree ? '' : ' — руки заняты') : 'нет' },
     { id: 'shells', label: `Снаряды ${GUNS[key].caliber} в руки`, ok: ammo > 0 && handsFree,
       note: ammo > 0 ? `${ammo} шт. — ящик до ${SHELLS_PER_BOX}` + (handsFree ? '' : ', руки заняты') : 'нет' },
+    { id: 'bag', label: 'Снять мешок с песком', ok: t.bags.length > 0 && handsFree,
+      note: t.bags.length ? `${t.bags.length}/${SANDBAG.max}` + (handsFree ? '' : ' — руки заняты') : 'нет' },
+    { id: 'arms', label: 'Оружие и патроны →', ok: true,
+      note: `оружия ${nw}, патроны: ${ammoText(t.cargo.ammo)}`.slice(0, 60) },
   ];
 }
 
@@ -824,6 +1030,7 @@ function openStash(t) {
   closeRepair();
   closeCrane();
   state.stash = t;
+  state.stashPage = 'main';
   renderStash();
 }
 function closeStash() {
@@ -834,19 +1041,73 @@ function closeStash() {
 function renderStash() {
   const t = state.stash;
   if (!t) return;
-  let html = `<h3>УКЛАДКА — ${t.def.name}</h3>`;
+  const arms = state.stashPage === 'arms';
+  let html = `<h3>${arms ? 'ОРУЖИЕ И ПАТРОНЫ' : 'УКЛАДКА'} — ${t.def.name}</h3>`;
+  if (arms && t.mg) html += `<div class="info">Пулемёт ${WEAPONS[t.mg.key].name}: патронов ${WEAPONS[t.mg.key].cal} в укладке — <b>${t.mgAmmo}</b></div>`;
   stashOptions(t).forEach((o, i) => {
     html += `<div class="opt ${o.ok ? '' : 'off'}"><span><b>${i + 1}</b>${o.label}</span><span>${o.note}</span></div>`;
   });
-  html += `<div class="foot">Цифра — взять · F / ESC — закрыть<br>С бронелистом или ящиком снарядов в руках у танка: <b>E</b> — уложить / зарядить</div>`;
+  html += arms ? `<div class="foot"><b>0</b> — назад · F / ESC — закрыть · патроны калибра пулемёта питают пулемёт танка</div>`
+    : `<div class="foot">Цифра — взять · F / ESC — закрыть<br>С бронелистом, ящиком снарядов или мешком с песком в руках у танка: <b>E</b> — уложить / зарядить</div>`;
   repairEl.innerHTML = html;
   repairEl.style.display = 'block';
 }
+function doArms(t, i) {
+  if (i === 9) { state.stashPage = 'main'; renderStash(); return; }
+  const o = armsOptions(t)[i];
+  if (!o) return;
+  if (!o.ok) { msg(`${o.label}: ${o.note}`); return; }
+  const c = t.cargo;
+  if (o.id === 'put') {
+    const w = items[o.slot];
+    items[o.slot] = null;
+    if (items.drawn === o.slot) { items.drawn = null; state.reloadT = 0; }
+    c.weapons.push(w);
+    msg(`Уложено в ${t.def.name}: ${weaponLabel(w)}`, '#e8c96a');
+  } else if (o.id === 'putAmmo') {
+    for (const [k, n] of sumAmmo(items.ammo)) c.ammo[k] = (c.ammo[k] || 0) + n;
+    for (const [k, n] of sumAmmo(items.grenades)) c.grenades[k] = (c.grenades[k] || 0) + n;
+    items.ammo = {}; items.grenades = {};
+    if (items.drawn === 'grenade') items.drawn = null;
+    msg(`Патроны и гранаты уложены в ${t.def.name}`, '#e8c96a');
+  } else if (o.id === 'takeAmmo') {
+    const mine = new Set([items.small, items.big].filter(Boolean).map(w => WEAPONS[w.key].cal));
+    const got = [];
+    const mgCal = t.mg && WEAPONS[t.mg.key].cal;
+    for (const [k, n] of sumAmmo(c.ammo)) {
+      if (!mine.has(k)) continue;
+      const take = k === mgCal ? Math.floor(n / 2) : n;      // half of the belts stay with the tank's machine gun
+      if (take <= 0) continue;
+      items.addAmmo(k, take); c.ammo[k] = n - take; got.push(ammoLabel(k, take));
+    }
+    for (const [k, n] of sumAmmo(c.grenades)) { items.addGrenades(k, n); c.grenades[k] = 0; got.push(grenadeLabel(k, n)); }
+    msg(`Взято из ${t.def.name}: ${got.join(', ')}`, '#e8c96a');
+  } else if (o.id === 'take') {
+    const [w] = c.weapons.splice(o.i, 1);
+    const old = items.giveWeapon(w);
+    if (old) c.weapons.push(old);
+    msg(`Взято: ${weaponLabel(w)}` + (old ? ` — в танк уложено ${WEAPONS[old.key].name}` : ''), '#e8c96a');
+  }
+  sfx.click();
+  renderStash();
+}
+
 function doStash(i) {
   const t = state.stash;
+  if (!t) return;
+  if (state.stashPage === 'arms') { doArms(t, i); return; }
   const o = stashOptions(t)[i];
   if (!o) return;
   if (!o.ok) { msg(`${o.label}: ${o.note}`); return; }
+  if (o.id === 'arms') { state.stashPage = 'arms'; sfx.click(); renderStash(); return; }
+  if (o.id === 'bag') {
+    t.removeSandbag();
+    items.hands = 'sandbag';
+    msg(`Мешок с песком снят с ${t.def.name} (осталось ${t.bags.length})`, '#c9b48a');
+    closeStash();
+    sfx.click();
+    return;
+  }
   if (o.id === 'kits') {
     items.give('repair_kit', t.loot.repair_kit);
     msg(`Взято из танка: ремкомплект ×${t.loot.repair_kit}`, '#e8c96a');
@@ -874,10 +1135,29 @@ function doStash(i) {
 }
 
 function dropHeld() {
-  if (state.mode !== 'walk' || !items.hands) return;
+  if (state.mode !== 'walk') return;
   const d = new THREE.Vector3(Math.sin(state.yaw), 0, Math.cos(state.yaw));
   const x = player.position.x + d.x * 1.6, z = player.position.z + d.z * 1.6;
-  if (items.hands === 'plate') {
+  if (!items.hands) {
+    // no load in the hands: drop the drawn weapon
+    const slot = items.drawn;
+    if (slot === 'small' || slot === 'big') {
+      const w = items[slot];
+      items[slot] = null;
+      items.drawn = null;
+      state.reloadT = 0;
+      items.drop('weapon', x, z, w);
+      msg(`Брошено: ${weaponLabel(w)}`);
+    }
+    return;
+  }
+  if (items.hands === 'canister' || items.hands === 'sandbag') {
+    const type = items.hands, data = items.handCan;
+    items.hands = null;
+    items.handCan = null;
+    items.drop(type, x, z, data);
+    msg(type === 'canister' ? `Канистра поставлена (${Math.round(data.fuel)} л)` : 'Мешок с песком брошен');
+  } else if (items.hands === 'plate') {
     items.hands = null;
     items.drop('plate', x, z);
     msg('Бронелист брошен');
@@ -899,6 +1179,8 @@ function currentHoldAction() {
   if (state.mode !== 'walk') return null;
   const t = state.nearTank;
   if (!t || t.wrecked) return null;
+  if (items.hands === 'canister' && keys['KeyF'] && t.parts.fuel && t.hp.fuel > 0 && t.fuel < t.fuelMax - 0.2 && items.handCan.fuel > 0)
+    return { kind: 'pour', tank: t, need: 1, text: 'Заливаю топливо...' };
   if (items.hands === 'plate' && keys['KeyF'] && items.inventory.torch > 0 && t.hp.hull < 100)
     return { kind: 'weld', tank: t, need: 3.5, text: 'Привариваю бронелист...' };
   if (!items.hands && keys['KeyT'] && items.inventory.cutter > 0 && !t.crew && t.hp.hull >= 75)
@@ -913,6 +1195,27 @@ function updateHold(dt) {
   if (!state.hold) state.hold = { ...a, t: 0 };
   const h = state.hold;
   h.t += dt;
+  if (h.kind === 'pour') {
+    const can = items.handCan, t = h.tank;
+    const n = Math.min(8 * dt, can.fuel, t.fuelMax - t.fuel);
+    t.fuel += n;
+    can.fuel -= n;
+    if (Math.random() < dt * 3) sfx.pour();
+    $('hold').style.display = 'block';
+    $('holdText').textContent = `Заливаю топливо: баки ${Math.round(t.fuel)} / ${t.fuelMax} л, в канистре ${can.fuel.toFixed(0)} л`;
+    $('holdFill').style.width = `${Math.min(100, (1 - can.fuel / CANISTER_L) * 100)}%`;
+    if (can.fuel <= 0.05) {
+      items.hands = null; items.handCan = null;
+      state.hold = null;
+      $('hold').style.display = 'none';
+      msg(`Канистра пуста — выброшена. ${t.def.name}: ${Math.round(t.fuel)} / ${t.fuelMax} л`, '#9fe07f');
+    } else if (t.fuel >= t.fuelMax - 0.2) {
+      state.hold = null;
+      $('hold').style.display = 'none';
+      msg(`Баки полны (${t.fuelMax} л), в канистре осталось ${can.fuel.toFixed(0)} л`, '#9fe07f');
+    }
+    return;
+  }
   $('hold').style.display = 'block';
   $('holdText').textContent = h.text;
   $('holdFill').style.width = `${Math.min(100, h.t / h.need * 100)}%`;
@@ -1044,6 +1347,17 @@ function currentZone(p) {
   return null;
 }
 
+// belts for the pintle machine gun (up to MG_BELTS rounds)
+const MG_BELTS = 600;
+function refillMG(v, dt) {
+  if (!v.mg) return false;
+  const cal = WEAPONS[v.mg.key].cal;
+  const n = v.cargo.ammo[cal] || 0;
+  if (n >= MG_BELTS) return false;
+  v.cargo.ammo[cal] = Math.min(MG_BELTS, n + Math.ceil(60 * dt));
+  return true;
+}
+
 function serviceTank(v, zone, dt) {
   if (!zone || Math.abs(v.speed) > 1.5) return null;
   if (zone.type === 'repair') {
@@ -1061,6 +1375,7 @@ function serviceTank(v, zone, dt) {
       }
     }
     if (v.ammo < v.def.ammoMax) { v.ammo = Math.min(v.def.ammoMax, v.ammo + 4 * dt); busy = true; }
+    if (refillMG(v, dt)) busy = true;
     if (v.extinguishers < 3) { v.extinguishers = 3; busy = true; }
     if (v.fire) { v.fire = null; busy = true; }
     if (!busy && v.hp.hull >= 100 && v.marks.length) v.clearMarks();
@@ -1072,10 +1387,156 @@ function serviceTank(v, zone, dt) {
     return 'Бак полон';
   }
   if (zone.type === 'ammo') {
+    const mg = refillMG(v, dt);
     if (v.ammo < v.def.ammoMax) { v.ammo = Math.min(v.def.ammoMax, v.ammo + 3 * dt); return 'Загрузка снарядов...'; }
+    if (mg) return 'Набивка пулемётных лент...';
     return 'Боекомплект полон';
   }
   return null;
+}
+
+// ================== small arms on foot ==================
+const SLOT_NAMES = ['small', 'big', 'grenade'];
+function selectWeapon(i) {
+  const slot = SLOT_NAMES[i];
+  if (items.hands) { msg('Руки заняты — сначала брось или уложи ношу (G / E)'); return; }
+  state.reloadT = 0;
+  if (slot === 'grenade') {
+    const ks = Object.keys(items.grenades).filter(k => items.grenades[k] > 0);
+    if (!ks.length) { msg('Гранат нет'); return; }
+    if (items.drawn === 'grenade' && ks.length > 1) items.grenadeKey = ks[(ks.indexOf(items.grenadeKey) + 1) % ks.length];
+    else if (!ks.includes(items.grenadeKey)) items.grenadeKey = ks[0];
+    items.drawn = 'grenade';
+    msg(`Граната: ${GRENADES[items.grenadeKey].name} (${items.grenades[items.grenadeKey]})` + (ks.length > 1 ? ' — 3 ещё раз: другая' : ''), '#c9b48a');
+    return;
+  }
+  if (!items[slot]) { msg(slot === 'small' ? 'Малого оружия нет (пистолет, револьвер, ПП)' : 'Большого оружия нет (винтовка, автомат, пулемёт)'); return; }
+  items.drawn = items.drawn === slot ? null : slot;
+}
+
+function startReload() {
+  const d = items.drawnWeapon();
+  if (!d || items.hands || state.reloadT > 0) return false;
+  const { w, W } = d;
+  if (w.mag >= W.mag) return false;
+  if (!(items.ammo[W.cal] > 0)) { msg(`Нет патронов ${W.cal}`); return false; }
+  state.reloadT = W.reload;
+  sfx.reload();
+  return true;
+}
+function finishReload() {
+  const d = items.drawnWeapon();
+  if (!d) return;
+  const { w, W } = d;
+  const n = Math.min(W.mag - w.mag, items.ammo[W.cal] || 0);
+  w.mag += n;
+  items.ammo[W.cal] -= n;
+}
+
+function lookDir(out = new THREE.Vector3()) { return camera.getWorldDirection(out); }
+
+function shootWeapon(w, W) {
+  state.fireLatch = true;
+  state.wCool += 60 / W.rpm;
+  w.mag--;
+  const moving = Math.min(1, playerVel.length() / PLAYER_SPEED);
+  let sp = (state.aim ? W.aim : W.spread) * (1 + moving * 1.5) * (state.crouch ? 0.7 : 1);
+  const dir = lookDir();
+  dir.x += (Math.random() - 0.5) * 2 * sp; dir.y += (Math.random() - 0.5) * 2 * sp; dir.z += (Math.random() - 0.5) * 2 * sp;
+  dir.normalize();
+  viewModel.updateMatrixWorld(true);
+  const muzzle = viewModel.localToWorld(new THREE.Vector3(0, vmTop - 0.02, -vmMuzzle));
+  guns.fire(camera.position.clone(), dir, W, { player: true }, muzzle, W.cat !== 'rifle');
+  // recoil
+  state.pitch = Math.min(1.45, state.pitch + W.recoil * (state.aim ? 0.55 : 1) * (0.7 + Math.random() * 0.6));
+  state.yaw += (Math.random() - 0.5) * W.recoil * 0.5;
+  state.kick = 1;
+  if (w.mag <= 0) startReload();
+}
+
+function throwGrenade() {
+  const key = items.grenadeKey;
+  if (!key || !(items.grenades[key] > 0)) { msg('Гранат нет'); items.drawn = null; return; }
+  const dir = lookDir();
+  const vel = dir.clone().multiplyScalar(state.aim ? 19 : 15).add(new THREE.Vector3(0, 3.5, 0)).add(playerVel);
+  guns.throwGrenade(camera.position.clone().addScaledVector(dir, 0.5), vel, key, { player: true });
+  items.grenades[key]--;
+  state.wCool = 0.9;
+  state.kick = 1;
+  if (!items.grenades[key]) {
+    const ks = Object.keys(items.grenades).filter(k => items.grenades[k] > 0);
+    items.grenadeKey = ks[0] || null;
+    if (!ks.length) items.drawn = null;
+  }
+}
+
+function updateWeapon(dt) {
+  if (state.wCool > 0) state.wCool -= dt;
+  if (state.reloadT > 0) { state.reloadT -= dt; if (state.reloadT <= 0) { state.reloadT = 0; finishReload(); } }
+  const busy = !!items.hands || state.repairOpen || !!state.crane || !!state.stash || (!locked && !state.noLock);
+  if (!busy && state.fireHeld && state.wCool <= 0) {
+    if (items.drawn === 'grenade') { if (!state.fireLatch) { state.fireLatch = true; throwGrenade(); } }
+    else {
+      const d = items.drawnWeapon();
+      // fast-firing guns may fire several rounds in one frame
+      for (let k = 0; k < 3 && d && state.wCool <= 0 && state.reloadT <= 0 && (d.W.auto || !state.fireLatch); k++) {
+        if (d.w.mag > 0) shootWeapon(d.w, d.W);
+        else { if (!state.fireLatch) { state.fireLatch = true; if (!startReload()) sfx.click(); } break; }
+      }
+    }
+  }
+  if (!state.fireHeld) state.fireLatch = false;
+  if (state.wCool < 0 && !state.fireHeld) state.wCool = 0;
+  updateViewModel(dt);
+}
+
+// first-person weapon model: hip / aimed pose, recoil kick, reload dip, walking bob
+function updateViewModel(dt) {
+  const walking = state.mode === 'walk';
+  const d = items.drawnWeapon();
+  const key = !walking || items.hands ? null : items.drawn === 'grenade' ? 'g:' + items.grenadeKey : d ? d.w.key : null;
+  if (key !== vmKey) {
+    viewModel.clear();
+    vmKey = key;
+    // models point along +Z, the camera looks along -Z
+    if (key && key.startsWith('g:')) {
+      const g = buildGrenadeMesh(key.slice(2));
+      g.scale.setScalar(1.1);
+      viewModel.add(g);
+      vmMuzzle = 0.05; vmTop = 0.1;
+    } else if (key) {
+      const v = weaponMesh(key);
+      v.group.traverse(o => { if (o.isMesh) o.castShadow = false; });
+      v.group.rotation.set(0.02, Math.PI + 0.09, 0);      // muzzle a little in towards the crosshair
+      viewModel.add(v.group);
+      vmMuzzle = v.muzzle; vmTop = v.top;
+    }
+  }
+  viewModel.visible = !!key;
+  if (!key) return;
+  const aimT = state.aim && items.drawn !== 'grenade' && state.reloadT <= 0 ? 1 : 0;
+  state.aimK += (aimT - state.aimK) * Math.min(1, dt * 12);
+  state.kick *= Math.pow(0.001, dt);
+  const small = d && isSmall(d.w.key);
+  const hip = items.drawn === 'grenade' ? [0.2, -0.22, -0.36] : small ? [0.15, -0.14, -0.44] : [0.19, -0.19, -0.48];
+  const aimP = [0, -vmTop - (small ? 0.015 : 0.03), small ? -0.46 : -0.44];
+  const bob = Math.min(1, playerVel.length() / 6) * (1 - state.aimK);
+  const bt = state.time * 9;
+  const k = state.aimK;
+  viewModel.position.set(
+    hip[0] + (aimP[0] - hip[0]) * k + Math.sin(bt) * 0.012 * bob,
+    hip[1] + (aimP[1] - hip[1]) * k + Math.abs(Math.cos(bt)) * 0.012 * bob - (state.reloadT > 0 ? 0.12 : 0),
+    hip[2] + (aimP[2] - hip[2]) * k + state.kick * 0.05);
+  // muzzle climbs on recoil, the gun tilts down while reloading
+  viewModel.rotation.set(state.kick * 0.12 - (state.reloadT > 0 ? 0.6 : 0), -0.09 * k, (state.reloadT > 0 ? 0.4 : 0));
+}
+
+function toggleTankWeapon() {
+  const v = state.vehicle;
+  if (!v.mg) { msg('На танке нет пулемёта'); state.wsel = 'gun'; return; }
+  state.wsel = state.wsel === 'gun' ? 'mg' : 'gun';
+  state.mgHeld = false;
+  msg(state.wsel === 'mg' ? `Пулемёт ${WEAPONS[v.mg.key].name} (${v.mgAmmo} патр.)` : `Орудие ${v.def.caliber}`, '#c9b48a');
 }
 
 // ================== player movement ==================
@@ -1105,8 +1566,15 @@ function updateWalk(dt) {
 
   world.collideTrees(p, 0.35);
   world.collideObstacles(p, 0.4);
+  if (state.runOverT > 0) state.runOverT -= dt;
   for (const t of tanks) {
-    if (tankDist(t, p) < 1.5) pushOut(tankObstacle(t), p, 0.4);
+    const td = tankDist(t, p);
+    if (td < 0.45 && Math.abs(t.speed) > 2.5 && state.runOverT <= 0) {
+      state.runOverT = 1;
+      damagePlayer(20 + Math.abs(t.speed) * 6);
+      msg('Вас сбил танк!', '#ff9a7a');
+    }
+    if (td < 1.5) pushOut(tankObstacle(t), p, 0.4);
   }
 
   const ground = world.heightAt(p.x, p.z);
@@ -1117,8 +1585,10 @@ function updateWalk(dt) {
   if (keys['Space'] && state.onGround && !carrying) { state.velY = JUMP_V; state.onGround = false; }
   playerVel.set((p.x - ox) / dt, 0, (p.z - oz) / dt);
 
-  camera.fov = BASE_FOV;
-  camera.updateProjectionMatrix();
+  const dw = items.drawnWeapon();
+  const zoom = dw && !items.hands ? (dw.W.m.scope ? 24 : isSmall(dw.w.key) ? 60 : 52) : BASE_FOV;
+  const fov = BASE_FOV + (zoom - BASE_FOV) * state.aimK;
+  if (Math.abs(camera.fov - fov) > 0.01 || camera.near !== 0.05) { camera.fov = fov; camera.near = 0.05; camera.updateProjectionMatrix(); }
   const eyeY = p.y + (state.crouch ? 1.1 : 1.7);
   camera.position.set(p.x, eyeY, p.z);
   const dir = new THREE.Vector3(Math.sin(state.yaw) * Math.cos(state.pitch), Math.sin(state.pitch), Math.cos(state.yaw) * Math.cos(state.pitch));
@@ -1138,7 +1608,21 @@ function updateDriveControls() {
   c.brake = drive && keys['Space'] ? 1 : 0;
   if (canGun()) { if (aimHit) v.aimPoint = aimHit.point; }
   else v.aimPoint = null;
+  v.mgTarget = canGun() && aimHit ? aimHit.point : null;
   if (!canGun()) state.sight = false;
+  if (!v.mg && state.wsel === 'mg') state.wsel = 'gun';
+
+  if (state.wsel === 'mg' && state.mgHeld) {
+    if (!canGun()) { msg('Стрелять можно с места наводчика или командира (2 / 1)'); state.mgHeld = false; }
+    else if (v.mgAmmo <= 0) { msg(`Патроны ${WEAPONS[v.mg.key].cal} к пулемёту кончились — уложи их в танк`, '#ff9a7a'); state.mgHeld = false; }
+    else {
+      for (let k = 0; k < 3; k++) {
+        const sh = v.fireMG(state.sight ? 0.6 : 1);
+        if (!sh) break;
+        guns.fire(sh.origin, sh.dir, sh.W, { tank: v, player: true }, sh.origin, Math.random() < 0.6);
+      }
+    }
+  }
 
   if (state.fireReq) {
     state.fireReq = false;
@@ -1281,7 +1765,9 @@ function updateSystemsPanel(t, own) {
   drawSchematic(t);
   const d = t.def;
   let rows = `<div class="spec">${d.power} л.с. · ${d.weight.toFixed(1)} т · ${d.pw.toFixed(1)} л.с./т` +
-    (t.turretless ? '' : ` · башня ${t.parts.turret ? ORIGIN_NAMES[t.parts.turret.key] : '<span class="bad">нет</span>'}`) + '</div>';
+    (t.turretless ? '' : ` · башня ${t.parts.turret ? ORIGIN_NAMES[t.parts.turret.key] : '<span class="bad">нет</span>'}`) +
+    `<br>топливо ${Math.round(t.fuel)}/${t.fuelMax} л · ${t.mg ? 'пулемёт ' + WEAPONS[t.mg.key].name : 'без пулемёта'}` +
+    (t.bags.length ? ` · мешков ${t.bags.length}` : '') + '</div>';
   rows += SYSTEM_IDS.map(id => {
     const hp = Math.round(t.hp[id]);
     const kind = SYSTEM_PART[id];
@@ -1306,8 +1792,22 @@ function updateInventory() {
     if (k !== 'repair_kit' && n) v = `газ ${Math.ceil(items.charge[k])}%` + (n > 1 ? ` · ×${n}` : '');
     html += `<div class="row ${n ? '' : 'none'}"><span>${ITEM_DEFS[k].icon} ${ITEM_DEFS[k].name}</span><span>${v}</span></div>`;
   }
+  // small arms
+  html += `<h4 style="margin-top:6px">ОРУЖИЕ</h4>`;
+  for (const [i, slot] of [[1, 'small'], [2, 'big']]) {
+    const w = items[slot];
+    const W = w && WEAPONS[w.key];
+    html += `<div class="row ${w ? '' : 'none'} ${items.drawn === slot ? 'sel' : ''}"><span><b>${i}</b> ${W ? W.name : slot === 'small' ? 'малое —' : 'большое —'}</span>` +
+            `<span>${W ? `${w.mag}/${W.mag} · ${items.ammo[W.cal] || 0}` : ''}</span></div>`;
+  }
+  const gt = items.grenadeTotal();
+  html += `<div class="row ${gt ? '' : 'none'} ${items.drawn === 'grenade' ? 'sel' : ''}"><span><b>3</b> Гранаты</span><span>${gt ? grenText(items.grenades) : '—'}</span></div>`;
+  const spare = sumAmmo(items.ammo).filter(([c]) => ![items.small, items.big].some(w => w && WEAPONS[w.key].cal === c));
+  if (spare.length) html += `<div class="row none"><span>патроны</span><span>${spare.map(([c, n]) => `${c}×${n}`).join(' ')}</span></div>`;
   const held = !items.hands ? '—' : items.hands === 'shells' ? `${ITEM_DEFS.shells.icon} ${shellsLabel(items.handShells)}`
-    : items.hands === 'part' ? `${ITEM_DEFS.part.icon} ${partLabel(items.handPart)}` : ITEM_DEFS[items.hands].icon + ' ' + ITEM_DEFS[items.hands].name;
+    : items.hands === 'part' ? `${ITEM_DEFS.part.icon} ${partLabel(items.handPart)}`
+    : items.hands === 'canister' ? `${ITEM_DEFS.canister.icon} канистра, ${Math.round(items.handCan.fuel)} л`
+    : ITEM_DEFS[items.hands].icon + ' ' + ITEM_DEFS[items.hands].name;
   html += `<div class="hands">В руках: ${held}</div>`;
   if (html !== invKey) { invEl.innerHTML = html; invKey = html; }
 }
@@ -1322,15 +1822,39 @@ function updateGauge(v) {
     : `<div class="gline seat"><span>Вид</span><b>снаружи (V — изнутри)</b></div>`;
   const rt = v.reloadTime;
   const rl = v.hp.gun <= 0 ? 0 : Math.max(0, 1 - v.reload / rt);
-  const fuelP = v.fuel / v.def.fuelMax * 100;
+  const fuelP = v.fuelMax > 0 ? v.fuel / v.fuelMax * 100 : 0;
+  const mgW = v.mg && WEAPONS[v.mg.key];
   $('gaugeInfo').innerHTML = view +
     `<div class="gline"><span>Снаряды</span><b>${Math.floor(v.ammo)} / ${v.def.ammoMax}</b></div>` +
     `<div class="gline"><span>${!v.parts.gun ? 'Орудия нет' : v.hp.gun <= 0 ? 'Орудие уничтожено' : rl >= 1 ? 'Заряжено' : 'Перезарядка ' + Math.max(0, v.reload).toFixed(1) + ' с'}</span></div>` +
     `<div class="mbar"><i style="width:${rl * 100}%;background:${rl >= 1 ? '#7fe07f' : '#e8a53a'}"></i></div>` +
-    `<div class="gline"><span>Топливо</span><b>${fuelP.toFixed(0)}%</b></div>` +
+    (mgW ? `<div class="gline ${state.wsel === 'mg' ? 'seat' : ''}"><span>${state.wsel === 'mg' ? '▶ ' : ''}Пулемёт ${mgW.name}</span><b>${v.mgAmmo}</b></div>`
+         : `<div class="gline"><span>Пулемёта нет</span></div>`) +
+    `<div class="gline"><span>${state.wsel === 'gun' ? '▶ орудие' : 'X — орудие / пулемёт'}</span></div>` +
+    `<div class="gline"><span>Топливо</span><b>${Math.round(v.fuel)} / ${v.fuelMax} л</b></div>` +
     `<div class="mbar"><i style="width:${fuelP}%;background:${fuelP < 15 ? '#e0503a' : '#c9b48a'}"></i></div>` +
     `<div class="gline"><span>Огнетушители</span><b>${v.extinguishers}</b></div>` +
-    `<div class="gline"><span>Бронелисты в укладке</span><b>${v.plates}</b></div>`;
+    `<div class="gline"><span>Бронелисты в укладке</span><b>${v.plates}</b></div>` +
+    (v.bags.length ? `<div class="gline"><span>Мешки с песком</span><b>${v.bags.length}</b></div>` : '');
+}
+
+// weapon in hands (on foot)
+const weaponEl = $('weapon');
+function updateWeaponPanel() {
+  if (state.mode !== 'walk' || !items.drawn || items.hands) { weaponEl.style.display = 'none'; return; }
+  let html;
+  if (items.drawn === 'grenade') {
+    const k = items.grenadeKey;
+    html = `<div class="wname">${k ? GRENADES[k].name : 'Гранаты'}</div><div class="wammo">${k ? items.grenades[k] || 0 : 0}</div>` +
+           `<div class="wsub">ЛКМ — бросить · ПКМ — дальше · 3 — другая</div>`;
+  } else {
+    const { w, W } = items.drawnWeapon();
+    html = `<div class="wname">${W.name}</div><div class="wammo">${w.mag}<small> / ${items.ammo[W.cal] || 0}</small></div>` +
+           `<div class="wsub">${CAT_NAMES[W.cat]} · ${W.cal} · ${W.auto ? 'авто' : 'одиночный'}` +
+           (state.reloadT > 0 ? ` · <b>перезарядка ${state.reloadT.toFixed(1)} с</b>` : w.mag === 0 ? ' · <b>R — перезарядить</b>' : '') + '</div>';
+  }
+  weaponEl.innerHTML = html;
+  weaponEl.style.display = 'block';
 }
 
 // enemy / tank markers
@@ -1441,6 +1965,13 @@ function drawMinimap(anchor, heading) {
     mmCtx.fillStyle = it.type === 'plate' ? '#9fd0ff' : '#ffe070';
     mmCtx.beginPath(); mmCtx.arc(x, y, 2, 0, 7); mmCtx.fill();
   }
+  // infantry that sees us / is close
+  mmCtx.fillStyle = '#ff7a5a';
+  for (const sd of infantry.soldiers) {
+    if (!sd.alive || !(sd.los || sd.pos.distanceTo(anchor) < 60)) continue;
+    const [x, y] = toMap(sd.pos.x, sd.pos.z);
+    mmCtx.fillRect(x - 1.5, y - 1.5, 3, 3);
+  }
   // tanks
   for (const t of tanks) {
     if (t === state.vehicle) continue;
@@ -1486,8 +2017,18 @@ function slotPrompt(sl, lines) {
     }
     return;
   }
-  const t = sl.tank, kind = sl.kind, part = t.parts[kind];
+  const t = sl.tank, kind = sl.kind;
+  if (kind === 'mg') {
+    if (t.crew) { lines.push(`Пулемёт · ${t.def.hullName}: в танке экипаж`); return; }
+    if (items.hands) return;
+    if (t.mg) lines.push(`<b>F</b> — снять пулемёт ${WEAPONS[t.mg.key].name} (${WEAPONS[t.mg.key].cal}, в укладке ${t.mgAmmo})`);
+    else if (items.big && WEAPONS[items.big.key].cat === 'mg') lines.push(`<b>F</b> — установить пулемёт ${WEAPONS[items.big.key].name}`);
+    else lines.push(`Турель пулемёта · ${t.def.hullName}: пусто`);
+    return;
+  }
+  const part = t.parts[kind];
   const where = `${PART_NAMES[kind]} · ${t.def.hullName}`;
+  if (kind === 'fuel' && part) lines.push(`Топливо в баках ${t.def.hullName}: <b>${Math.round(t.fuel)}</b> / ${t.fuelMax} л` + (t.hp.fuel <= 0 ? ' — баки пробиты' : ''));
   if (t.crew) { lines.push(`${where}: в танке экипаж`); return; }
   if (items.hands === 'part') {
     const held = items.handPart;
@@ -1528,6 +2069,19 @@ function updatePrompt() {
     } else if (items.hands === 'part') {
       if (!state.slot) lines.push(`В руках: ${partLabel(items.handPart)} — подойди к месту установки`);
       lines.push('<b>G</b> — бросить');
+    } else if (items.hands === 'canister') {
+      const can = items.handCan;
+      if (t && !t.wrecked && t.parts.fuel) {
+        lines.push(t.hp.fuel <= 0 ? 'Баки пробиты — топливо не удержат'
+          : t.fuel >= t.fuelMax - 0.2 ? `Баки ${t.def.name} полны (${t.fuelMax} л)`
+          : `Удерживай <b>F</b> — залить топливо (баки ${Math.round(t.fuel)} / ${t.fuelMax} л, в канистре ${Math.round(can.fuel)} л)`);
+      } else if (t && !t.wrecked) lines.push('У этого танка нет топливных баков');
+      else lines.push(`В руках канистра (${Math.round(can.fuel)} л) — подойди к танку`);
+      lines.push('<b>G</b> — поставить канистру');
+    } else if (items.hands === 'sandbag') {
+      if (t && !t.wrecked && !t.crew) lines.push(`<b>E</b> — положить мешок с песком на ${t.def.name} (${t.bags.length}/${SANDBAG.max})`);
+      else lines.push('В руках мешок с песком — подойди к танку');
+      lines.push('<b>G</b> — бросить мешок');
     } else if (state.nearItem) {
       lines.push(`<b>F</b> — подобрать: ${items.label(state.nearItem)}`);
     } else if (state.nearPanel && !state.slot) {
@@ -1538,7 +2092,7 @@ function updatePrompt() {
       else if (t.crew) lines.push(`${t.def.name}: экипаж жив`);
       else {
         if (!items.hands) lines.push(`<b>E</b> — сесть в ${t.def.name}`);
-        if (!items.hands && !state.nearItem) lines.push(`<b>F</b> — укладка танка (ремкомплекты, бронелисты, снаряды)`);
+        if (!items.hands && !state.nearItem) lines.push(`<b>F</b> — укладка танка (ремкомплекты, бронелисты, снаряды, оружие)`);
         if (!items.hands && items.inventory.cutter > 0) {
           lines.push(t.hp.hull >= 75 ? 'Удерживай <b>T</b> — срезать бронелист резаком' : 'Корпус повреждён — бронелист не срезать');
         }
@@ -1582,7 +2136,9 @@ function frame(dt) {
   const target = walking
     ? { pos: player.position, vel: playerVel, isTank: false }
     : { pos: v.root.position, vel: v.velocity, isTank: true };
+  if (walking) target.crouch = state.crouch;
   director.think(dt, state.time, state.over ? null : target, combat);
+  infantry.update(dt, { now: state.time, target: state.over ? null : target, tanks });
   if (!walking) updateDriveControls();
 
   for (const t of tanks) t.update(dt, world, tanks);
@@ -1626,6 +2182,12 @@ function frame(dt) {
   combat.foot = { pos: player.position, active: walking };
   combat.listener.copy(camera.position);
   combat.update(dt);
+  guns.tanks = tanks;
+  guns.soldiers = infantry.soldiers;
+  guns.foot = { pos: player.position, active: walking, crouch: state.crouch };
+  guns.listener.copy(camera.position);
+  guns.update(dt);
+  if (walking) updateWeapon(dt); else updateViewModel(dt);
   fx.update(dt);
   items.update(dt);
 
@@ -1671,6 +2233,11 @@ function frame(dt) {
       if (t === v) continue;
       if (t.root.position.distanceTo(anchor) > (t.team === 'player' ? 2500 : 1500)) removeTank(t);
     }
+    infantry.prune(anchor);
+    director.prune(anchor);
+    for (const p of [...items.pickups.values()]) {
+      if (p.id.startsWith('drop:') && Math.hypot(p.pos.x - anchor.x, p.pos.z - anchor.z) > 1200) items.remove(p.id, false);
+    }
   }
 
   // sun & clouds follow
@@ -1685,10 +2252,12 @@ function frame(dt) {
   // ---------- HUD
   handPlate.visible = walking && items.hands === 'plate';
   handShells.visible = walking && items.hands === 'shells';
+  handCan.visible = walking && items.hands === 'canister';
+  handBag.visible = walking && items.hands === 'sandbag';
   $('sight').style.display = !walking && state.sight && camera.fov < 30 ? 'block' : 'none';
   $('crosshair').style.display = !walking && state.sight ? 'none' : 'block';
   $('crosshair').classList.toggle('driving', !walking && canGun());
-  if (!walking && canGun() && v.parts.gun) {
+  if (!walking && canGun() && v.parts.gun && state.wsel === 'gun') {
     const ip = predictImpact(v).project(camera);
     if (ip.z < 1) {
       gunMark.style.display = 'block';
@@ -1711,9 +2280,11 @@ function frame(dt) {
   updateSystemsPanel(v || state.nearTank, !!v);
   updateGauge(v);
   updateInventory();
+  updateWeaponPanel();
   updateMarkers(dt);
   updatePrompt();
-  topEl.innerHTML = `Пройдено: <b>${((state.maxZ - state.startZ) / 1000).toFixed(2)} км</b> &nbsp;·&nbsp; Уничтожено: <b>${state.kills}</b>`;
+  topEl.innerHTML = `Пройдено: <b>${((state.maxZ - state.startZ) / 1000).toFixed(2)} км</b> &nbsp;·&nbsp; Танков: <b>${state.kills}</b>` +
+    ` &nbsp;·&nbsp; Пехоты: <b>${state.infKills}</b>`;
   const heading = walking ? state.yaw : v.heading;
   drawMinimap(anchor, heading);
   $('mmLabel').textContent = nextSettlementLabel(anchor);
@@ -1752,19 +2323,29 @@ function setupStart() {
   player.position.set(px, world.heightAt(px, pz), pz);
   state.yaw = hd;
 
+  // two light tanks at the spawn: a Pz.II or a T-26 each
+  const r0 = rng((SEED * 2654435761) >>> 0);
+  const k1 = r0() < 0.5 ? 'pz2' : 't26', k2 = r0() < 0.5 ? 'pz2' : 't26';
   const [tx, tz] = at(3, 10);
-  spawnTank('t55', tx, tz, hd, { team: 'player' });
-  // the old garage: other tanks parked across the road
+  const mine = spawnTank(k1, tx, tz, hd, { team: 'player', fuelFrac: 0.8 });
+  mine.cargo.weapons.push(makeWeapon(r0() < 0.5 ? 'mosin' : 'kar98k'));
   if (dbg.get('notanks') !== '1') {
-    ['markV', 'abrams', 'avre'].forEach((k, i) => {
-      const [x, z] = at(-15, -14 + i * 15);
-      spawnTank(k, x, z, hd, { team: 'neutral' });
-    });
+    const [x, z] = at(-14, 2);
+    spawnTank(k2, x, z, hd, { team: 'neutral', fuelFrac: 0.45 });
   }
   const [ix, iz] = at(10, -2);
   items.add('start:plate', 'plate', ix, iz);
-  msg('Рядом с тобой лежит бронелист, у дороги — твой Т-55.', '#e8c96a');
-  msg('Дорога ведёт вперёд. Удачи, танкист!', '#e8c96a');
+  const [cx, cz] = at(9.5, 1);
+  items.add('start:can', 'canister', cx, cz, { fuel: CANISTER_L });
+  const [bx, bz] = at(11, 1.5);
+  items.add('start:bag', 'sandbag', bx, bz);
+  // a revolver and a few rounds in the pocket
+  items.small = makeWeapon('nagant');
+  items.addAmmo('7.62×38R', 14);
+  msg(`Мир #${SEED}. У дороги — твой ${HULLS[k1].name}, через дорогу ещё один ${HULLS[k2].name}.`, '#e8c96a');
+  msg('Рядом лежат бронелист, канистра и мешок с песком. В кармане — наган (1), в укладке танка — винтовка.', '#e8c96a');
+  msg('Дорога ведёт вперёд — дальше техника противника всё сильнее. Удачи, танкист!', '#e8c96a');
+  $('seedInfo').textContent = `Мир #${SEED} — повторить: ?seed=${SEED}`;
 }
 
 async function boot() {
@@ -1792,5 +2373,6 @@ animate();
 
 // handle for debugging / automated tests
 window.game = { state, tanks, world, items, combat, director, workshop, player, camera, keys, spawnTank, fx, frame,
+  guns, infantry, SEED, selectWeapon, startReload, placeSandbag, mgAction, toggleTankWeapon, updateDriveControls,
   openStash, doStash, stowPlate, loadShells,
   enterInside, leaveInside, sitAt, pressF, pressQ, dropHeld, tryToggleVehicle, openCrane, doCrane };

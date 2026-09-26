@@ -2,9 +2,11 @@
 // internal modules (systems) and their effect on performance, hit marks, engine bay, crew compartment.
 import * as THREE from 'three';
 import { WATER_LEVEL } from './world.js';
-import { HULLS, TURRETS, SYSTEM_PART, computeSpec, defaultParts } from './parts.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { HULLS, TURRETS, SYSTEM_PART, TANK_MG, SANDBAG, computeSpec, defaultParts } from './parts.js';
 import { buildHull, buildTurret, buildGun, buildEngine, buildFuel, buildDrive,
          buildHullInterior, buildTurretInterior } from './models.js';
+import { WEAPONS, makeWeapon, bakedWeaponMesh } from './weapons.js';
 
 export const G = 9.81;
 
@@ -14,7 +16,7 @@ export const MODULE_NAMES = {
   hull: 'Корпус', engine: 'Двигатель', transmission: 'Трансмиссия', turret: 'Поворот башни',
   gun: 'Орудие', ammo: 'Боеукладка', fuel: 'Бензобак',
 };
-export const TANK_KEYS = ['t55', 'abrams', 'avre', 'markV'];
+export const TANK_KEYS = Object.keys(HULLS);
 
 const PART_BUILDERS = { engine: buildEngine, gun: buildGun, fuel: buildFuel, drive: buildDrive, turret: buildTurret };
 // lazily build the visual of a part; it stays with the part wherever it goes
@@ -71,6 +73,50 @@ function visibleChain(o, stop) {
   for (let p = o; p && p !== stop.parent; p = p.parent) if (!p.visible) return false;
   return true;
 }
+function isUnder(o, anc) {
+  for (let p = o; p; p = p.parent) if (p === anc) return true;
+  return false;
+}
+
+// ---------------------------------------------------------------- sandbags: a pile of three bags
+let BAG = null;
+function bagRes() {
+  if (BAG) return BAG;
+  const geos = [];
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion();
+  // pillow: a sphere pushed out towards a box
+  const sph = new THREE.SphereGeometry(1, 12, 8);
+  const pp = sph.attributes.position;
+  for (let i = 0; i < pp.count; i++) {
+    const f = v => Math.sign(v) * Math.pow(Math.abs(v), 0.45);
+    pp.setXYZ(i, f(pp.getX(i)), f(pp.getY(i)) * 0.9, f(pp.getZ(i)));
+  }
+  sph.computeVertexNormals();
+  const put = (x, y, z, ry, shade) => {
+    const g = sph.clone().applyMatrix4(m.compose(new THREE.Vector3(x, y, z), q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), ry),
+      new THREE.Vector3(0.24, 0.09, 0.15)));
+    const n = g.attributes.position.count, arr = new Float32Array(n * 3);
+    const c = new THREE.Color(0x8a7650).multiplyScalar(shade);
+    for (let i = 0; i < n; i++) { arr[i * 3] = c.r; arr[i * 3 + 1] = c.g; arr[i * 3 + 2] = c.b; }
+    g.deleteAttribute('uv');
+    g.setAttribute('color', new THREE.Float32BufferAttribute(arr, 3));
+    geos.push(g);
+  };
+  put(-0.25, 0.08, 0.02, 0.08, 1.0);
+  put(0.25, 0.08, -0.02, -0.1, 0.88);
+  put(0.0, 0.08, -0.31, 0.06, 0.95);
+  put(-0.02, 0.24, 0.04, 0.04, 1.1);
+  BAG = { geo: mergeGeometries(geos, false), mat: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, metalness: 0 }) };
+  return BAG;
+}
+export function sandbagMesh() {
+  const R = bagRes();
+  const mesh = new THREE.Mesh(R.geo, R.mat);
+  mesh.castShadow = true; mesh.receiveShadow = true;
+  return mesh;
+}
+const PINTLE_MAT = new THREE.MeshStandardMaterial({ color: 0x2c2d2b, roughness: 0.5, metalness: 0.7 });
+const PINTLE_GEO = new THREE.CylinderGeometry(0.03, 0.045, 0.3, 8).translate(0, 0.15, 0);
 
 // =====================================================================
 // Tank
@@ -95,6 +141,22 @@ export class Tank {
     this.mountPivot = new THREE.Group();
     if (!this.turretless) this.mountPivot.position.set(0, 0.4, 1.0);
     this.turret.add(this.mountPivot);
+    // machine-gun pintle (on the turret roof, on the ring when the turret is gone, on the cab of the Mark V)
+    this.mgMount = new THREE.Group();
+    const post = new THREE.Mesh(PINTLE_GEO, PINTLE_MAT);
+    post.castShadow = true;
+    this.mgMount.add(post);
+    this.mgPivot = new THREE.Group();
+    this.mgPivot.position.y = 0.3;
+    this.mgPivot.rotation.order = 'YXZ';
+    this.mgMount.add(this.mgPivot);
+    this.turret.add(this.mgMount);
+    this.mg = null;
+    this.mgMesh = null;
+    this.mgCool = 0;
+    this.mgYaw = 0; this.mgPitch = 0;
+    this.bags = [];                              // sandbags heaped on the hull: [{ face, mesh }]
+    this.bump = 0;                               // slowed down after ramming a tree / house
     this.vis = { hullBox: this.hull.box, turretBox: null, muzzleLen: 1.2, sightY: 0.5,
                  wheels: this.hull.wheels, wheelR: this.hull.wheelR };
     this.root.position.copy(pos);
@@ -119,7 +181,16 @@ export class Tank {
     this.refresh();
 
     this.ammo = opts.ammo ?? this.def.ammoMax;
-    this.fuel = this.fuelMax;
+    if (opts.fuelFrac !== undefined && this.parts.fuel) this.fuel = this.fuelMax * opts.fuelFrac;
+    // stowage: small arms, cartridges (the machine gun feeds from here), grenades
+    const mgKey = opts.mg === undefined ? TANK_MG[key] : opts.mg;
+    this.cargo = { weapons: [], ammo: {}, grenades: {}, ...(opts.cargo || {}) };
+    if (mgKey) {
+      this.setMG(makeWeapon(mgKey));
+      const cal = WEAPONS[mgKey].cal;
+      if (this.cargo.ammo[cal] === undefined) this.cargo.ammo[cal] = opts.mgAmmo ?? 500;
+    }
+    for (let i = 0; i < (opts.bags || 0); i++) this.addSandbag();
     this.extinguishers = 3;
     this.loot = { repair_kit: opts.kits || 0, torch: opts.torches || 0 };
     this.plates = opts.plates || 0;              // spare armour plates stowed on board
@@ -144,6 +215,10 @@ export class Tank {
   }
 
   get operated() { return !this.wrecked && (this.crew || this.playerInside); }
+  // all the fuel is in the external tanks: it travels with them
+  get fuel() { return this.parts.fuel ? this.parts.fuel.fuel : 0; }
+  set fuel(v) { if (this.parts.fuel) this.parts.fuel.fuel = Math.max(0, Math.min(this.def ? this.def.fuelMax : 1e9, v)); }
+  get mgAmmo() { return this.mg ? this.cargo.ammo[WEAPONS[this.mg.key].cal] || 0 : 0; }
   get enterable() { return !this.wrecked && !this.crew; }
 
   // ------------------------------------------------ composition
@@ -207,7 +282,7 @@ export class Tank {
   }
 
   refresh() {
-    this.def = computeSpec(this.key, this.parts);
+    this.def = computeSpec(this.key, this.parts, { front: this.bagCount('front'), side: this.bagCount('side') });
     const T = this.parts.turret ? partVisual(this.parts.turret) : null;
     const Gv = this.parts.gun ? partVisual(this.parts.gun) : null;
     this.vis.turretBox = T ? T.box : null;
@@ -217,7 +292,9 @@ export class Tank {
     if (this.hull.ringHole) this.hull.ringHole.visible = !T;
     if (this.parts.drive) this.parts.drive.vis.group.visible = !T && !this.turretless;
     this.updateEngineVisibility();
-    if (this.fuel !== undefined) this.fuel = Math.min(this.fuel, this.fuelMax);
+    const mp = T ? T.mgPos : this.hull.mgAt;
+    this.mgMount.position.copy(mp);
+    this.fuel = Math.min(this.fuel, this.fuelMax);
     if (this.ammo !== undefined) this.ammo = Math.min(this.ammo, this.def.ammoMax);
   }
 
@@ -229,6 +306,116 @@ export class Tank {
       for (const [role, s] of Object.entries(TURRETS[this.parts.turret.key].seats)) res.push({ role, space: 'turret', ...s });
     }
     return res;
+  }
+
+  // ------------------------------------------------ machine gun on the pintle
+  setMG(weapon) {
+    const old = this.mg;
+    if (this.mgMesh) { this.mgMesh.removeFromParent(); this.mgMesh = null; }
+    this.mg = weapon || null;
+    if (weapon) {
+      const v = bakedWeaponMesh(weapon.key);
+      this.mgMesh = v.group;
+      this.mgMesh.position.set(0, -0.03, -0.12);
+      this.mgMuzzle = v.muzzle - 0.12;
+      this.mgPivot.add(this.mgMesh);
+    }
+    this.mgYaw = this.mgPitch = 0;
+    return old;
+  }
+  mgMuzzleWorld(out = new THREE.Vector3()) { return this.mgPivot.localToWorld(out.set(0, 0.01, this.mgMuzzle)); }
+  mgDirWorld(out = new THREE.Vector3()) {
+    this.mgPivot.getWorldQuaternion(_q);
+    return out.set(0, 0, 1).applyQuaternion(_q);
+  }
+  // swing the pintle toward a world point (limited arc around the turret front)
+  aimMG(dt, point) {
+    let yaw = 0, pitch = 0;
+    if (point) {
+      this.mgMount.updateMatrixWorld(true);
+      const pv = this.mgPivot.getWorldPosition(_v);
+      const d = _v2.copy(point).sub(pv);
+      this.mgMount.getWorldQuaternion(_q).invert();
+      d.applyQuaternion(_q);
+      yaw = THREE.MathUtils.clamp(Math.atan2(d.x, d.z), -1.0, 1.0);
+      pitch = THREE.MathUtils.clamp(Math.atan2(d.y, Math.hypot(d.x, d.z)), -0.35, 0.7);
+    }
+    const r = 2.6 * dt;
+    this.mgYaw += THREE.MathUtils.clamp(yaw - this.mgYaw, -r, r);
+    this.mgPitch += THREE.MathUtils.clamp(pitch - this.mgPitch, -r, r);
+    this.mgPivot.rotation.set(-this.mgPitch, this.mgYaw, 0);
+    this.mgAimErr = Math.abs(yaw - this.mgYaw) + Math.abs(pitch - this.mgPitch);
+  }
+  // one round from the pintle MG: { origin, dir, W } or null
+  fireMG(spreadMul = 1) {
+    if (!this.mg || !this.operated || this.mgCool > 0) return null;
+    const W = WEAPONS[this.mg.key];
+    if ((this.cargo.ammo[W.cal] || 0) <= 0) return null;
+    this.cargo.ammo[W.cal]--;
+    this.mgCool += 60 / W.rpm;                   // accumulates: several rounds per frame at high rates
+    this.root.updateMatrixWorld(true);
+    const dir = this.mgDirWorld(new THREE.Vector3());
+    const sp = W.aim * 2.2 * spreadMul;
+    dir.x += (Math.random() - 0.5) * 2 * sp; dir.y += (Math.random() - 0.5) * 2 * sp; dir.z += (Math.random() - 0.5) * 2 * sp;
+    return { origin: this.mgMuzzleWorld(new THREE.Vector3()), dir: dir.normalize(), W };
+  }
+
+  // ------------------------------------------------ sandbags
+  bagCount(face) { return this.bags ? this.bags.filter(b => b.face === face).length : 0; }
+  // where the bags go (hull-local): front deck / glacis first, then the fenders
+  computeBagSlots() {
+    const b = this.vis.hullBox;
+    const cx = (b.min.x + b.max.x) / 2, hx = (b.max.x - b.min.x) / 2, cz = (b.min.z + b.max.z) / 2, hz = (b.max.z - b.min.z) / 2;
+    const cand = [
+      ['front', cx, b.max.z - 0.55], ['front', cx + hx * 0.5, b.max.z - 0.62], ['front', cx - hx * 0.5, b.max.z - 0.62],
+      ['side', b.max.x - 0.3, cz + hz * 0.15], ['side', b.min.x + 0.3, cz + hz * 0.15], ['side', b.max.x - 0.3, cz - hz * 0.35],
+    ];
+    this.root.updateMatrixWorld(true);
+    const inv = this.root.quaternion.clone().invert();
+    const down = new THREE.Vector3(0, -1, 0).applyQuaternion(this.root.quaternion);
+    return cand.map(([face, x, z]) => {
+      const o = this.root.localToWorld(new THREE.Vector3(x, b.max.y + 2.5, z));
+      _ray.set(o, down);
+      _ray.far = 6;
+      const h = _ray.intersectObject(this.root, true).find(h => h.face && h.object.isMesh && !h.object.userData.mark &&
+        !h.object.userData.bag && !isUnder(h.object, this.turret) && visibleChain(h.object, this.root));
+      if (!h) return { face, pos: new THREE.Vector3(x, b.max.y * 0.75, z), n: new THREE.Vector3(0, 1, 0) };
+      const n = h.face.normal.clone().applyMatrix3(_nm.getNormalMatrix(h.object.matrixWorld)).normalize().applyQuaternion(inv);
+      if (n.y < 0.7) n.set(0, 1, 0);
+      return { face, pos: this.root.worldToLocal(h.point.clone()), n };
+    });
+  }
+  addSandbag() {
+    if (this.bags.length >= SANDBAG.max) return false;
+    if (!this.bagSlots) this.bagSlots = this.computeBagSlots();
+    const sl = this.bagSlots[this.bags.length];
+    const mesh = sandbagMesh();
+    mesh.userData.bag = true;
+    mesh.position.copy(sl.pos);
+    mesh.quaternion.setFromUnitVectors(UP, sl.n);
+    if (sl.face === 'side') mesh.rotateY(Math.PI / 2);
+    this.root.add(mesh);
+    this.bags.push({ face: sl.face, mesh });
+    this.refresh();
+    return true;
+  }
+  // take the last bag off (face: only from that face)
+  removeSandbag(face = null) {
+    let i = this.bags.length - 1;
+    if (face) while (i >= 0 && this.bags[i].face !== face) i--;
+    if (i < 0) return false;
+    const [b] = this.bags.splice(i, 1);
+    b.mesh.removeFromParent();
+    // keep the remaining piles on the first slots
+    this.bags.forEach((bg, k) => {
+      const sl = this.bagSlots[k];
+      bg.face = sl.face;
+      bg.mesh.position.copy(sl.pos);
+      bg.mesh.quaternion.setFromUnitVectors(UP, sl.n);
+      if (sl.face === 'side') bg.mesh.rotateY(Math.PI / 2);
+    });
+    this.refresh();
+    return true;
   }
 
   // ------------------------------------------------ engine bay / interior
@@ -265,7 +452,7 @@ export class Tank {
   get maxSpeedEff() {
     const e = this.hp.engine, t = this.hp.transmission;
     if (e <= 0 || t <= 0 || this.bayOpen || (this.team === 'player' && this.fuel <= 0)) return 0;
-    return this.def.maxSpeed * (0.3 + 0.7 * e / 100) * (0.55 + 0.45 * t / 100);
+    return this.def.maxSpeed * (0.3 + 0.7 * e / 100) * (0.55 + 0.45 * t / 100) * (this.bump > 0 ? 0.6 : 1);
   }
   get accelEff() {
     const e = this.hp.engine, t = this.hp.transmission;
@@ -287,7 +474,7 @@ export class Tank {
   get canFire() {
     return this.operated && this.hp.gun > 0 && this.ammo > 0 && this.reload <= 0;
   }
-  get fuelMax() { return this.def.fuelInt + (this.parts.fuel && this.hp.fuel > 0 ? this.def.fuelExt : 0); }
+  get fuelMax() { return this.parts.fuel && this.hp.fuel > 0 ? this.def.fuelMax : 0; }
 
   // ------------------------------------------------ geometry helpers
   muzzleWorld(out = new THREE.Vector3()) {
@@ -310,7 +497,8 @@ export class Tank {
 
     if (dt > 0 && world) {
       const maxS = this.maxSpeedEff;
-      if (c.throttle !== 0 && maxS > 0) this.speed += c.throttle * this.accelEff * dt;
+      if (this.bump > 0) this.bump -= dt;
+      if (c.throttle !== 0 && maxS > 0) this.speed += c.throttle * this.accelEff * (this.bump > 0 ? 0.3 : 1) * dt;
       else this.speed *= Math.pow(0.25, dt);
       if (c.brake) this.speed *= Math.pow(0.02, dt);
       this.speed = Math.max(-maxS * 0.45, Math.min(maxS, this.speed));
@@ -333,13 +521,24 @@ export class Tank {
       const r = this.def.radius * 0.8;
       // trees give way to a moving tank, houses collapse when rammed
       const sg = this.speed >= 0 ? 1 : -1;
-      const ram = { speed: this.speed, dx: dirX * sg, dz: dirZ * sg, broke: false };
+      const ram = { speed: this.speed, dx: dirX * sg, dz: dirZ * sg, broke: false, size: 0 };
       if (world.collideTrees(p, r, ram)) this.speed *= Math.pow(0.02, dt);
-      if (ram.broke) this.speed *= 0.8;
+      const W = this.def.weight;
+      if (ram.broke) {
+        // knocking a tree down costs speed: the lighter the tank and the thicker the tree, the more
+        this.speed *= 1 - THREE.MathUtils.clamp(0.3 + 0.25 * ram.size - W / 250, 0.12, 0.65);
+        this.bump = Math.max(this.bump, 0.5 + ram.size * 0.4);
+        this.rammedT = 0.3;
+      }
       let rammed = false;
       const breakFn = o => { const b = o.house.ram(Math.abs(this.speed)); if (b) rammed = true; return b; };
       if (world.collideObstacles(p, r, breakFn)) this.speed *= Math.pow(0.02, dt);
-      if (rammed) { this.speed *= 0.5; this.damage('hull', 1); }
+      if (rammed) {
+        this.speed *= 1 - THREE.MathUtils.clamp(0.85 - W / 140, 0.35, 0.8);
+        this.bump = 1.4;
+        this.rammedT = 0.6;
+        this.damage('hull', 1);
+      }
       if (others) {
         for (const o of others) {
           if (o === this) continue;
@@ -401,9 +600,12 @@ export class Tank {
     this.turret.rotation.y = this.turretYaw;
     this.gun.rotation.x = -this.gunElev;
     this.root.updateMatrixWorld(true);
+    if (dt > 0 && this.mg && !this.wrecked) this.aimMG(dt, this.operated ? (this.mgTarget || this.aimPoint) : null);
 
     if (dt > 0) {
       if (this.reload > 0) this.reload -= dt;
+      if (this.mgCool > 0) this.mgCool -= dt;
+      if (this.rammedT > 0) this.rammedT -= dt;
       this.updateFire(dt);
     }
   }
@@ -474,7 +676,7 @@ export class Tank {
     const before = this.hp[id];
     this.hp[id] = Math.max(0, before - amount);
     if (id === 'ammo' && this.hp.ammo <= 0 && before > 0) this.ammo = Math.floor(this.ammo * 0.4);
-    if (id === 'fuel' && this.hp.fuel <= 0 && before > 0) this.fuel = Math.min(this.fuel, this.fuelMax);
+    if (id === 'fuel' && this.hp.fuel <= 0 && before > 0 && this.parts.fuel) this.parts.fuel.fuel = 0;   // leaked out
     return before - this.hp[id];
   }
 

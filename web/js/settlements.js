@@ -1,6 +1,7 @@
 // Roadside settlements: villages, towns, gas stations, tank repair stations
 import * as THREE from 'three';
 import { rng } from './noise.js';
+import { difficultyAt, pickTankKey, lootRoll } from './loot.js';
 
 export const SETTLEMENT_NAMES = {
   village: ['Берёзовка', 'Ивановка', 'Сосновка', 'Малиновка', 'Кривцы', 'Заречье', 'Горелово',
@@ -132,6 +133,9 @@ export function buildSettlement(world, plan) {
     return o;
   };
   const addItem = (type, x, z, extra = {}) => items.push({ id: `s${plan.k}:${itemN++}`, type, x, z, ...extra });
+  const d = difficultyAt(plan.z);
+  // weapons / cartridges / grenades / kits lying about
+  const addLoot = (x, z) => { const it = lootRoll(r, d, 1)[0]; addItem(it.type, x, z, it); };
 
   // ------------------------------------------------------------ builders
   const houses = [];
@@ -305,6 +309,24 @@ export function buildSettlement(world, plan) {
       const p = at(h, (h.x > world.roadX(h.z) ? -1 : 1) * 7, -2);
       addItem('torch', p.x, p.z);
     }
+    // weapons, cartridges, sandbags, fuel cans in the yards
+    const nLoot = town ? 4 + Math.floor(r() * 3) : 2 + Math.floor(r() * 2);
+    for (let i = 0; i < nLoot && hf.length; i++) {
+      const h = hf[Math.floor(r() * hf.length)];
+      const p = at(h, (h.x > world.roadX(h.z) ? -1 : 1) * (6 + r() * 2), (r() - 0.5) * 6);
+      addLoot(p.x, p.z);
+    }
+    const nBags = town ? 3 : 2;
+    for (let i = 0; i < nBags && hf.length; i++) {
+      const h = hf[Math.floor(r() * hf.length)];
+      const p = at(h, (h.x > world.roadX(h.z) ? -1 : 1) * 6.5, 3 + i * 0.9);
+      addItem('sandbag', p.x, p.z);
+    }
+    if (hf.length && (town || r() < 0.4)) {
+      const h = hf[Math.floor(r() * hf.length)];
+      const p = at(h, (h.x > world.roadX(h.z) ? -1 : 1) * 6, -3.5);
+      addItem('canister', p.x, p.z, { fuel: 20 });
+    }
     if (town) {
       // church on the square
       const f = frame(0, 30);
@@ -375,6 +397,10 @@ export function buildSettlement(world, plan) {
     part(box, MAT.metal, pole.x, py, pole.z, 0.3, 7, 0.3, pole.rot);
     part(box, MAT.red, pole.x, py + 6, pole.z, 0.3, 2.2, 2.6, pole.rot);
     zones.push({ type: 'fuel', x: f.x, z: f.z, r: 11, label: 'Заправка' });
+    const nCans = 2 + Math.floor(r() * 3);
+    for (let i = 0; i < nCans; i++) { const p = at(k, -side * 4, -3 + i * 1.1); addItem('canister', p.x, p.z, { fuel: 20 }); }
+    { const p = at(k, 2, 7.5); addItem('sandbag', p.x, p.z); }
+    if (r() < 0.5) { const p = at(k, -side * 4, 3); addLoot(p.x, p.z); }
     if (r() < 0.4) { const p = at(k, 0, -7); addItem('repair_kit', p.x, p.z); }
     if (plan.hasTorch) { const p = at(k, 1.5, -7); addItem('torch', p.x, p.z); }
   }
@@ -470,15 +496,19 @@ export function buildSettlement(world, plan) {
     if (plan.hasCutter) { const p = at(w, -side * 5.5, 2.5); addItem('cutter', p.x, p.z); }
     if (plan.hasTorch) { const p = at(w, -side * 5.5, 4); addItem('torch', p.x, p.z); }
     if (r() < 0.35 || plan.k === 1) { const p = at(pad, -side * 1, 16); addItem('plate', p.x, p.z); }
-    // used spare parts lying by the hangar
+    // used spare parts lying by the hangar (of the machines met around here)
     const nParts = plan.k === 1 ? 2 : (r() < 0.6 ? 1 : 0) + (r() < 0.3 ? 1 : 0);
-    const keys = ['t55', 'abrams', 'avre', 'markV'];
     for (let i = 0; i < nParts; i++) {
       const kind = ['engine', 'gun', 'fuel', 'drive'][Math.floor(r() * 4)];
-      const key = kind === 'drive' ? keys[Math.floor(r() * 3)] : keys[Math.floor(r() * 4)];
+      let key = pickTankKey(r, d);
+      if (kind === 'drive' && key === 'markV') key = pickTankKey(r, Math.min(1, d + 0.15));
+      if (kind === 'drive' && key === 'markV') key = 't26';
       const p = frame(-8 - i * 4.5, side * 25.5);
       addItem('part', p.x, p.z, { kind, key, hp: Math.round(55 + r() * 45) });
     }
+    for (let i = 0; i < 2; i++) { const p = at(w, -side * 5.5, -4 - i); addItem('sandbag', p.x, p.z); }
+    { const p = at(w, -side * 6.5, 0); addItem('canister', p.x, p.z, { fuel: 20 }); }
+    { const p = at(w, -side * 6.5, 2); addLoot(p.x, p.z); }
   }
 
   // houses destroyed earlier stay ruined

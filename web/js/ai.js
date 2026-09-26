@@ -1,7 +1,10 @@
 // Enemy tanks: encounter spawner along the road (patrols and dug-in ambushes) + simple AI
 import * as THREE from 'three';
 import { hash, rng } from './noise.js';
-import { Tank } from './tanks.js';
+import { Tank, sandbagMesh } from './tanks.js';
+import { HULLS } from './parts.js';
+import { makeWeapon } from './weapons.js';
+import { difficultyAt, pickTankKey, soldierKit, lootRoll } from './loot.js';
 
 const ENC_LEN = 450;          // road stretch per potential encounter
 const dbg = new URLSearchParams(location.search);
@@ -53,7 +56,7 @@ function buildCaponier(world, x, z, heading) {
 }
 
 // ------------------------------------------------------------------ AI brain
-class TankAI {
+export class TankAI {
   constructor(tank, mode, world, opts) {
     this.tank = tank;
     this.mode = mode;                  // 'patrol' | 'ambush'
@@ -74,6 +77,8 @@ class TankAI {
     this.stuck = 0;
     this.reverse = 0;
     this.scan = Math.random() * 10;
+    this.mgBurst = 0;
+    this.mgPause = 1 + Math.random();
     this.newError(200);
   }
 
@@ -93,10 +98,10 @@ class TankAI {
     t.controls.brake = t.speed > target + 1 ? 1 : 0;
   }
 
-  update(dt, now, target, combat) {
+  update(dt, now, target, combat, guns) {
     const t = this.tank;
     const c = t.controls;
-    if (!t.crew || t.wrecked) { t.aimPoint = null; return; }
+    if (!t.crew || t.wrecked) { t.aimPoint = null; t.mgTarget = null; return; }
     c.throttle = 0; c.steer = 0; c.brake = 0;
     const p = t.root.position;
 
@@ -138,8 +143,24 @@ class TankAI {
         else c.brake = 1;
       }
 
+      // machine gun against a man on foot
+      t.mgTarget = null;
+      if (!target.isTank && t.mg && t.mgAmmo > 0 && this.los && dist < 320 && guns) {
+        t.mgTarget = target.pos.clone().setY(target.pos.y + 0.9).addScaledVector(this.err, 0.4);
+        if (this.mgPause > 0) this.mgPause -= dt;
+        else if ((t.mgAimErr ?? 1) < 0.06) {
+          for (let k = 0; k < 3 && this.mgPause <= 0; k++) {
+            const sh = t.fireMG(1 + dist / 160);
+            if (!sh) break;
+            guns.fire(sh.origin, sh.dir, sh.W, { tank: t }, sh.origin, Math.random() < 0.5);
+            if (--this.mgBurst <= 0) { this.mgBurst = 4 + Math.floor(Math.random() * 9); this.mgPause = 0.7 + Math.random() * 1.6; }
+          }
+        }
+      }
+
       this.fireDelay -= dt;
-      if (this.los && this.fireDelay <= 0 && t.canFire && (t.aimError ?? 1) < 0.012) {
+      const gunOk = target.isTank || dist < 90 || !t.mg;
+      if (gunOk && this.los && this.fireDelay <= 0 && t.canFire && (t.aimError ?? 1) < 0.012) {
         if (combat.fireFrom(t)) {
           this.shots++;
           this.newError(dist);
@@ -151,6 +172,7 @@ class TankAI {
     }
 
     // ---- idle behaviour
+    t.mgTarget = null;
     this.scan += dt;
     if (this.mode === 'ambush') {
       const wz = this.watchZ + Math.sin(this.scan * 0.15) * 60;
@@ -192,29 +214,136 @@ class TankAI {
 
 // ------------------------------------------------------------------ director
 export class EnemyDirector {
-  constructor(world, scene, seed) {
+  constructor(world, scene, seed, infantry) {
     this.world = world;
     this.scene = scene;
     this.seed = seed;
+    this.infantry = infantry;
+    this.guns = null;
     this.spawned = new Set();
     this.ais = [];
     this.caponiers = [];
+    this.props = [];                // roadside scenery of posts (sandbag walls)
+    this.onLoot = () => {};         // (id, type, x, z, data): loot lying on the ground
     this.disabled = dbg.get('notanks') === '1' || dbg.get('noenemies') === '1';
+    this.noInfantry = dbg.get('noinfantry') === '1' || dbg.get('noenemies') === '1';
   }
 
-  pickType(r) {
-    const table = [['t55', 0.42], ['markV', 0.2], ['avre', 0.2], ['abrams', 0.18]];
-    const sum = table.reduce((a, [, w]) => a + w, 0);
-    let x = r() * sum;
-    for (const [k, w] of table) { if ((x -= w) <= 0) return k; }
-    return table[0][0];
+  // tank type by how far down the road we are
+  pickType(r, z) { return pickTankKey(r, difficultyAt(z)); }
+
+  // loot stowed inside a tank (captured / knocked out ones can be emptied)
+  stowLoot(cargo, r, d, n) {
+    let kits = 0;
+    for (const it of lootRoll(r, d, n)) {
+      if (it.type === 'weapon') { if (cargo.weapons.length < 5) cargo.weapons.push(makeWeapon(it.key, it.mag)); }
+      else if (it.type === 'ammo') cargo.ammo[it.cal] = (cargo.ammo[it.cal] || 0) + it.n;
+      else if (it.type === 'grenade') cargo.grenades[it.key] = (cargo.grenades[it.key] || 0) + it.n;
+      else kits++;
+    }
+    return kits;
   }
 
   makeTank(key, pos, heading, r, opts = {}) {
-    return new Tank(this.scene, key, pos, heading, {
+    const t = new Tank(this.scene, key, pos, heading, {
       team: 'enemy', crew: true, kits: r() < 0.55 ? 1 + (r() < 0.3 ? 1 : 0) : 0,
-      torches: Math.random() < 0.2 ? 1 : 0, plates: Math.random() < 0.3 ? 1 : 0, ...opts,
+      torches: Math.random() < 0.2 ? 1 : 0, plates: Math.random() < 0.3 ? 1 : 0,
+      bags: r() < 0.25 ? 1 + Math.floor(r() * 4) : 0, ...opts,
     });
+    t.loot.repair_kit += this.stowLoot(t.cargo, r, difficultyAt(pos.z), r() < 0.5 ? 1 : 2);
+    return t;
+  }
+
+  squad(x, z, n, r, d, heading) {
+    if (this.noInfantry || !this.infantry) return [];
+    const kits = [];
+    for (let i = 0; i < n; i++) kits.push(soldierKit(r, d));
+    return this.infantry.spawnSquad(x, z, kits, heading, r);
+  }
+
+  // roadside post: a sandbag wall with a squad behind it and a couple of spare bags
+  spawnPost(j, zc, r, d) {
+    const z = zc + (r() - 0.5) * 260;
+    if (this.world.settlementNear(this.world.roadX(z), z, 40)) return;
+    const side = r() < 0.5 ? -1 : 1;
+    const hd = this.world.roadHeading(z);
+    const sx = Math.cos(hd), sz = -Math.sin(hd);
+    const off = side * (9 + r() * 6);
+    const x = this.world.roadX(z) + sx * off, zz = z + sz * off;
+    if (this.world.heightAt(x, zz) < this.world.WATER_LEVEL + 0.8) return;
+    const face = side > 0 ? hd - Math.PI / 2 : hd + Math.PI / 2;      // facing the road
+    const g = new THREE.Group();
+    for (let i = -2; i <= 2; i++) {
+      for (let k = 0; k < 2; k++) {
+        const b = sandbagMesh();
+        const px = x - sx * side * 1.2 + Math.sin(hd) * i * 0.75, pz = zz - sz * side * 1.2 + Math.cos(hd) * i * 0.75;
+        b.position.set(px, this.world.heightAt(px, pz) + k * 0.33, pz);
+        b.rotation.y = hd + (k ? 0.3 : 0);
+        g.add(b);
+      }
+    }
+    this.scene.add(g);
+    this.props.push({ group: g, z: zz });
+    this.squad(x + Math.sin(hd) * 2, zz + Math.cos(hd) * 2, 3 + Math.floor(r() * 3 + d * 2), r, d, face);
+    const nb = 1 + (r() < 0.5 ? 1 : 0);
+    for (let i = 0; i < nb; i++) this.onLoot(`p${j}:${i}`, 'sandbag', x + sx * side * 2.5 + i * 1.2, zz + sz * side * 2.5);
+    if (r() < 0.5) this.onLoot(`p${j}:a`, 'ammo', x + sx * side * 2.2 - 1.5, zz + sz * side * 2.2, lootRoll(r, d, 1).find(l => l.type === 'ammo') || null);
+  }
+
+  // knocked-out vehicles by the road: partly broken, some burnt out; they hold loot
+  spawnWreck(j, zc, r, d, created) {
+    const z = zc + (r() - 0.5) * 300;
+    if (this.world.settlementNear(this.world.roadX(z), z, 30)) return;
+    const side = r() < 0.5 ? -1 : 1;
+    const hd = this.world.roadHeading(z);
+    const n = r() < 0.3 ? 2 : 1;
+    for (let i = 0; i < n; i++) {
+      const zz = z + i * 14;
+      const off = side * (7 + r() * 14);
+      const x = this.world.roadX(zz) + Math.cos(hd) * off, z2 = zz - Math.sin(hd) * off;
+      if (this.world.heightAt(x, z2) < this.world.WATER_LEVEL + 0.6) continue;
+      const key = this.pickType(r, zz);
+      const heading = hd + (r() - 0.5) * 1.4 + (r() < 0.4 ? Math.PI : 0);
+      const burnt = r() < 0.35;
+      const t = new Tank(this.scene, key, new THREE.Vector3(x, 0, z2), heading, {
+        team: 'neutral', crew: false, kits: r() < 0.4 ? 1 : 0, fuelFrac: r() * 0.35,
+        mg: r() < 0.65 ? undefined : null, mgAmmo: Math.floor(r() * 250), ammo: Math.floor(HULLS[key].ammoMax * r() * 0.5),
+        plates: r() < 0.25 ? 1 : 0, torches: r() < 0.12 ? 1 : 0,
+      });
+      t.derelict = true;
+      // battle damage
+      t.hp.engine = r() < 0.45 ? 0 : 15 + r() * 55;
+      t.hp.transmission = r() < 0.35 ? 0 : 25 + r() * 60;
+      t.hp.hull = 20 + r() * 55;
+      if (t.parts.gun) t.hp.gun = r() < 0.25 ? 0 : 35 + r() * 65;
+      if (t.parts.drive) t.hp.turret = 30 + r() * 70;
+      if (t.parts.fuel) t.hp.fuel = 30 + r() * 70;
+      t.hp.ammo = 30 + r() * 70;
+      if (r() < 0.2) t.setPart('engine', null);
+      else if (r() < 0.15 && t.parts.gun) t.setPart('gun', null);
+      const b = t.vis.hullBox;
+      const nm = 2 + Math.floor(r() * 4);
+      for (let k = 0; k < nm; k++) {
+        const sx = r() < 0.5 ? -1 : 1;
+        const lp = new THREE.Vector3(sx * b.max.x, b.min.y + (b.max.y - b.min.y) * (0.35 + r() * 0.5), b.min.z + (b.max.z - b.min.z) * r());
+        const dir = new THREE.Vector3(-sx, 0, 0).applyQuaternion(t.root.quaternion);
+        t.addMark(t.root.localToWorld(lp), dir, r() < 0.7 ? 'hole' : 'dent');
+      }
+      t.turretYaw = (r() - 0.5) * 2;
+      if (burnt) {
+        t.makeWreck();
+        lootRoll(r, d, 2 + Math.floor(r() * 3)).forEach((it, k) => {
+          const a = r() * Math.PI * 2, rr = 4 + r() * 3;
+          this.onLoot(`w${j}:${i}:${k}`, it.type, x + Math.sin(a) * rr, z2 + Math.cos(a) * rr, it);
+        });
+      } else {
+        t.loot.repair_kit += this.stowLoot(t.cargo, r, d, 2 + Math.floor(r() * 3));
+      }
+      if (r() < 0.4) this.onLoot(`w${j}:${i}:c`, 'canister', x + Math.cos(hd) * side * 4, z2 - Math.sin(hd) * side * 4, { fuel: 20 });
+      created.push(t);
+    }
+    // sometimes the wreck is watched
+    if (r() < 0.35) this.squad(this.world.roadX(z) + Math.cos(hd) * side * 22, z - Math.sin(hd) * side * 22, 2 + Math.floor(r() * 2), r, d, hd);
   }
 
   // spawn encounters ahead/around the player; returns newly created tanks
@@ -229,6 +358,11 @@ export class EnemyDirector {
       this.spawned.add(j);
       const r = rng(Math.floor(hash(this.seed, j, 77) * 4294967296));
       const difficulty = Math.min(1, j / 25);
+      const d = difficultyAt(zc);
+      // independent of the tank encounter: knocked-out vehicles and infantry posts
+      const r2 = rng(Math.floor(hash(this.seed, j, 313) * 4294967296));
+      if (r2() < 0.4) this.spawnWreck(j, zc, r2, d, created);
+      if (r2() < 0.28 + d * 0.25) this.spawnPost(j, zc, r2, d);
       const roll = r();
       if (roll < 0.42 - difficulty * 0.12) continue;           // quiet stretch
       if (roll < 0.74) {
@@ -240,10 +374,11 @@ export class EnemyDirector {
           const lane = 2.5;
           const x = this.world.roadX(z) + lane * dir + i * 6;
           const pos = new THREE.Vector3(x, 0, z);
-          const t = this.makeTank(this.pickType(r), pos, dir > 0 ? this.world.roadHeading(z) : this.world.roadHeading(z) + Math.PI, r);
+          const t = this.makeTank(this.pickType(r, z), pos, dir > 0 ? this.world.roadHeading(z) : this.world.roadHeading(z) + Math.PI, r);
           this.ais.push(new TankAI(t, 'patrol', this.world, { z0: zc - 280, z1: zc + 280, dir, lane }));
           created.push(t);
         }
+        if (r() < 0.45) this.squad(this.world.roadX(zc) + (r() < 0.5 ? -12 : 12), zc + (r() - 0.5) * 100, 2 + Math.floor(r() * 3), r, d, 0);
       } else {
         // ambush in caponiers facing the road
         const n = r() < 0.3 + difficulty * 0.3 ? 2 : 1;
@@ -258,11 +393,12 @@ export class EnemyDirector {
           const watchZ = z - 70;
           const heading = Math.atan2(this.world.roadX(watchZ) - x, watchZ - z);
           const cap = buildCaponier(this.world, x, z, heading);
-          const t = this.makeTank(this.pickType(r), new THREE.Vector3(x, 0, z), heading, r, { sink: 1.1 });
+          const t = this.makeTank(this.pickType(r, z), new THREE.Vector3(x, 0, z), heading, r, { sink: 1.1 });
           t.caponier = cap;
           this.caponiers.push(cap);
           this.ais.push(new TankAI(t, 'ambush', this.world, { watchZ }));
           created.push(t);
+          if (r() < 0.4) this.squad(x - Math.sin(heading) * 7, z - Math.cos(heading) * 7, 2, r, d, heading);
         }
       }
     }
@@ -270,7 +406,16 @@ export class EnemyDirector {
   }
 
   think(dt, now, target, combat) {
-    for (const ai of this.ais) ai.update(dt, now, target, combat);
+    for (const ai of this.ais) ai.update(dt, now, target, combat, this.guns);
+  }
+
+  // remove scenery far behind / ahead
+  prune(anchor) {
+    this.props = this.props.filter(p => {
+      if (Math.abs(p.z - anchor.z) < 1600) return true;
+      this.scene.remove(p.group);
+      return false;
+    });
   }
 
   // forget AI for tanks that were removed / captured

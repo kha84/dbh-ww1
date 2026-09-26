@@ -12,12 +12,15 @@ export const SYSTEM_PART = { engine: 'engine', gun: 'gun', fuel: 'fuel', turret:
 export const PART_NAMES = {
   engine: 'Двигатель', gun: 'Орудие', fuel: 'Внешние баки', drive: 'Механизм поворота башни', turret: 'Башня',
 };
-export const ORIGIN_NAMES = { t55: 'Т-55', abrams: 'Abrams', avre: 'Chieftain', markV: 'Mark V' };
+export const ORIGIN_NAMES = {
+  t55: 'Т-55', abrams: 'Abrams', avre: 'Chieftain', markV: 'Mark V',
+  pz2: 'Pz.II', t26: 'Т-26', t44: 'Т-44', is2: 'ИС-2', leo2: 'Leopard 2',
+};
 
 // ------------------------------------------------------------------ hulls
 export const HULLS = {
   t55: {
-    name: 'Т-55', weight: 24, speedCap: 16, eff: 1.0, turn: 0.9, radius: 3.2, ammoMax: 43, fuelInt: 60,
+    name: 'Т-55', weight: 24, speedCap: 16, eff: 1.0, turn: 0.9, radius: 3.2, ammoMax: 43,
     armor: { front: 200, side: 80, rear: 45, top: 30 },
     modules: [
       { id: 'ammo', u: [-0.95, -0.25], v: [0.15, 0.6], w: [0.35, 0.85] },   // front right "tank-rack"
@@ -37,7 +40,7 @@ export const HULLS = {
     },
   },
   abrams: {
-    name: 'Abrams', weight: 41, speedCap: 20, eff: 1.0, turn: 1.1, radius: 3.6, ammoMax: 40, fuelInt: 65,
+    name: 'Abrams', weight: 41, speedCap: 20, eff: 1.0, turn: 1.1, radius: 3.6, ammoMax: 40,
     armor: { front: 320, side: 100, rear: 55, top: 35 },
     modules: [
       { id: 'engine', u: [-0.7, 0.7], v: [0.2, 0.85], w: [-0.9, -0.4] },
@@ -57,7 +60,7 @@ export const HULLS = {
     },
   },
   avre: {
-    name: 'Chieftain AVRE', weight: 36, speedCap: 14, eff: 1.0, turn: 0.95, radius: 3.4, ammoMax: 20, fuelInt: 60,
+    name: 'Chieftain AVRE', weight: 36, speedCap: 14, eff: 1.0, turn: 0.95, radius: 3.4, ammoMax: 20,
     armor: { front: 220, side: 70, rear: 45, top: 30 },
     modules: [
       { id: 'ammo', u: [0.2, 0.9], v: [0.15, 0.7], w: [0.3, 0.8] },
@@ -77,7 +80,7 @@ export const HULLS = {
     },
   },
   markV: {
-    name: 'Mark V', weight: 25.2, speedCap: 9, eff: 0.65, turn: 0.75, radius: 3.2, ammoMax: 60, fuelInt: 70,
+    name: 'Mark V', weight: 25.2, speedCap: 9, eff: 0.65, turn: 0.75, radius: 3.2, ammoMax: 60,
     armor: { front: 16, side: 12, rear: 10, top: 8 },
     turretless: true, arc: 1.25, elevMin: -0.15, elevMax: 0.3,
     modules: [
@@ -103,6 +106,106 @@ export const HULLS = {
       walk: [{ x: [-0.8, 0.8], z: [0.4, 1.35] }, { x: [0.62, 0.8], z: [-2.8, 0.4] },
              { x: [-0.8, -0.62], z: [-2.8, 0.4] }, { x: [-0.8, 0.8], z: [-2.8, -1.75] }],
       ammo: { x: [0.62, 0.88], z: [-1.4, 0.3] },
+    },
+  },
+  pz2: {
+    name: 'Pz.Kpfw. II', weight: 7.2, speedCap: 11, eff: 1.0, turn: 1.2, radius: 2.5, ammoMax: 180,
+    armor: { front: 35, side: 20, rear: 15, top: 10 },
+    modules: [
+      { id: 'engine', u: [-0.6, 0.6], v: [0.15, 0.8], w: [-0.9, -0.3] },
+      { id: 'transmission', u: [-0.7, 0.7], v: [0.1, 0.5], w: [0.75, 1.0] },
+      { id: 'ammo', u: [-0.9, -0.4], v: [0.15, 0.6], w: [0.1, 0.6] },
+    ],
+    crew: [
+      { u: [0.2, 0.8], v: [0.1, 0.8], w: [0.4, 0.75] },
+      { u: [-0.6, 0.6], v: [0.15, 1.0], w: [-0.3, 0.4] },
+    ],
+    seats: { driver: { pos: [0.45, 0.55, 1.02], eye: [0.45, 1.2, 1.28] } },
+    interior: {
+      x: 0.85, floor: 0.45, roof: 1.38, z: [-0.7, 1.45],
+      slits: [{ x: [0.22, 0.68], y: [1.14, 1.26] }],
+      walk: [{ x: [-0.7, 0.7], z: [-0.5, 0.8] }, { x: [0.2, 0.72], z: [0.8, 1.12] }],
+      ammo: { x: [-0.8, -0.4], z: [0.6, 1.3] },
+    },
+  },
+  t26: {
+    name: 'Т-26', weight: 8.2, speedCap: 8.6, eff: 1.0, turn: 1.1, radius: 2.5, ammoMax: 120,
+    armor: { front: 15, side: 15, rear: 15, top: 6 },
+    modules: [
+      { id: 'engine', u: [-0.6, 0.6], v: [0.15, 0.8], w: [-0.95, -0.35] },
+      { id: 'transmission', u: [-0.7, 0.7], v: [0.1, 0.5], w: [0.78, 1.0] },
+      { id: 'ammo', u: [0.4, 0.9], v: [0.15, 0.6], w: [0.0, 0.5] },
+    ],
+    crew: [
+      { u: [-0.8, -0.2], v: [0.1, 0.8], w: [0.4, 0.78] },
+      { u: [-0.6, 0.6], v: [0.15, 1.0], w: [-0.3, 0.4] },
+    ],
+    seats: { driver: { pos: [-0.45, 0.55, 1.02], eye: [-0.45, 1.2, 1.28] } },
+    interior: {
+      x: 0.8, floor: 0.45, roof: 1.36, z: [-0.75, 1.45],
+      slits: [{ x: [-0.68, -0.22], y: [1.14, 1.26] }],
+      walk: [{ x: [-0.65, 0.65], z: [-0.55, 0.8] }, { x: [-0.72, -0.2], z: [0.8, 1.12] }],
+      ammo: { x: [0.4, 0.78], z: [0.4, 1.3] },
+    },
+  },
+  t44: {
+    name: 'Т-44', weight: 22, speedCap: 14, eff: 1.0, turn: 1.0, radius: 3.2, ammoMax: 58,
+    armor: { front: 160, side: 75, rear: 45, top: 20 },
+    modules: [
+      { id: 'ammo', u: [-0.95, -0.25], v: [0.15, 0.6], w: [0.35, 0.85] },
+      { id: 'engine', u: [-0.75, 0.75], v: [0.15, 0.75], w: [-0.75, -0.25] },
+      { id: 'transmission', u: [-0.8, 0.8], v: [0.1, 0.55], w: [-1.0, -0.75] },
+    ],
+    crew: [
+      { u: [0.25, 0.95], v: [0.1, 0.65], w: [0.45, 0.95] },
+      { u: [-0.6, 0.6], v: [0.15, 1.0], w: [-0.2, 0.45] },
+    ],
+    seats: { driver: { pos: [0.55, 0.62, 1.58], eye: [0.55, 1.28, 1.84] } },
+    interior: {
+      x: 1.0, floor: 0.5, roof: 1.46, z: [-0.95, 2.1],
+      slits: [{ x: [0.3, 0.8], y: [1.2, 1.32] }],
+      walk: [{ x: [-0.85, 0.85], z: [-0.8, 1.3] }, { x: [0.25, 0.88], z: [1.3, 1.78] }],
+      ammo: { x: [-0.95, -0.35], z: [1.3, 2.0] },
+    },
+  },
+  is2: {
+    name: 'ИС-2', weight: 31, speedCap: 10.3, eff: 1.0, turn: 0.8, radius: 3.4, ammoMax: 28,
+    armor: { front: 190, side: 90, rear: 60, top: 25 },
+    modules: [
+      { id: 'engine', u: [-0.7, 0.7], v: [0.15, 0.8], w: [-0.8, -0.3] },
+      { id: 'transmission', u: [-0.8, 0.8], v: [0.1, 0.55], w: [-1.0, -0.8] },
+      { id: 'ammo', u: [0.3, 0.9], v: [0.15, 0.6], w: [0.2, 0.8] },
+    ],
+    crew: [
+      { u: [-0.3, 0.3], v: [0.2, 0.8], w: [0.55, 0.9] },
+      { u: [-0.6, 0.6], v: [0.2, 1.0], w: [-0.3, 0.4] },
+    ],
+    seats: { driver: { pos: [0, 0.64, 1.95], eye: [0, 1.32, 2.2] } },
+    interior: {
+      x: 1.0, floor: 0.55, roof: 1.58, z: [-1.1, 2.45],
+      slits: [{ x: [-0.3, 0.3], y: [1.26, 1.38] }],
+      walk: [{ x: [-0.85, 0.85], z: [-0.95, 1.35] }, { x: [-0.35, 0.35], z: [1.35, 2.0] }],
+      ammo: { x: [0.45, 0.95], z: [1.4, 2.35] },
+    },
+  },
+  leo2: {
+    name: 'Leopard 2', weight: 36, speedCap: 19, eff: 1.0, turn: 1.1, radius: 3.6, ammoMax: 42,
+    armor: { front: 300, side: 80, rear: 45, top: 30 },
+    modules: [
+      { id: 'engine', u: [-0.7, 0.7], v: [0.2, 0.85], w: [-0.9, -0.4] },
+      { id: 'transmission', u: [-0.8, 0.8], v: [0.1, 0.6], w: [-1.0, -0.88] },
+      { id: 'ammo', u: [0.3, 0.95], v: [0.2, 0.7], w: [0.35, 0.75] },
+    ],
+    crew: [
+      { u: [-0.8, -0.2], v: [0.2, 0.8], w: [0.6, 0.95] },
+      { u: [-0.6, 0.6], v: [0.2, 1.0], w: [-0.3, 0.3] },
+    ],
+    seats: { driver: { pos: [-0.6, 0.64, 2.4], eye: [-0.6, 1.32, 2.65] } },
+    interior: {
+      x: 1.05, floor: 0.55, roof: 1.58, z: [-1.0, 3.0],
+      slits: [{ x: [-0.95, -0.25], y: [1.26, 1.38] }],
+      walk: [{ x: [-0.9, 0.9], z: [-0.85, 1.4] }, { x: [-0.95, -0.25], z: [1.4, 2.55] }],
+      ammo: { x: [0.45, 1.0], z: [1.6, 2.8] },
     },
   },
 };
@@ -151,6 +254,76 @@ export const TURRETS = {
       commander: { pos: [-0.55, 0.1, -0.62], eye: [-0.55, 0.98, -0.55] },
     },
   },
+  pz2: {
+    name: 'Башня Pz.II', weight: 1.2, elevMin: -0.16, elevMax: 0.35,
+    armor: { front: 30, side: 15, rear: 15, top: 10 },
+    modules: [
+      { id: 'turret', u: [-0.6, 0.6], v: [0.0, 0.25], w: [-0.6, 0.5] },
+      { id: 'gun', u: [-0.3, 0.3], v: [0.25, 0.8], w: [-0.2, 0.95] },
+      { id: 'ammo', u: [-0.85, -0.5], v: [0.1, 0.5], w: [-0.7, -0.3] },
+    ],
+    crew: [{ u: [-0.85, 0.85], v: [0.0, 0.85], w: [-0.7, 0.4] }],
+    seats: {
+      gunner: { pos: [0.3, -0.42, 0.22], eye: [0.3, 0.38, 0.45] },
+      commander: { pos: [0, -0.22, -0.38], eye: [0, 0.72, -0.35] },
+    },
+  },
+  t26: {
+    name: 'Башня Т-26', weight: 1.2, elevMin: -0.1, elevMax: 0.44,
+    armor: { front: 15, side: 15, rear: 15, top: 8 },
+    modules: [
+      { id: 'turret', u: [-0.6, 0.6], v: [0.0, 0.25], w: [-0.5, 0.5] },
+      { id: 'gun', u: [-0.3, 0.3], v: [0.25, 0.8], w: [-0.1, 0.95] },
+      { id: 'ammo', u: [-0.8, 0.8], v: [0.15, 0.7], w: [-1.0, -0.6] },
+    ],
+    crew: [{ u: [-0.85, 0.85], v: [0.0, 0.85], w: [-0.6, 0.4] }],
+    seats: {
+      gunner: { pos: [0.32, -0.42, 0.2], eye: [0.32, 0.38, 0.42] },
+      commander: { pos: [-0.32, -0.25, -0.22], eye: [-0.32, 0.64, -0.25] },
+    },
+  },
+  t44: {
+    name: 'Башня Т-44', weight: 6.5, elevMin: -0.1, elevMax: 0.44,
+    armor: { front: 150, side: 90, rear: 75, top: 20 },
+    modules: [
+      { id: 'turret', u: [-0.6, 0.6], v: [0.0, 0.25], w: [-0.6, 0.5] },
+      { id: 'gun', u: [-0.3, 0.3], v: [0.25, 0.75], w: [-0.3, 0.9] },
+      { id: 'ammo', u: [-0.7, 0.7], v: [0.1, 0.5], w: [-1.0, -0.65] },
+    ],
+    crew: [{ u: [-0.85, 0.85], v: [0.0, 0.8], w: [-0.7, 0.3] }],
+    seats: {
+      gunner: { pos: [0.42, -0.3, 0.3], eye: [0.42, 0.5, 0.52] },
+      commander: { pos: [0.45, 0.05, -0.38], eye: [0.45, 0.9, -0.35] },
+    },
+  },
+  is2: {
+    name: 'Башня ИС-2', weight: 10, elevMin: -0.05, elevMax: 0.35,
+    armor: { front: 170, side: 100, rear: 100, top: 30 },
+    modules: [
+      { id: 'turret', u: [-0.6, 0.6], v: [0.0, 0.25], w: [-0.6, 0.5] },
+      { id: 'gun', u: [-0.3, 0.3], v: [0.25, 0.75], w: [-0.3, 0.95] },
+      { id: 'ammo', u: [-0.7, 0.7], v: [0.1, 0.55], w: [-1.0, -0.65] },
+    ],
+    crew: [{ u: [-0.85, 0.85], v: [0.0, 0.85], w: [-0.7, 0.3] }],
+    seats: {
+      gunner: { pos: [0.45, -0.3, 0.3], eye: [0.45, 0.52, 0.52] },
+      commander: { pos: [0.5, 0.08, -0.48], eye: [0.5, 0.95, -0.45] },
+    },
+  },
+  leo2: {
+    name: 'Башня Leopard 2', weight: 16, elevMin: -0.15, elevMax: 0.35,
+    armor: { front: 360, side: 140, rear: 60, top: 40 },
+    modules: [
+      { id: 'ammo', u: [-0.8, 0.8], v: [0.25, 0.85], w: [-1.0, -0.6] },
+      { id: 'turret', u: [-0.5, 0.5], v: [0.0, 0.2], w: [-0.4, 0.4] },
+      { id: 'gun', u: [-0.25, 0.25], v: [0.25, 0.8], w: [0.2, 1.0] },
+    ],
+    crew: [{ u: [-0.85, 0.85], v: [0.0, 0.9], w: [-0.3, 0.6] }],
+    seats: {
+      gunner: { pos: [-0.6, -0.3, 0.55], eye: [-0.6, 0.48, 0.78] },
+      commander: { pos: [-0.72, 0.1, -0.3], eye: [-0.72, 0.96, -0.28] },
+    },
+  },
 };
 
 // ------------------------------------------------------------------ guns
@@ -159,22 +332,38 @@ export const GUNS = {
   abrams: { name: 'M256', caliber: '120 мм', weight: 3.2, reload: 5.5, shellSpeed: 600, pen: 400, dmg: 1.1, disp: 0.0025, elevSpeed: 0.35 },
   avre:   { name: 'L9A1', caliber: '165 мм', weight: 2.8, reload: 9, shellSpeed: 380, pen: 250, dmg: 1.6, disp: 0.005, elevSpeed: 0.18 },
   markV:  { name: 'QF 6-pdr', caliber: '57 мм', weight: 0.5, reload: 3.5, shellSpeed: 330, pen: 65, dmg: 0.8, disp: 0.006, elevSpeed: 0.3 },
+  pz2:    { name: 'KwK 30', caliber: '20 мм', weight: 0.1, reload: 0.9, shellSpeed: 480, pen: 40, dmg: 0.3, disp: 0.004, elevSpeed: 0.4 },
+  t26:    { name: '20-К', caliber: '45 мм', weight: 0.3, reload: 3.2, shellSpeed: 430, pen: 50, dmg: 0.55, disp: 0.004, elevSpeed: 0.3 },
+  t44:    { name: 'ЗИС-С-53', caliber: '85 мм', weight: 1.5, reload: 6, shellSpeed: 500, pen: 140, dmg: 0.85, disp: 0.003, elevSpeed: 0.22 },
+  is2:    { name: 'Д-25Т', caliber: '122 мм', weight: 2.8, reload: 12, shellSpeed: 480, pen: 175, dmg: 1.4, disp: 0.004, elevSpeed: 0.18 },
+  leo2:   { name: 'Rh-120 L/44', caliber: '120 мм', weight: 3.1, reload: 5.5, shellSpeed: 610, pen: 420, dmg: 1.1, disp: 0.0023, elevSpeed: 0.38 },
 };
 
 // ------------------------------------------------------------------ engines
+// fuelUse: litres per second at full throttle (idling burns 12% of it)
 export const ENGINES = {
-  t55:    { name: 'В-55', power: 580, weight: 1.0, fuelUse: 0.07 },
-  abrams: { name: 'AGT-1500', power: 1500, weight: 1.1, fuelUse: 0.13 },
-  avre:   { name: 'Leyland L60', power: 750, weight: 1.9, fuelUse: 0.1 },
-  markV:  { name: 'Ricardo 150', power: 150, weight: 1.5, fuelUse: 0.05 },
+  t55:    { name: 'В-55', power: 580, weight: 1.0, fuelUse: 0.25 },
+  abrams: { name: 'AGT-1500', power: 1500, weight: 1.1, fuelUse: 0.5 },
+  avre:   { name: 'Leyland L60', power: 750, weight: 1.9, fuelUse: 0.3 },
+  markV:  { name: 'Ricardo 150', power: 150, weight: 1.5, fuelUse: 0.2 },
+  pz2:    { name: 'Maybach HL 62', power: 140, weight: 0.7, fuelUse: 0.1 },
+  t26:    { name: 'ГАЗ Т-26', power: 91, weight: 0.5, fuelUse: 0.12 },
+  t44:    { name: 'В-44', power: 520, weight: 0.9, fuelUse: 0.25 },
+  is2:    { name: 'В-2-ИС', power: 520, weight: 1.0, fuelUse: 0.28 },
+  leo2:   { name: 'MTU MB 873', power: 1500, weight: 2.5, fuelUse: 0.45 },
 };
 
-// ------------------------------------------------------------------ external fuel tanks
+// ------------------------------------------------------------------ external fuel tanks (all the fuel is here, litres)
 export const FUELS = {
-  t55:    { name: 'бочки 2×200 л', cap: 40, weight: 0.45 },
-  abrams: { name: 'стеллаж канистр', cap: 30, weight: 0.35 },
-  avre:   { name: 'баки 2×180 л', cap: 36, weight: 0.4 },
-  markV:  { name: 'бак 420 л', cap: 45, weight: 0.6 },
+  t55:    { name: 'бочки 2×200 л', cap: 400, weight: 0.45 },
+  abrams: { name: 'стеллаж канистр 12×20 л', cap: 240, weight: 0.35 },
+  avre:   { name: 'баки 2×180 л', cap: 360, weight: 0.4 },
+  markV:  { name: 'бак 420 л', cap: 420, weight: 0.6 },
+  pz2:    { name: 'канистры 6×20 л', cap: 120, weight: 0.15 },
+  t26:    { name: 'кормовой бак 180 л', cap: 180, weight: 0.2 },
+  t44:    { name: 'бочки 2×190 л', cap: 380, weight: 0.4 },
+  is2:    { name: 'бортовые баки 3×90 л', cap: 270, weight: 0.35 },
+  leo2:   { name: 'кормовые баки 2×220 л', cap: 440, weight: 0.5 },
 };
 
 // ------------------------------------------------------------------ turret drives (fit any hull, only their own turret)
@@ -183,7 +372,20 @@ export const DRIVES = {
   abrams: { name: 'привод башни Abrams', speed: 0.9, weight: 0.3 },
   avre:   { name: 'привод башни Chieftain', speed: 0.4, weight: 0.3 },
   markV:  { name: 'механизм наводки Mark V', speed: 0.7, weight: 0.2, fixed: true },
+  pz2:    { name: 'поворотный механизм Pz.II', speed: 0.9, weight: 0.1 },
+  t26:    { name: 'поворотный механизм Т-26', speed: 0.7, weight: 0.1 },
+  t44:    { name: 'поворотный механизм Т-44', speed: 0.6, weight: 0.3 },
+  is2:    { name: 'поворотный механизм ИС-2', speed: 0.35, weight: 0.35 },
+  leo2:   { name: 'привод башни Leopard 2', speed: 1.0, weight: 0.3 },
 };
+
+// machine gun that comes mounted on each tank type (weapons.js key)
+export const TANK_MG = {
+  t55: 'pkt', abrams: 'm240', avre: 'm240', markV: 'hotchkiss', pz2: 'mg34', t26: 'dt', t44: 'dt', is2: 'dt', leo2: 'mg3',
+};
+
+// sandbags heaped on the hull: armour added per bag on the face it covers, weight per bag
+export const SANDBAG = { max: 6, front: 20, side: 12, weight: 0.2 };
 
 export const CATALOG = { engine: ENGINES, gun: GUNS, fuel: FUELS, drive: DRIVES, turret: TURRETS };
 
@@ -197,7 +399,9 @@ export function defaultParts(key) {
 
 let PART_ID = 0;
 export function makePart(kind, key, hp = 100) {
-  return { id: ++PART_ID, kind, key, hp, vis: null };
+  const p = { id: ++PART_ID, kind, key, hp, vis: null };
+  if (kind === 'fuel') p.fuel = FUELS[key].cap;        // the fuel travels with the tanks
+  return p;
 }
 
 export function partLabel(part) {
@@ -209,14 +413,17 @@ export function partLabel(part) {
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 
 // Everything the rest of the game reads as tank.def is computed here from the hull and its parts.
-export function computeSpec(hullKey, parts) {
+// bags: sandbags on the hull { front, side }
+export function computeSpec(hullKey, parts, bags = null) {
   const H = HULLS[hullKey];
   const T = parts.turret ? TURRETS[parts.turret.key] : null;
   const Gn = parts.gun ? GUNS[parts.gun.key] : null;
   const E = parts.engine ? ENGINES[parts.engine.key] : null;
   const F = parts.fuel ? FUELS[parts.fuel.key] : null;
   const D = parts.drive ? DRIVES[parts.drive.key] : null;
-  const weight = H.weight + (T?.weight || 0) + (Gn?.weight || 0) + (E?.weight || 0) + (F?.weight || 0) + (D?.weight || 0);
+  const nBags = bags ? bags.front + bags.side : 0;
+  const weight = H.weight + (T?.weight || 0) + (Gn?.weight || 0) + (E?.weight || 0) + (F?.weight || 0) + (D?.weight || 0) +
+                 nBags * SANDBAG.weight;
   const power = E ? E.power : 0;
   const pw = power / weight;
   // the drive must match the turret it turns (the Mark V gun mount needs its own gear)
@@ -257,9 +464,23 @@ export function computeSpec(hullKey, parts) {
     reload: Gn ? Gn.reload : 5, shellSpeed: Gn ? Gn.shellSpeed : 500, pen: Gn ? Gn.pen : 0,
     dmg: Gn ? Gn.dmg : 0, disp: Gn ? Gn.disp : 0.005, caliber: Gn ? Gn.caliber : '—',
     ammoMax: H.ammoMax,
-    fuelInt: H.fuelInt, fuelExt: F ? F.cap : 0, fuelMax: H.fuelInt + (F ? F.cap : 0),
+    fuelMax: F ? F.cap : 0,
     fuelUse: E ? E.fuelUse : 0.05,
-    armor: { hull: H.armor, turret: T ? T.armor : H.armor },
+    armor: {
+      hull: bags ? { ...H.armor, front: H.armor.front + bags.front * SANDBAG.front, side: H.armor.side + bags.side * SANDBAG.side } : H.armor,
+      turret: T ? T.armor : H.armor,
+    },
     modules, crew,
   };
 }
+
+// ------------------------------------------------------------------ tank ranking
+// combat value of a stock tank: firepower + frontal protection + mobility. Used to order the tank types
+// from the weakest (met at the start of the road) to the most advanced (met far down the road).
+export function tankRating(key) {
+  const d = computeSpec(key, defaultParts(key));
+  const fire = d.pen * Math.sqrt(d.dmg) * Math.pow(6 / d.reload, 0.25);
+  const prot = (d.armor.hull.front + d.armor.turret.front) / 2;
+  return fire * 0.6 + prot * 0.8 + d.maxSpeed * 4;
+}
+export const TANK_TIERS = Object.keys(HULLS).sort((a, b) => tankRating(a) - tankRating(b));

@@ -50,9 +50,16 @@ export class Sfx {
     const v = this.vol(dist) * size;
     this.burst(0.9 * v, 1.3, 900);
   }
-  ping(dist) {
+  // small arms: size ~0.6 pistol .. 1.1 machine gun
+  gun(dist, size = 1) {
+    const v = this.vol(dist * 1.6) * size;
+    if (v < 0.02) return;
+    this.burst(0.55 * v, 0.12 + 0.1 * size, 3800 + 1500 * size);
+    this.burst(0.35 * v, 0.25, 700, 1.5);
+  }
+  ping(dist, k = 1) {
     if (!this.ctx) return;
-    const v = this.vol(dist);
+    const v = this.vol(dist) * k;
     const t = this.ctx.currentTime;
     const o = this.ctx.createOscillator();
     o.frequency.setValueAtTime(2400, t);
@@ -65,6 +72,8 @@ export class Sfx {
   }
   click() { this.burst(0.2, 0.08, 4000); }
   hiss() { this.burst(0.35, 0.6, 5000); }
+  pour() { this.burst(0.12, 0.4, 1200, 3); }
+  reload() { this.burst(0.18, 0.06, 5000); setTimeout(() => this.burst(0.2, 0.08, 3000), 180); }
 
   setEngine(on, load) {
     if (!this.ctx) return;

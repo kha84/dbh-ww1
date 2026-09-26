@@ -701,6 +701,7 @@ export class World {
         if (ram && Math.abs(ram.speed) > 1.2 + t.s * 1.3) {
           this.breakTree(t, t.base + 0.35 + Math.random() * 0.3, ram.dx, ram.dz);
           ram.broke = true;
+          ram.size = Math.max(ram.size || 0, t.s);
           return;
         }
         const d = Math.sqrt(d2);
