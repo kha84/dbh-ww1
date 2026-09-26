@@ -212,7 +212,8 @@ export class EnemyDirector {
 
   makeTank(key, pos, heading, r, opts = {}) {
     return new Tank(this.scene, key, pos, heading, {
-      team: 'enemy', crew: true, kits: r() < 0.55 ? 1 + (r() < 0.3 ? 1 : 0) : 0, ...opts,
+      team: 'enemy', crew: true, kits: r() < 0.55 ? 1 + (r() < 0.3 ? 1 : 0) : 0,
+      torches: Math.random() < 0.2 ? 1 : 0, plates: Math.random() < 0.3 ? 1 : 0, ...opts,
     });
   }
 

@@ -2,11 +2,11 @@
 import * as THREE from 'three';
 import { World, WATER_LEVEL, segBox, pushOut } from './world.js';
 import { Tank, MODULE_IDS, MODULE_NAMES, SYSTEM_IDS, G, partVisual } from './tanks.js';
-import { HULLS, SYSTEM_PART, PART_NAMES, ORIGIN_NAMES, makePart, partLabel } from './parts.js';
+import { HULLS, GUNS, SYSTEM_PART, PART_NAMES, ORIGIN_NAMES, makePart, partLabel } from './parts.js';
 import { turretCeiling } from './models.js';
 import { Combat, Effects, describeHit } from './combat.js';
 import { EnemyDirector } from './ai.js';
-import { Items, ITEM_DEFS, buildItemMesh } from './items.js';
+import { Items, ITEM_DEFS, TOOL_USE, SHELLS_PER_BOX, buildItemMesh, shellsLabel } from './items.js';
 import { Workshop } from './workshop.js';
 import { Sfx } from './audio.js';
 import { SETTLEMENT_LABEL } from './settlements.js';
@@ -27,6 +27,7 @@ const state = {
   slot: null,                    // on foot: tank part slot the player looks at
   lookItem: null,
   crane: null,                   // crane control panel menu open
+  stash: null,                   // tank whose stowage menu is open (kits, plates, shells)
   paused: false,
   started: false,
   over: false,
@@ -65,6 +66,7 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.05;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.localClippingEnabled = true;     // broken trees are clipped at the break
 app.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
@@ -134,6 +136,14 @@ world.onSettlementBuilt = s => {
   for (const it of s.items) items.add(it.id, it.type, it.x, it.z, it.type === 'part' ? makePart(it.kind, it.key, it.hp) : null);
   workshop.onBuilt(s);
 };
+world.onHouseRuined = (x, y, z, size) => {
+  const p = new THREE.Vector3(x, y, z);
+  for (let i = 0; i < 14; i++) {
+    const q = p.clone().add(new THREE.Vector3((Math.random() - 0.5) * size, Math.random() * 2, (Math.random() - 0.5) * size));
+    fx.spawn('dust', q, new THREE.Vector3((Math.random() - 0.5) * 3, 1 + Math.random() * 2, (Math.random() - 0.5) * 3), 1.6);
+  }
+  sfx.boom(p.distanceTo(camera.position), 0.8);
+};
 world.onSettlementRemoved = s => {
   for (const it of s.items) items.remove(it.id, false);
   workshop.onRemoved(s);
@@ -155,6 +165,14 @@ handPlate.rotation.set(0.25, 0.2, -0.35);
 handPlate.visible = false;
 handPlate.traverse(o => { if (o.isMesh) o.castShadow = false; });
 camera.add(handPlate);
+// box of shells carried in hands
+const handShells = buildItemMesh('shells');
+handShells.remove(handShells.userData.glow);
+handShells.position.set(0.05, -0.75, -1.0);
+handShells.rotation.set(0.3, 0.35, 0);
+handShells.visible = false;
+handShells.traverse(o => { if (o.isMesh) o.castShadow = false; });
+camera.add(handShells);
 
 function spawnTank(key, x, z, heading, opts) {
   const t = new Tank(scene, key, new THREE.Vector3(x, 0, z), heading, opts);
@@ -246,6 +264,7 @@ document.addEventListener('keydown', e => {
   if (e.code === 'Escape') {
     if (state.repairOpen) { closeRepair(); return; }
     if (state.crane) { closeCrane(); return; }
+    if (state.stash) { closeStash(); return; }
     togglePause();
     return;
   }
@@ -265,6 +284,7 @@ document.addEventListener('keydown', e => {
     const n = parseInt(dg[1], 10) - 1;
     if (state.repairOpen) doRepair(n);
     else if (state.crane) doCrane(n);
+    else if (state.stash) doStash(n);
     else if (state.mode === 'drive' && state.view === 'inside' && n < SEAT_KEYS.length) sitAt(SEAT_KEYS[n]);
   }
 });
@@ -416,7 +436,11 @@ function predictImpact(v) {
         if (tt !== null) return p.lerp(new THREE.Vector3(nx, ny, nz), tt);
       }
     }
-    p.set(nx, ny, nz);
+    const np = new THREE.Vector3(nx, ny, nz);
+    const ob = world.raycastObstacles(p, np), tr = world.raycastTrees(p, np);
+    const tt = Math.min(ob ? ob.t : 2, tr ? tr.t : 2);
+    if (tt <= 1) return p.lerp(np, tt);
+    p.copy(np);
     if (ny < Math.max(world.heightAt(nx, nz), WATER_LEVEL)) return p;
   }
   return p;
@@ -430,7 +454,10 @@ function tryToggleVehicle() {
     if (!v) return;
     if (v.wrecked) { msg('Танк сгорел — внутрь не сесть'); return; }
     if (v.crew) { msg('В этом танке живой экипаж!', '#ff9a7a'); return; }
+    if (items.hands === 'plate') { stowPlate(v); return; }
+    if (items.hands === 'shells') { loadShells(v); return; }
     if (items.hands) { msg('Руки заняты — брось ношу (G)'); return; }
+    closeStash();
     closeCrane();
     state.mode = 'drive';
     state.vehicle = v;
@@ -701,6 +728,11 @@ function pressF() {
   }
   if (state.crane) { closeCrane(); return; }
   if (items.hands === 'plate') return;         // welding is a hold action
+  if (items.hands === 'shells') {
+    const t = state.nearTank;
+    if (t && !t.wrecked && !t.crew) loadShells(t); else msg('Подойди к танку, чтобы зарядить снаряды');
+    return;
+  }
   if (items.hands === 'part') { installHeld(); return; }
   if (state.nearPanel && !state.slot) { openCrane(state.nearPanel); return; }
   const it = state.nearItem;
@@ -712,14 +744,105 @@ function pressF() {
   if (state.slot) { slotAction(state.slot); return; }
   const t = state.nearTank;
   if (t && !t.crew) {
-    const n = t.loot.repair_kit;
-    if (n > 0) {
-      items.inventory.repair_kit += n;
-      t.loot.repair_kit = 0;
-      msg(`Найдено в танке: ремкомплект ×${n}`, '#e8c96a');
-      sfx.click();
-    } else msg('В танке ничего полезного');
+    if (t.wrecked) { msg('Танк сгорел — внутри ничего не уцелело'); return; }
+    if (state.stash === t) closeStash(); else openStash(t);
   }
+}
+
+// ================== tank stowage: kits, tools, spare plates, shells ==================
+const PLATES_MAX = 4;
+const shellKey = t => t.parts.gun ? t.parts.gun.key : t.key;
+
+function stowPlate(t) {
+  if (t.plates >= PLATES_MAX) { msg(`В ${t.def.name} больше не уложить — ${PLATES_MAX} бронелиста максимум`); return; }
+  t.plates++;
+  items.hands = null;
+  sfx.click();
+  msg(`Бронелист уложен в ${t.def.name} (${t.plates}/${PLATES_MAX})`, '#9fd0ff');
+}
+
+function loadShells(t) {
+  const b = items.handShells;
+  if (!t.parts.gun) { msg('В танке нет орудия — снаряды некуда заряжать'); return; }
+  if (t.parts.gun.key !== b.key) {
+    msg(`Снаряды ${b.caliber} не подходят к орудию ${GUNS[t.parts.gun.key].caliber}`, '#ff9a7a');
+    return;
+  }
+  const room = t.def.ammoMax - Math.floor(t.ammo);
+  if (room <= 0) { msg('Боеукладка полна'); return; }
+  const n = Math.min(room, b.n);
+  t.ammo += n;
+  b.n -= n;
+  sfx.click();
+  if (b.n <= 0) { items.hands = null; items.handShells = null; }
+  msg(`Загружено снарядов: ${n} (${Math.floor(t.ammo)}/${t.def.ammoMax})` + (b.n > 0 ? ` — в ящике осталось ${b.n}` : ''), '#9fe07f');
+}
+
+function stashOptions(t) {
+  const kits = t.loot.repair_kit, torches = t.loot.torch || 0;
+  const ammo = Math.floor(t.ammo), key = shellKey(t);
+  const handsFree = !items.hands;
+  return [
+    { id: 'kits', label: 'Ремкомплекты', ok: kits > 0, note: kits > 0 ? `×${kits} — забрать` : 'нет' },
+    { id: 'torch', label: 'Газовые горелки', ok: torches > 0, note: torches > 0 ? `×${torches} — забрать` : 'нет' },
+    { id: 'plate', label: 'Бронелист в руки', ok: t.plates > 0 && handsFree,
+      note: t.plates > 0 ? `${t.plates}/${PLATES_MAX}` + (handsFree ? '' : ' — руки заняты') : 'нет' },
+    { id: 'shells', label: `Снаряды ${GUNS[key].caliber} в руки`, ok: ammo > 0 && handsFree,
+      note: ammo > 0 ? `${ammo} шт. — ящик до ${SHELLS_PER_BOX}` + (handsFree ? '' : ', руки заняты') : 'нет' },
+  ];
+}
+
+function openStash(t) {
+  closeRepair();
+  closeCrane();
+  state.stash = t;
+  renderStash();
+}
+function closeStash() {
+  if (!state.stash) return;
+  state.stash = null;
+  repairEl.style.display = 'none';
+}
+function renderStash() {
+  const t = state.stash;
+  if (!t) return;
+  let html = `<h3>УКЛАДКА — ${t.def.name}</h3>`;
+  stashOptions(t).forEach((o, i) => {
+    html += `<div class="opt ${o.ok ? '' : 'off'}"><span><b>${i + 1}</b>${o.label}</span><span>${o.note}</span></div>`;
+  });
+  html += `<div class="foot">Цифра — взять · F / ESC — закрыть<br>С бронелистом или ящиком снарядов в руках у танка: <b>E</b> — уложить / зарядить</div>`;
+  repairEl.innerHTML = html;
+  repairEl.style.display = 'block';
+}
+function doStash(i) {
+  const t = state.stash;
+  const o = stashOptions(t)[i];
+  if (!o) return;
+  if (!o.ok) { msg(`${o.label}: ${o.note}`); return; }
+  if (o.id === 'kits') {
+    items.give('repair_kit', t.loot.repair_kit);
+    msg(`Взято из танка: ремкомплект ×${t.loot.repair_kit}`, '#e8c96a');
+    t.loot.repair_kit = 0;
+  } else if (o.id === 'torch') {
+    items.give('torch', t.loot.torch);
+    msg(`Взято из танка: газовая горелка ×${t.loot.torch}`, '#e8c96a');
+    t.loot.torch = 0;
+  } else if (o.id === 'plate') {
+    t.plates--;
+    items.hands = 'plate';
+    msg(`Бронелист вынут из ${t.def.name} (осталось ${t.plates})`, '#9fd0ff');
+    closeStash();
+  } else if (o.id === 'shells') {
+    const key = shellKey(t);
+    const n = Math.min(SHELLS_PER_BOX, Math.floor(t.ammo));
+    t.ammo -= n;
+    items.hands = 'shells';
+    items.handShells = { key, caliber: GUNS[key].caliber, n };
+    msg(`В руках: ${shellsLabel(items.handShells)} — у своего танка нажми E`, '#e8c96a');
+    closeStash();
+  }
+  sfx.click();
+  if (state.stash) renderStash();
 }
 
 function dropHeld() {
@@ -730,6 +853,12 @@ function dropHeld() {
     items.hands = null;
     items.drop('plate', x, z);
     msg('Бронелист брошен');
+  } else if (items.hands === 'shells') {
+    const b = items.handShells;
+    items.hands = null;
+    items.handShells = null;
+    items.drop('shells', x, z, b);
+    msg(`Брошено: ${shellsLabel(b)}`);
   } else {
     const part = items.releasePart();
     items.drop('part', x, z, part);
@@ -759,6 +888,15 @@ function updateHold(dt) {
   $('hold').style.display = 'block';
   $('holdText').textContent = h.text;
   $('holdFill').style.width = `${Math.min(100, h.t / h.need * 100)}%`;
+  const tool = h.kind === 'weld' ? 'torch' : 'cutter';
+  const gas = items.useTool(tool, TOOL_USE[tool] * dt);
+  if (gas === 'spare') msg(`${ITEM_DEFS[tool].name}: газ кончился — взята запасная`, '#e8c96a');
+  if (gas === 'empty') {
+    msg(`${ITEM_DEFS[tool].name}: газ кончился — ищи новую`, '#ff9a7a');
+    state.hold = null;
+    $('hold').style.display = 'none';
+    return;
+  }
   const sparkAt = new THREE.Vector3(Math.sin(state.yaw), 0, Math.cos(state.yaw))
     .multiplyScalar(1.1).add(player.position).setY(player.position.y + 1.1);
   if (Math.random() < 0.8) fx.weld(sparkAt);
@@ -784,6 +922,7 @@ function updateHold(dt) {
 const repairEl = $('repair');
 function openRepair() {
   closeCrane();
+  closeStash();
   const t = state.mode === 'drive' ? state.vehicle : state.nearTank;
   if (!t || t.wrecked) { msg('Рядом нет танка для ремонта'); return; }
   state.repairOpen = true;
@@ -832,6 +971,7 @@ function doRepair(i) {
 // ================== crane control panel ==================
 function openCrane(c) {
   closeRepair();
+  closeStash();
   state.crane = c;
   renderCrane();
 }
@@ -1134,9 +1274,13 @@ function updateInventory() {
   let html = `<h4>ЗДОРОВЬЕ</h4><div id="hpbar"><div id="hpfill" style="width:${state.hp}%;background:${hpColor(state.hp)}"></div></div><h4>ИНВЕНТАРЬ</h4>`;
   for (const k of ['repair_kit', 'torch', 'cutter']) {
     const n = inv[k] || 0;
-    html += `<div class="row ${n ? '' : 'none'}"><span>${ITEM_DEFS[k].icon} ${ITEM_DEFS[k].name}</span><span>${k === 'repair_kit' ? '×' + n : (n ? 'есть' : 'нет')}</span></div>`;
+    let v = k === 'repair_kit' ? '×' + n : 'нет';
+    if (k !== 'repair_kit' && n) v = `газ ${Math.ceil(items.charge[k])}%` + (n > 1 ? ` · ×${n}` : '');
+    html += `<div class="row ${n ? '' : 'none'}"><span>${ITEM_DEFS[k].icon} ${ITEM_DEFS[k].name}</span><span>${v}</span></div>`;
   }
-  html += `<div class="hands">В руках: ${items.hands ? ITEM_DEFS[items.hands].icon + ' ' + ITEM_DEFS[items.hands].name : '—'}</div>`;
+  const held = !items.hands ? '—' : items.hands === 'shells' ? `${ITEM_DEFS.shells.icon} ${shellsLabel(items.handShells)}`
+    : items.hands === 'part' ? `${ITEM_DEFS.part.icon} ${partLabel(items.handPart)}` : ITEM_DEFS[items.hands].icon + ' ' + ITEM_DEFS[items.hands].name;
+  html += `<div class="hands">В руках: ${held}</div>`;
   if (html !== invKey) { invEl.innerHTML = html; invKey = html; }
 }
 
@@ -1157,7 +1301,8 @@ function updateGauge(v) {
     `<div class="mbar"><i style="width:${rl * 100}%;background:${rl >= 1 ? '#7fe07f' : '#e8a53a'}"></i></div>` +
     `<div class="gline"><span>Топливо</span><b>${fuelP.toFixed(0)}%</b></div>` +
     `<div class="mbar"><i style="width:${fuelP}%;background:${fuelP < 15 ? '#e0503a' : '#c9b48a'}"></i></div>` +
-    `<div class="gline"><span>Огнетушители</span><b>${v.extinguishers}</b></div>`;
+    `<div class="gline"><span>Огнетушители</span><b>${v.extinguishers}</b></div>` +
+    `<div class="gline"><span>Бронелисты в укладке</span><b>${v.plates}</b></div>`;
 }
 
 // enemy / tank markers
@@ -1336,7 +1481,12 @@ function updatePrompt() {
           ? `Удерживай <b>F</b> — приварить бронелист (корпус ${Math.round(t.hp.hull)}%)`
           : 'Нет газовой горелки');
       }
+      if (t && !t.wrecked && !t.crew) lines.push(`<b>E</b> — уложить бронелист в ${t.def.name} (${t.plates}/${PLATES_MAX})`);
       lines.push('<b>G</b> — бросить бронелист');
+    } else if (items.hands === 'shells') {
+      if (t && !t.wrecked && !t.crew) lines.push(`<b>E</b> — зарядить в ${t.def.name} (${Math.floor(t.ammo)}/${t.def.ammoMax})`);
+      else lines.push(`В руках: ${shellsLabel(items.handShells)} — подойди к танку`);
+      lines.push('<b>G</b> — бросить ящик');
     } else if (items.hands === 'part') {
       if (!state.slot) lines.push(`В руках: ${partLabel(items.handPart)} — подойди к месту установки`);
       lines.push('<b>G</b> — бросить');
@@ -1350,7 +1500,7 @@ function updatePrompt() {
       else if (t.crew) lines.push(`${t.def.name}: экипаж жив`);
       else {
         if (!items.hands) lines.push(`<b>E</b> — сесть в ${t.def.name}`);
-        if (t.loot.repair_kit > 0 && !items.hands && !state.nearItem) lines.push(`<b>F</b> — обыскать танк`);
+        if (!items.hands && !state.nearItem) lines.push(`<b>F</b> — укладка танка (ремкомплекты, бронелисты, снаряды)`);
         if (!items.hands && items.inventory.cutter > 0) {
           lines.push(t.hp.hull >= 75 ? 'Удерживай <b>T</b> — срезать бронелист резаком' : 'Корпус повреждён — бронелист не срезать');
         }
@@ -1377,7 +1527,7 @@ function updatePrompt() {
 
 // ================== main loop ==================
 const clock = new THREE.Clock();
-let despawnT = 0, repairRenderT = 0, craneRenderT = 0;
+let despawnT = 0, repairRenderT = 0, craneRenderT = 0, stashRenderT = 0;
 
 function frame(dt) {
   state.time += dt;
@@ -1386,6 +1536,7 @@ function frame(dt) {
   const anchor = walking ? player.position : v.root.position;
 
   world.update(anchor, 4);
+  world.animate(dt);
   const created = director.update(anchor, tanks);
   if (created.length) tanks.push(...created);
 
@@ -1462,6 +1613,10 @@ function frame(dt) {
     $('hold').style.display = 'none';
     sfx.setEngine(v.operated && v.maxSpeedEff > 0, Math.min(1, Math.abs(v.speed) / v.def.maxSpeed + Math.abs(v.controls.throttle) * 0.3));
   }
+  if (state.stash) {
+    if (!walking || state.stash.wrecked || state.stash.crew || tankDist(state.stash, player.position) > TANK_REACH + 1) closeStash();
+    else if ((stashRenderT -= dt) <= 0) { stashRenderT = 0.3; renderStash(); }
+  }
   if (state.repairOpen) {
     const rt = state.repairTarget;
     if (!rt || rt.wrecked || (walking && tankDist(rt, player.position) > TANK_REACH + 1)) closeRepair();
@@ -1491,6 +1646,7 @@ function frame(dt) {
 
   // ---------- HUD
   handPlate.visible = walking && items.hands === 'plate';
+  handShells.visible = walking && items.hands === 'shells';
   $('sight').style.display = !walking && state.sight && camera.fov < 30 ? 'block' : 'none';
   $('crosshair').style.display = !walking && state.sight ? 'none' : 'block';
   $('crosshair').classList.toggle('driving', !walking && canGun());
@@ -1598,4 +1754,5 @@ animate();
 
 // handle for debugging / automated tests
 window.game = { state, tanks, world, items, combat, director, workshop, player, camera, keys, spawnTank, fx, frame,
+  openStash, doStash, stowPlate, loadShells,
   enterInside, leaveInside, sitAt, pressF, pressQ, dropHeld, tryToggleVehicle, openCrane, doCrane };

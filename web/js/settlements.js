@@ -59,6 +59,9 @@ const MAT = {
   gold: M(0xd8b04a, { metalness: 0.8, roughness: 0.3 }),
   white: M(0xf0efe8),
   hangar: M(0x7d8a86, { metalness: 0.4, roughness: 0.6 }),
+  rubble: M(0x6f675c),
+  hole: M(0x16120e, { roughness: 1 }),
+  charred: M(0x2e2a26),
 };
 
 function signTexture(title, sub) {
@@ -107,6 +110,7 @@ export function buildSettlement(world, plan) {
     world.heightAt(x, z), world.heightAt(x + rad, z), world.heightAt(x - rad, z),
     world.heightAt(x, z + rad), world.heightAt(x, z - rad));
 
+  let collect = null;                // meshes of the house being built
   const part = (geo, mat, x, y, z, sx, sy, sz, rot, shadow = true) => {
     const m = new THREE.Mesh(geo, mat);
     m.position.set(x, y, z);
@@ -114,6 +118,7 @@ export function buildSettlement(world, plan) {
     m.rotation.y = rot;
     m.castShadow = shadow; m.receiveShadow = true;
     group.add(m);
+    if (collect) collect.push(m);
     return m;
   };
   // put a part at local offset (lx along building X, lz along building Z) relative to f
@@ -129,8 +134,10 @@ export function buildSettlement(world, plan) {
   const addItem = (type, x, z, extra = {}) => items.push({ id: `s${plan.k}:${itemN++}`, type, x, z, ...extra });
 
   // ------------------------------------------------------------ builders
+  const houses = [];
   const house = (along, off, w, d, hWall, story = 1, flat = false) => {
     const f = frame(along, off);
+    collect = [];
     // face the road: long side along the road
     const y = groundMin(f.x, f.z, Math.max(w, d) / 2) - 0.3;
     const wall = r.pick(MAT.walls);
@@ -155,8 +162,74 @@ export function buildSettlement(world, plan) {
         part(box, MAT.darkConcrete, p.x, y + H, p.z, 0.6, 2.4, 0.6, f.rot);
       }
     }
-    obstacle(f, d / 2, w / 2, y, y + H + 3);
+    const o = obstacle(f, d / 2, w / 2, y, y + H + 3);
+    const rec = { id: `${plan.k}:${houses.length}`, n: houses.length, f, y, w, d, H, story, wall,
+                  meshes: collect, obstacle: o, hp: story > 1 ? 140 : 80 };
+    collect = null;
+    o.house = rec;
+    rec.hit = (point, dir, dmg) => hitHouse(rec, point, dmg);
+    rec.ram = speed => {
+      if (rec.ruined || speed < (rec.story > 1 ? 4 : 2.5)) return false;
+      ruinHouse(rec);
+      return true;
+    };
+    houses.push(rec);
     return f;
+  };
+
+  // shell hit: a hole in the wall, the house collapses when its hp runs out
+  const hitHouse = (rec, p, dmg) => {
+    if (rec.ruined) return;
+    rec.hp -= 45 * dmg;
+    if (rec.hp <= 0) { ruinHouse(rec); return; }
+    const o = rec.obstacle;
+    if (p.y > rec.y + rec.H + 0.2) return;           // hit the roof
+    const dx = p.x - o.x, dz = p.z - o.z;
+    let lx = dx * o.cos - dz * o.sin, lz = dx * o.sin + dz * o.cos;
+    const s = 0.7 + Math.random() * 0.6;
+    let sx = s, sz = s;
+    if (Math.abs(lx) / o.hx > Math.abs(lz) / o.hz) { lx = Math.sign(lx) * o.hx; sx = 0.14; }
+    else { lz = Math.sign(lz) * o.hz; sz = 0.14; }
+    const x = o.x + lx * o.cos + lz * o.sin, z = o.z - lx * o.sin + lz * o.cos;
+    const y = Math.max(rec.y + 0.4, p.y - s / 2);
+    collect = rec.meshes;
+    part(box, MAT.hole, x, y, z, sx, s, sz, o.rot, false);
+    collect = null;
+  };
+
+  // collapse: the house is replaced by a heap of rubble with wall stumps and charred beams
+  const ruinHouse = (rec, instant = false) => {
+    if (rec.ruined) return;
+    rec.ruined = true;
+    world.ruins.add(rec.id);
+    for (const m of rec.meshes) m.removeFromParent();
+    world.removeObstacle(rec.obstacle);
+    const rr = rng((plan.seed ^ Math.imul(rec.n + 1, 2654435761)) >>> 0);
+    const { f, y, w, d, H, wall } = rec;
+    const g = world.heightAt(f.x, f.z);
+    part(box, MAT.rubble, f.x, y, f.z, d * 0.8, Math.max(0.6, g - y + 0.5 + H * 0.12), w * 0.8, f.rot + (rr() - 0.5) * 0.1);
+    // stumps of the walls along the perimeter
+    for (const [ax, az, len, alongZ] of [[-d / 2, 0, w, true], [d / 2, 0, w, true], [0, -w / 2, d, false], [0, w / 2, d, false]]) {
+      const nSeg = 1 + Math.floor(rr() * 2);
+      for (let i = 0; i < nSeg; i++) {
+        if (rr() < 0.25) continue;
+        const sl = len * (0.2 + rr() * 0.3);
+        const c = (rr() - 0.5) * (len - sl);
+        const p = at(f, alongZ ? ax : c, alongZ ? c : az);
+        const h = 0.5 + rr() * Math.min(2.2, H * 0.55);
+        part(box, rr() < 0.3 ? MAT.charred : wall, p.x, y, p.z, alongZ ? 0.3 : sl, h + 0.3, alongZ ? sl : 0.3, f.rot);
+      }
+    }
+    // broken beams and a slab of the roof lying on the heap
+    for (let i = 0; i < 3; i++) {
+      const p = at(f, (rr() - 0.5) * d * 0.7, (rr() - 0.5) * w * 0.7);
+      const m = part(box, rr() < 0.5 ? MAT.charred : MAT.wood, p.x, g + 0.4 + rr() * 0.5, p.z, 0.22, 0.22, 2.5 + rr() * 2.5, f.rot + (rr() - 0.5) * 1.5);
+      m.rotation.x = (rr() - 0.5) * 0.7;
+    }
+    const rp = at(f, (rr() - 0.5) * d * 0.3, (rr() - 0.5) * w * 0.3);
+    const slab = part(box, MAT.roofs[rec.n % MAT.roofs.length], rp.x, g + 0.6, rp.z, d * 0.55, 0.15, w * 0.45, f.rot + (rr() - 0.5) * 0.4);
+    slab.rotation.z = (rr() - 0.5) * 0.6;
+    if (!instant && world.onHouseRuined) world.onHouseRuined(f.x, g + 1, f.z, Math.max(w, d));
   };
 
   const fence = (along, off, len) => {
@@ -200,7 +273,6 @@ export function buildSettlement(world, plan) {
   if (plan.type === 'village' || plan.type === 'town') {
     const town = plan.type === 'town';
     const rows = town ? [[17, 26], [42, 52]] : [[15, 24]];
-    const houses = [];
     for (const side of [-1, 1]) {
       for (const [o0, o1] of rows) {
         for (let a = -plan.halfLen + 10; a < plan.halfLen - 10; a += town ? 20 + r() * 8 : 22 + r() * 12) {
@@ -210,7 +282,7 @@ export function buildSettlement(world, plan) {
           const d = town ? 8 + r() * 4 : 6 + r() * 2;
           const off = side * (o0 + r() * (o1 - o0) + d / 2);
           const story = town && r() < 0.5 ? 2 : 1;
-          houses.push(house(a, off, w, d, 3.1, story, town && story === 2 && r() < 0.6));
+          house(a, off, w, d, 3.1, story, town && story === 2 && r() < 0.6);
           if (!town && r() < 0.5) fence(a, off - side * (d / 2 + 4), w + 4);
         }
       }
@@ -218,14 +290,20 @@ export function buildSettlement(world, plan) {
     // loot in yards
     const nKits = town ? 2 + (r() < 0.5 ? 1 : 0) : 1 + (r() < 0.35 ? 1 : 0);
     for (let i = 0; i < nKits && houses.length; i++) {
-      const h = houses[Math.floor(r() * houses.length)];
+      const h = houses[Math.floor(r() * houses.length)].f;
       const p = at(h, (h.x > world.roadX(h.z) ? -1 : 1) * 7, (r() - 0.5) * 4);
       addItem('repair_kit', p.x, p.z);
     }
-    if (plan.hasCutter && houses.length) {
-      const h = houses[0];
+    const hf = houses.map(h => h.f);
+    if (plan.hasCutter && hf.length) {
+      const h = hf[0];
       const p = at(h, (h.x > world.roadX(h.z) ? -1 : 1) * 7, 2);
       addItem('cutter', p.x, p.z);
+    }
+    if (plan.hasTorch && hf.length) {
+      const h = hf[hf.length - 1];
+      const p = at(h, (h.x > world.roadX(h.z) ? -1 : 1) * 7, -2);
+      addItem('torch', p.x, p.z);
     }
     if (town) {
       // church on the square
@@ -298,6 +376,7 @@ export function buildSettlement(world, plan) {
     part(box, MAT.red, pole.x, py + 6, pole.z, 0.3, 2.2, 2.6, pole.rot);
     zones.push({ type: 'fuel', x: f.x, z: f.z, r: 11, label: 'Заправка' });
     if (r() < 0.4) { const p = at(k, 0, -7); addItem('repair_kit', p.x, p.z); }
+    if (plan.hasTorch) { const p = at(k, 1.5, -7); addItem('torch', p.x, p.z); }
   }
 
   let crane = null;
@@ -389,6 +468,7 @@ export function buildSettlement(world, plan) {
     const nk = 1 + (r() < 0.5 ? 1 : 0);
     for (let i = 0; i < nk; i++) { const p = at(w, -side * 5.5, -2 + i * 2); addItem('repair_kit', p.x, p.z); }
     if (plan.hasCutter) { const p = at(w, -side * 5.5, 2.5); addItem('cutter', p.x, p.z); }
+    if (plan.hasTorch) { const p = at(w, -side * 5.5, 4); addItem('torch', p.x, p.z); }
     if (r() < 0.35 || plan.k === 1) { const p = at(pad, -side * 1, 16); addItem('plate', p.x, p.z); }
     // used spare parts lying by the hangar
     const nParts = plan.k === 1 ? 2 : (r() < 0.6 ? 1 : 0) + (r() < 0.3 ? 1 : 0);
@@ -401,6 +481,9 @@ export function buildSettlement(world, plan) {
     }
   }
 
+  // houses destroyed earlier stay ruined
+  for (const h of houses) if (world.ruins.has(h.id)) ruinHouse(h, true);
+
   world.scene.add(group);
-  return { plan, group, obstacles, zones, items, crane };
+  return { plan, group, obstacles, zones, items, crane, houses };
 }

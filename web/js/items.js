@@ -8,8 +8,13 @@ export const ITEM_DEFS = {
   torch:      { name: 'Газовая горелка', icon: '🔥', desc: 'приварить бронелист к корпусу' },
   cutter:     { name: 'Резак', icon: '🪚', desc: 'срезать бронелист с целого танка' },
   plate:      { name: 'Бронелист', icon: '🛡', desc: 'только в руках' },
+  shells:     { name: 'Ящик снарядов', icon: '📦', desc: 'только в руках' },
   part:       { name: 'Деталь танка', icon: '⚙', desc: 'только в руках' },
 };
+
+// gas use per second of work (% of a full tool)
+export const TOOL_USE = { torch: 10, cutter: 9 };
+export const SHELLS_PER_BOX = 6;
 
 // how a part is held in front of the camera
 const HAND_POSE = {
@@ -18,7 +23,7 @@ const HAND_POSE = {
   fuel:   { pos: [0.0, -0.8, -1.4], rot: [0.25, 0.3, 0], s: 0.55 },
   drive:  { pos: [0.0, -0.85, -1.5], rot: [0.5, 0, 0], s: 0.45 },
 };
-export const CARRY_SPEED = { plate: 0.6, engine: 0.45, gun: 0.5, fuel: 0.7, drive: 0.6 };
+export const CARRY_SPEED = { plate: 0.6, shells: 0.7, engine: 0.45, gun: 0.5, fuel: 0.7, drive: 0.6 };
 
 const mats = {
   kit: new THREE.MeshStandardMaterial({ color: 0x4f6b35, roughness: 0.7 }),
@@ -26,6 +31,7 @@ const mats = {
   white: new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 0.6 }),
   steel: new THREE.MeshStandardMaterial({ color: 0x7a7f82, roughness: 0.45, metalness: 0.7 }),
   dark: new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.8 }),
+  wood: new THREE.MeshStandardMaterial({ color: 0x6b5a34, roughness: 0.9 }),
   brass: new THREE.MeshStandardMaterial({ color: 0xb8903a, roughness: 0.4, metalness: 0.8 }),
 };
 
@@ -66,6 +72,20 @@ export function buildItemMesh(type) {
     add(new THREE.CylinderGeometry(0.04, 0.04, 0.12, 8), mats.brass, -0.12, 0.96, 0);
     add(new THREE.CylinderGeometry(0.02, 0.02, 0.7, 6), mats.dark, 0.05, 0.3, 0.3, Math.PI / 2, 0, 0.4);
     add(new THREE.CylinderGeometry(0.03, 0.02, 0.45, 8), mats.brass, 0.25, 0.08, 0.55, 0, 0, Math.PI / 2);
+  } else if (type === 'torch') {
+    add(new THREE.CylinderGeometry(0.15, 0.15, 0.95, 12), mats.white, 0, 0.475, 0);
+    add(new THREE.SphereGeometry(0.15, 12, 6, 0, Math.PI * 2, 0, Math.PI / 2), mats.white, 0, 0.95, 0);
+    add(new THREE.CylinderGeometry(0.155, 0.155, 0.12, 12), mats.red, 0, 0.8, 0);
+    add(new THREE.CylinderGeometry(0.035, 0.035, 0.12, 8), mats.brass, 0, 1.13, 0);
+    add(new THREE.TorusGeometry(0.25, 0.02, 6, 16, Math.PI * 1.3), mats.dark, 0.2, 0.9, 0, Math.PI / 2, 0, 0);
+    add(new THREE.CylinderGeometry(0.03, 0.03, 0.35, 8), mats.dark, 0.35, 0.06, 0.25, 0, 0, Math.PI / 2);
+    add(new THREE.CylinderGeometry(0.012, 0.02, 0.3, 8), mats.brass, 0.62, 0.06, 0.25, 0, 0, Math.PI / 2);
+  } else if (type === 'shells') {
+    add(new THREE.BoxGeometry(0.9, 0.3, 0.55), mats.wood, 0, 0.15, 0);
+    for (let i = 0; i < 3; i++) {
+      add(new THREE.CylinderGeometry(0.06, 0.06, 0.7, 10), mats.brass, 0, 0.36, -0.17 + i * 0.17, 0, 0, Math.PI / 2);
+      add(new THREE.ConeGeometry(0.06, 0.18, 10), mats.dark, 0.44, 0.36, -0.17 + i * 0.17, 0, 0, -Math.PI / 2);
+    }
   } else if (type === 'plate') {
     add(new THREE.BoxGeometry(1.5, 0.06, 1.0), mats.steel, 0, 0.35, 0, 0, 0, 0.45);
     add(new THREE.BoxGeometry(0.12, 0.12, 1.0), mats.dark, -0.62, 0.06, 0);
@@ -77,6 +97,8 @@ export function buildItemMesh(type) {
   return g;
 }
 
+export const shellsLabel = b => `Снаряды ${b.caliber} ×${b.n}`;
+
 export class Items {
   constructor(scene, world) {
     this.scene = scene;
@@ -84,13 +106,15 @@ export class Items {
     this.pickups = new Map();
     this.taken = new Set();
     this.inventory = { repair_kit: 1, torch: 1, cutter: 0 };
-    this.hands = null;             // null | 'plate' | 'part'
+    this.charge = { torch: 100, cutter: 100 };   // gas left in the tool in use (%), spares are full
+    this.hands = null;             // null | 'plate' | 'part' | 'shells'
     this.handPart = null;          // the part carried when hands === 'part'
+    this.handShells = null;        // { key, caliber, n } when hands === 'shells'
     this.dropN = 0;
     this.t = 0;
   }
 
-  add(id, type, x, z, part = null) {
+  add(id, type, x, z, part = null) {     // part: the tank part ('part') or the shells box data ('shells')
     if (this.taken.has(id) || this.pickups.has(id)) return;
     let mesh;
     if (type === 'part') {
@@ -111,14 +135,35 @@ export class Items {
     mesh.position.set(x, y, z);
     mesh.rotation.y = Math.random() * Math.PI * 2;
     this.scene.add(mesh);
-    this.pickups.set(id, { id, type, mesh, pos: mesh.position, part });
+    this.pickups.set(id, { id, type, mesh, pos: mesh.position, part: type === 'part' ? part : null,
+                           shells: type === 'shells' ? part : null });
   }
 
   drop(type, x, z, part = null) {
     this.add(`drop:${this.dropN++}`, type, x, z, part);
   }
 
-  label(p) { return p.type === 'part' ? partLabel(p.part) : ITEM_DEFS[p.type].name; }
+  label(p) {
+    if (p.type === 'part') return partLabel(p.part);
+    if (p.type === 'shells') return shellsLabel(p.shells);
+    return ITEM_DEFS[p.type].name;
+  }
+
+  // add a tool / kit to the inventory (a new tool starts full)
+  give(type, n = 1) {
+    if ((type === 'torch' || type === 'cutter') && !this.inventory[type]) this.charge[type] = 100;
+    this.inventory[type] = (this.inventory[type] || 0) + n;
+  }
+  // burn gas of a tool: 'ok' | 'spare' (the tool ran dry, a spare one is taken) | 'empty' (no more tools)
+  useTool(type, amount) {
+    if (!this.inventory[type]) return 'empty';
+    this.charge[type] -= amount;
+    if (this.charge[type] > 0) return 'ok';
+    this.inventory[type]--;
+    if (this.inventory[type] > 0) { this.charge[type] += 100; return 'spare'; }
+    this.charge[type] = 0;
+    return 'empty';
+  }
 
   // put a part into the hands (child of the camera)
   holdPart(part, camera) {
@@ -142,6 +187,7 @@ export class Items {
   }
   carrySpeed() {
     if (this.hands === 'plate') return CARRY_SPEED.plate;
+    if (this.hands === 'shells') return CARRY_SPEED.shells;
     if (this.hands === 'part') return CARRY_SPEED[this.handPart.kind];
     return 1;
   }
@@ -173,8 +219,14 @@ export class Items {
       this.remove(p.id);
       this.holdPart(p.part, camera);
       return partLabel(p.part);
+    } else if (p.type === 'shells') {
+      if (this.hands) return null;
+      this.hands = 'shells';
+      this.handShells = p.shells;
+      this.remove(p.id);
+      return shellsLabel(p.shells);
     } else {
-      this.inventory[p.type] = (this.inventory[p.type] || 0) + 1;
+      this.give(p.type);
     }
     this.remove(p.id);
     return ITEM_DEFS[p.type].name;

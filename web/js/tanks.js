@@ -121,7 +121,8 @@ export class Tank {
     this.ammo = opts.ammo ?? this.def.ammoMax;
     this.fuel = this.fuelMax;
     this.extinguishers = 3;
-    this.loot = { repair_kit: opts.kits || 0 };
+    this.loot = { repair_kit: opts.kits || 0, torch: opts.torches || 0 };
+    this.plates = opts.plates || 0;              // spare armour plates stowed on board
     this.fire = null;                            // { t, max, source, selfOut }
     this.wrecked = false;
     this.sink = opts.sink || 0;
@@ -330,8 +331,15 @@ export class Tank {
         this.speed *= 0.3;
       }
       const r = this.def.radius * 0.8;
-      if (world.collideTrees(p, r)) this.speed *= Math.pow(0.02, dt);
-      if (world.collideObstacles(p, r)) this.speed *= Math.pow(0.02, dt);
+      // trees give way to a moving tank, houses collapse when rammed
+      const sg = this.speed >= 0 ? 1 : -1;
+      const ram = { speed: this.speed, dx: dirX * sg, dz: dirZ * sg, broke: false };
+      if (world.collideTrees(p, r, ram)) this.speed *= Math.pow(0.02, dt);
+      if (ram.broke) this.speed *= 0.8;
+      let rammed = false;
+      const breakFn = o => { const b = o.house.ram(Math.abs(this.speed)); if (b) rammed = true; return b; };
+      if (world.collideObstacles(p, r, breakFn)) this.speed *= Math.pow(0.02, dt);
+      if (rammed) { this.speed *= 0.5; this.damage('hull', 1); }
       if (others) {
         for (const o of others) {
           if (o === this) continue;

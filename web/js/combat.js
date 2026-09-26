@@ -196,7 +196,10 @@ export class Combat {
     }
     // static obstacles
     const ob = this.world.raycastObstacles(p0, p1);
-    if (ob && (!best || ob.t < best.t)) best = { t: ob.t, kind: 'obstacle' };
+    if (ob && (!best || ob.t < best.t)) best = { t: ob.t, kind: 'obstacle', obstacle: ob.obstacle };
+    // trees stop shells and break where they are hit
+    const tr = this.world.raycastTrees(p0, p1);
+    if (tr && (!best || tr.t < best.t)) best = { t: tr.t, kind: 'tree', tree: tr.tree };
     // terrain & water
     const len = p0.distanceTo(p1);
     const n = Math.max(1, Math.ceil(len / 2));
@@ -237,8 +240,13 @@ export class Combat {
     } else if (best.kind === 'water') {
       this.fx.splash(hp);
       this.sfx.boom(hp.distanceTo(this.listener), 0.4);
+    } else if (best.kind === 'tree') {
+      this.fx.explosion(hp, 0.8, true);
+      this.sfx.boom(hp.distanceTo(this.listener), 0.9);
+      this.world.breakTree(best.tree, hp.y, dir.x, dir.z);
     } else {
       this.fx.explosion(hp, 1, best.kind === 'ground');
+      if (best.kind === 'obstacle' && best.obstacle.house) best.obstacle.house.hit(hp, dir, s.dmg);
       this.sfx.boom(hp.distanceTo(this.listener), 1);
       if (best.kind === 'foot' && !this.god) this.onPlayerDamage(200, s.owner);
     }

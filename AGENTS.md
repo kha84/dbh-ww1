@@ -15,8 +15,11 @@ The game features:
 - Tank gunnery with ballistics and per-tank ammo; armour, penetration and internal systems
   (hull, engine, transmission, turret drive, gun, ammo rack, fuel tank) that degrade the tank when damaged
 - Enemy tanks with simple AI: patrols along the road and ambushes in caponiers
-- Crew kills, capturing crewless tanks, fires and extinguishers, inventory (repair kits, gas torch, cutter),
-  armour plates carried in hands for hull repair
+- Crew kills, capturing crewless tanks, fires and extinguishers, inventory (repair kits, gas torch, cutter -
+  both burn gas and run dry, spares are found in settlements / tanks), armour plates carried in hands for hull
+  repair and stowed in tanks, shells taken out of one tank's ammo rack and loaded into another in the field
+- Destructible environment: trees stop shells and break at the hit point, tanks knock them down;
+  village / town houses collapse from shell hits or when rammed by a tank
 
 ## Run the web game
 ```bash
@@ -49,8 +52,9 @@ web/js/noise.js         # perlin/fbm, hash, seeded rng
 
 ## Controls (web)
 - On foot: WASD move, SHIFT run, C crouch, SPACE jump, E enter/exit tank (only crewless ones),
-  F pick up / loot tank / hold to weld a plate, G drop what is in hands, hold T cut a plate with the cutter,
-  R repair kit menu. Looking at a part slot of a crewless tank: F takes the part into hands / installs the carried
+  F pick up / tank stowage menu (kits, torches, spare plates, a box of shells; digits pick) / hold to weld a plate,
+  E with a plate or a shells box in hands next to a crewless tank - stow the plate / load the shells (same calibre
+  only), G drop what is in hands, hold T cut a plate with the cutter, R repair kit menu. Looking at a part slot of a crewless tank: F takes the part into hands / installs the carried
   part, Q (or F) opens / closes the engine bay (the engine won't run while it is open). F at the crane panel opens
   the crane menu (digits 1-4).
 - In tank: W/S throttle, A/D steer, SPACE brake, mouse aims (turret follows), LMB fire, RMB gunner sight,
@@ -85,5 +89,11 @@ URL params: `?nowater=1&noclouds=1&notrees=1&notanks=1&noenemies=1&noshadows=1&n
   then (gun breeches too). Walkable areas / seats / vision slits are data in parts.js.
 - Repair stations don't fix replaceable parts at 0% (replace them); hull systems (transmission, ammo rack) are fixed.
 - Crane stands keep their turrets per settlement (Workshop.store) across settlement unload/reload.
+- Trees: `ch.trees` items carry instance index / base / top; `world.breakTree` hides the instance and adds a stump and
+  a falling top (clones clipped by planes, `renderer.localClippingEnabled`); `world.raycastTrees` for shells,
+  `collideTrees(pos, r, ram)` knocks trees down for a fast tank. Broken trees (`world.brokenTrees`) and ruined houses
+  (`world.ruins`) persist across chunk / settlement reloads.
+- Houses: obstacle.house = record with `hit(point, dir, dmg)` (hp, hole decals, collapse into rubble) and `ram(speed)`.
+- Tools: `items.charge[tool]` is the gas left in the tool in use; `items.useTool` switches to a spare when it runs dry.
 - Enemy fuel/ammo hit kills the crew (tank stops, can be captured); for the player's tank it starts a fire
   that must be put out with F before the timer runs out, otherwise game over.
