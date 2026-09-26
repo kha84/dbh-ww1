@@ -13,8 +13,9 @@ const cyl = new THREE.CylinderGeometry(1, 1, 1, 8);
 const TRAVEL = 2.2, HOIST = 1.4;      // m/s
 
 export class Workshop {
-  constructor(scene) {
+  constructor(scene, world) {
     this.scene = scene;
+    this.world = world;
     this.store = new Map();           // settlement k -> [slot0, slot1]  ({ turret, gun } | null)
     this.cranes = new Map();          // settlement k -> live crane
     this.op = null;
@@ -55,7 +56,7 @@ export class Workshop {
     if (!c) return;
     if (this.op && this.op.crane === c) this.finishNow();
     this.scene.remove(c.group);
-    for (const it of this.slots(c.k)) if (it) it.turret.vis.group.removeFromParent();
+    for (const it of this.slots(c.k)) if (it) { it.turret.vis.group.removeFromParent(); this.clearColliders(it); }
     this.cranes.delete(c.k);
   }
 
@@ -94,6 +95,71 @@ export class Workshop {
     this.scene.add(g);
     g.position.set(sl.x, sl.y, sl.z);
     g.rotation.set(0, this.standYaw(c), 0);
+    this.updateColliders(c, i, it);
+  }
+
+  // obstacles of a turret lying on a stand: its body and the barrel of the gun in it
+  updateColliders(c, i, it) {
+    this.clearColliders(it);
+    const g = partVisual(it.turret).group;
+    g.updateMatrixWorld(true);
+    const b = partVisual(it.turret).box;
+    const yaw = this.standYaw(c);
+    const cx = (b.min.x + b.max.x) / 2, cz = (b.min.z + b.max.z) / 2;
+    const p = g.localToWorld(new THREE.Vector3(cx, 0, cz));
+    it.colliders = [this.world.addObstacle({
+      x: p.x, z: p.z, rot: yaw, hx: (b.max.x - b.min.x) / 2, hz: (b.max.z - b.min.z) / 2,
+      y0: g.position.y + b.min.y, y1: g.position.y + b.max.y,
+    })];
+    if (it.gun) {
+      const pivot = partVisual(it.turret).gunPivot;
+      const a = pivot.localToWorld(new THREE.Vector3(0, 0, 0));
+      const m = pivot.localToWorld(new THREE.Vector3(0, 0, partVisual(it.gun).muzzleLen));
+      const dx = m.x - a.x, dz = m.z - a.z;
+      it.colliders.push(this.world.addObstacle({
+        x: (a.x + m.x) / 2, z: (a.z + m.z) / 2, rot: Math.atan2(dx, dz), hx: 0.25, hz: Math.hypot(dx, dz) / 2,
+        y0: Math.min(a.y, m.y) - 0.3, y1: Math.max(a.y, m.y) + 0.3,
+      }));
+    }
+  }
+  clearColliders(it) {
+    if (it.colliders) for (const o of it.colliders) this.world.removeObstacle(o);
+    it.colliders = null;
+  }
+
+  // gun slots of the turrets lying on stands: [{ crane, slot, item, pos (world) }]
+  standGunSlots() {
+    const res = [];
+    for (const c of this.cranes.values()) {
+      this.slots(c.k).forEach((it, i) => {
+        if (!it || (this.op && this.op.crane === c && this.op.slot === i)) return;
+        const pivot = partVisual(it.turret).gunPivot;
+        res.push({ crane: c, slot: i, item: it, pos: pivot.localToWorld(new THREE.Vector3(0, 0, 0.5)) });
+      });
+    }
+    return res;
+  }
+  // take the gun out of a turret on a stand (returns the part) / mount a gun into it
+  takeGun(c, i) {
+    const it = this.slots(c.k)[i];
+    const gun = it && it.gun;
+    if (!gun) return null;
+    gun.vis.group.removeFromParent();
+    it.gun = null;
+    this.updateColliders(c, i, it);
+    return gun;
+  }
+  mountGun(c, i, gun) {
+    const it = this.slots(c.k)[i];
+    if (!it || it.gun) return false;
+    const g = partVisual(gun).group;
+    g.position.set(0, 0, 0); g.rotation.set(0, 0, 0); g.scale.setScalar(1);
+    g.visible = true;
+    g.traverse(o => { if (o.userData.interior) o.visible = false; });
+    partVisual(it.turret).gunPivot.add(g);
+    it.gun = gun;
+    this.updateColliders(c, i, it);
+    return true;
   }
 
   nearestPanel(pos, maxD = 2.6) {
@@ -182,7 +248,7 @@ export class Workshop {
       op.yaw1 = t.heading;
       op.phases = [
         travel(slotL.u, slotL.s), hoist(sl.y + op.attach), { type: 'wait', d: 0.6 },
-        { type: 'act', run: () => { op.carry = st[o.slot]; st[o.slot] = null; } },
+        { type: 'act', run: () => { op.carry = st[o.slot]; st[o.slot] = null; this.clearColliders(op.carry); } },
         hoist(liftY), { type: 'travel', u: tankL.u, s: tankL.s, carry: true }, hoist(tp.y + op.attach), { type: 'wait', d: 0.4 },
         { type: 'act', run: () => {
           t.installTurret(op.carry.turret, op.carry.gun);

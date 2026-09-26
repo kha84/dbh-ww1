@@ -366,7 +366,7 @@ export class Tank {
 
       // terrain follow + tilt
       const h = world.heightAt(p.x, p.z);
-      p.y = h - this.sink;
+      p.y = h - this.sinkAt(p);
       const d = 1.8;
       const hx = world.heightAt(p.x + d, p.z) - world.heightAt(p.x - d, p.z);
       const hz = world.heightAt(p.x, p.z + d) - world.heightAt(p.x, p.z - d);
@@ -406,6 +406,15 @@ export class Tank {
       if (this.reload > 0) this.reload -= dt;
       this.updateFire(dt);
     }
+  }
+
+  // dug in only inside the caponier pit, climbs out smoothly as it leaves
+  sinkAt(p) {
+    if (!this.sink) return 0;
+    const cap = this.caponier;
+    if (!cap) return 0;
+    const d = Math.hypot(p.x - cap.x, p.z - cap.z);
+    return this.sink * (1 - THREE.MathUtils.smoothstep(d, 2.5, 6));
   }
 
   // desired world direction (with ballistic drop) -> hull-local yaw/elevation, rotate toward it

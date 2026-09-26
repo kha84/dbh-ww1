@@ -88,7 +88,9 @@ URL params: `?nowater=1&noclouds=1&notrees=1&notanks=1&noenemies=1&noshadows=1&n
 - Interiors are built lazily when the player first looks inside; objects flagged userData.interior are shown only
   then (gun breeches too). Walkable areas / seats / vision slits are data in parts.js.
 - Repair stations don't fix replaceable parts at 0% (replace them); hull systems (transmission, ammo rack) are fixed.
-- Crane stands keep their turrets per settlement (Workshop.store) across settlement unload/reload.
+- Crane stands keep their turrets per settlement (Workshop.store) across settlement unload/reload. A turret on a stand
+  has obstacles (body + barrel, `it.colliders`); its gun can be taken out / mounted by hand (F, `standGunSlots`).
+- Ambush tanks are dug in (`sink`) only inside their caponier pit (`Tank.sinkAt`), they climb out when leaving it.
 - Trees: `ch.trees` items carry instance index / base / top; `world.breakTree` hides the instance and adds a stump and
   a falling top (clones clipped by planes, `renderer.localClippingEnabled`); `world.raycastTrees` for shells,
   `collideTrees(pos, r, ram)` knocks trees down for a fast tank. Broken trees (`world.brokenTrees`) and ruined houses

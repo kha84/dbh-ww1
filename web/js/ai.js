@@ -44,7 +44,7 @@ function buildCaponier(world, x, z, heading) {
   place(-3.9, 0.6, 8, 0, 1.9);              // right
   world.scene.add(group);
   return {
-    group, obstacles,
+    group, obstacles, x, z,             // pit centre: the tank is dug in only while inside it
     dispose() {
       world.scene.remove(group);
       for (const o of obstacles) world.removeObstacle(o);

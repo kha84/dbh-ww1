@@ -129,7 +129,7 @@ const combat = new Combat(scene, world, fx, sfx);
 combat.god = dbg.get('god') === '1';
 const director = new EnemyDirector(world, scene, SEED);
 const items = new Items(scene, world);
-const workshop = new Workshop(scene);
+const workshop = new Workshop(scene, world);
 const tanks = [];
 
 world.onSettlementBuilt = s => {
@@ -623,7 +623,7 @@ function pressQ() {
     if (s) sitAt(s.role); else msg('Рядом нет свободного места');
     return;
   }
-  const t = state.slot ? state.slot.tank : state.nearTank;
+  const t = (state.slot && state.slot.tank) || state.nearTank;
   if (!t) return;
   if (t.crew) { msg('В этом танке живой экипаж!', '#ff9a7a'); return; }
   t.setBay(!t.bayOpen);
@@ -664,6 +664,12 @@ function updateLookTarget() {
       if (k !== null && k < bk) { bk = k; best = { ...sl, tank: t }; }
     }
   }
+  // gun slots of turrets lying on the repair-station stands
+  for (const st of workshop.standGunSlots()) {
+    if (st.pos.distanceTo(player.position) > 8) continue;
+    const k = lookHit(st.pos, 0.75);
+    if (k !== null && k < bk) { bk = k; best = { kind: 'gun', pos: st.pos, stand: st }; }
+  }
   let item = null, ik = Infinity;
   if (!items.hands) {
     const c = new THREE.Vector3();
@@ -682,7 +688,28 @@ function updateLookTarget() {
 
 const partName = (kind, key) => `${PART_NAMES[kind].toLowerCase()} ${ORIGIN_NAMES[key]}`;
 
+// gun of a turret lying on a crane stand
+function standGunAction(st) {
+  const it = st.item;
+  if (items.hands === 'part') {
+    const part = items.handPart;
+    if (part.kind !== 'gun') { msg('Сюда ставится только орудие'); return; }
+    if (it.gun) { msg(`Место занято — сначала сними ${partName('gun', it.gun.key)}`); return; }
+    items.releasePart();
+    workshop.mountGun(st.crane, st.slot, part);
+    sfx.click();
+    msg(`Установлено: ${partLabel(part)} в башню ${ORIGIN_NAMES[it.turret.key]} на площадке ${st.slot + 1}`, '#9fe07f');
+    return;
+  }
+  if (!it.gun) { msg(`Башня ${ORIGIN_NAMES[it.turret.key]}: орудия нет — принеси подходящее`); return; }
+  const gun = workshop.takeGun(st.crane, st.slot);
+  items.holdPart(gun, camera);
+  sfx.click();
+  msg(`В руках: ${partLabel(gun)} — ${Math.round(gun.hp)}%`, '#e8c96a');
+}
+
 function slotAction(sl) {
+  if (sl.stand) { standGunAction(sl.stand); return; }
   const t = sl.tank, kind = sl.kind;
   if (t.crew) { msg('В этом танке живой экипаж!', '#ff9a7a'); return; }
   if (kind === 'engine' && !t.bayOpen) { t.setBay(true); sfx.click(); msg(`Моторный отсек ${t.def.hullName} открыт`); return; }
@@ -698,6 +725,7 @@ function slotAction(sl) {
 function installHeld() {
   const part = items.handPart;
   const sl = state.slot;
+  if (sl && sl.stand) { standGunAction(sl.stand); return; }
   if (!sl || sl.kind !== part.kind) {
     msg(`Подойди к месту установки: ${PART_NAMES[part.kind].toLowerCase()}`);
     return;
@@ -1448,6 +1476,16 @@ function nextSettlementLabel(p) {
 
 // ================== prompts ==================
 function slotPrompt(sl, lines) {
+  if (sl.stand) {
+    const it = sl.stand.item, where = `Башня ${ORIGIN_NAMES[it.turret.key]} на площадке ${sl.stand.slot + 1}`;
+    if (items.hands === 'part') {
+      if (items.handPart.kind !== 'gun') return;
+      lines.push(it.gun ? `${where}: орудие уже стоит` : `<b>F</b> — установить ${partName('gun', items.handPart.key)}`);
+    } else if (!items.hands) {
+      lines.push(it.gun ? `<b>F</b> — снять: ${partName('gun', it.gun.key)} (${Math.round(it.gun.hp)}%)` : `${where}: орудия нет`);
+    }
+    return;
+  }
   const t = sl.tank, kind = sl.kind, part = t.parts[kind];
   const where = `${PART_NAMES[kind]} · ${t.def.hullName}`;
   if (t.crew) { lines.push(`${where}: в танке экипаж`); return; }
