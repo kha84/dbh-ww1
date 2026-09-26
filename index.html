@@ -10,6 +10,10 @@
   html, body { width: 100%; height: 100%; overflow: hidden; background: #000; font-family: 'Segoe UI', Arial, sans-serif; }
   #app { width: 100%; height: 100%; }
   canvas { display: block; }
+  .panel {
+    background: rgba(12,14,10,.62); border: 1px solid rgba(255,255,255,.14); border-radius: 8px;
+    color: #cfe3c0; text-shadow: 0 1px 2px rgba(0,0,0,.8); pointer-events: none;
+  }
 
   /* ---------- Loading ---------- */
   #loader {
@@ -25,81 +29,123 @@
   #barFill { height: 100%; width: 0%; background: linear-gradient(90deg, #7a8a6a, #c9b48a); transition: width .2s; }
   #loadText { margin-top: 10px; font-size: 13px; color: #999; }
 
-  /* ---------- Crosshair ---------- */
+  /* ---------- Crosshair / gun marker / sight ---------- */
   #crosshair {
     position: fixed; left: 50%; top: 50%; transform: translate(-50%,-50%);
     pointer-events: none; z-index: 10;
-    transition: opacity .2s;
   }
-  #crosshair::before, #crosshair::after {
-    content: ''; position: absolute; background: rgba(255,255,255,.85);
-  }
+  #crosshair::before, #crosshair::after { content: ''; position: absolute; background: rgba(255,255,255,.85); }
   #crosshair::before { width: 2px; height: 18px; left: -1px; top: -9px; }
   #crosshair::after  { width: 18px; height: 2px; left: -9px; top: -1px; }
-  #crosshair.driving { opacity: 0; }
-
-  /* ---------- HUD ---------- */
-  #hud {
-    position: fixed; left: 18px; bottom: 14px; z-index: 10;
-    color: #cfe3c0; font-size: 13px; line-height: 1.55;
-    text-shadow: 0 1px 3px rgba(0,0,0,.9);
-    pointer-events: none;
+  #crosshair.driving::before { height: 8px; top: -4px; }
+  #crosshair.driving::after { width: 8px; left: -4px; }
+  #gunMark {
+    position: fixed; width: 30px; height: 30px; margin: -15px 0 0 -15px; border-radius: 50%;
+    z-index: 11; pointer-events: none; display: none;
+    background: conic-gradient(rgba(255,90,60,.9) var(--p, 0%), transparent 0);
+    -webkit-mask: radial-gradient(circle, transparent 11px, #000 12px, #000 14px, transparent 15px);
+            mask: radial-gradient(circle, transparent 11px, #000 12px, #000 14px, transparent 15px);
   }
-  #hud .dim { color: #9aa98c; font-size: 11.5px; }
+  #gunMark.ready { background: rgba(120,255,120,.9); }
+  #gunMark.blocked { background: rgba(160,160,160,.6); }
+  #sight { position: fixed; inset: 0; z-index: 9; pointer-events: none; display: none;
+    background: radial-gradient(circle at 50% 50%, transparent 38vh, rgba(0,0,0,.92) 38.3vh); }
+  #sight svg { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%); filter: drop-shadow(0 0 1.5px rgba(255,255,255,.9)); }
 
-  /* ---------- Speed gauge (vehicle) ---------- */
-  #gauge {
-    position: fixed; right: 22px; bottom: 18px; z-index: 10;
-    text-align: right; color: #e8dcc0; text-shadow: 0 1px 4px rgba(0,0,0,.9);
-    pointer-events: none; display: none;
-  }
-  #gaugeSpeed { font-size: 42px; font-weight: 600; line-height: 1; }
-  #gaugeSpeed small { font-size: 15px; color: #b7a97f; font-weight: 400; }
-  #gaugeName { font-size: 13px; color: #b7a97f; letter-spacing: 2px; text-transform: uppercase; margin-top: 4px; }
-  #gaugeGear { font-size: 12px; color: #9aa98c; margin-top: 2px; }
+  /* ---------- HUD blocks ---------- */
+  #topbar { position: fixed; top: 14px; left: 50%; transform: translateX(-50%); z-index: 10;
+    padding: 5px 16px; font-size: 13px; letter-spacing: 1px; white-space: nowrap; }
+  #topbar b { color: #e8c96a; }
 
-  /* ---------- Prompt (Press E) ---------- */
-  #prompt {
-    position: fixed; left: 50%; top: 62%; transform: translateX(-50%);
-    z-index: 10; color: #fff; font-size: 16px;
-    background: rgba(0,0,0,.55); padding: 10px 22px; border-radius: 6px;
-    border: 1px solid rgba(255,255,255,.25);
-    display: none; pointer-events: none; letter-spacing: 1px;
-  }
+  #inv { position: fixed; left: 16px; top: 16px; z-index: 10; padding: 10px 12px; font-size: 13px; min-width: 200px; }
+  #inv h4 { font-size: 11px; letter-spacing: 2px; color: #b7a97f; margin-bottom: 4px; font-weight: 600; }
+  #inv .row { display: flex; justify-content: space-between; gap: 12px; }
+  #inv .row.none { color: #6d7766; }
+  #inv .hands { margin-top: 6px; color: #9fd0ff; }
+  #hpbar { height: 6px; background: #333; border-radius: 3px; margin: 4px 0 8px; overflow: hidden; }
+  #hpfill { height: 100%; background: #7fe07f; width: 100%; transition: width .2s; }
+
+  #systems { position: fixed; left: 16px; bottom: 16px; z-index: 10; padding: 10px 12px; display: none; width: 290px; }
+  #systems h4 { font-size: 12px; letter-spacing: 2px; color: #e8dcc0; margin-bottom: 6px; text-transform: uppercase; }
+  #systems h4 small { color: #9aa98c; letter-spacing: 0; text-transform: none; font-weight: 400; }
+  #sysWrap { display: flex; gap: 10px; }
+  #schem { width: 92px; height: 170px; flex: none; }
+  #sysRows { flex: 1; font-size: 12px; }
+  .srow { margin-bottom: 4px; }
+  .srow .n { display: flex; justify-content: space-between; }
+  .srow .b { height: 4px; background: #333; border-radius: 2px; overflow: hidden; margin-top: 1px; }
+  .srow .b i { display: block; height: 100%; }
+  .srow.dead .n { color: #ff6b5a; }
+
+  #gauge { position: fixed; right: 16px; bottom: 16px; z-index: 10; padding: 10px 14px; display: none; min-width: 210px; text-align: right; }
+  #gaugeSpeed { font-size: 38px; font-weight: 600; line-height: 1; color: #e8dcc0; }
+  #gaugeSpeed small { font-size: 14px; color: #b7a97f; font-weight: 400; }
+  #gaugeName { font-size: 12px; color: #b7a97f; letter-spacing: 2px; text-transform: uppercase; margin: 3px 0 6px; }
+  .gline { display: flex; justify-content: space-between; font-size: 12.5px; margin-top: 3px; gap: 10px; }
+  .gline b { color: #fff; }
+  .mbar { height: 5px; background: #333; border-radius: 3px; overflow: hidden; margin-top: 2px; }
+  .mbar i { display: block; height: 100%; background: #c9b48a; }
+
+  #prompt { position: fixed; left: 50%; top: 64%; transform: translateX(-50%); z-index: 10; color: #fff; font-size: 15px;
+    background: rgba(0,0,0,.55); padding: 8px 20px; border-radius: 6px; border: 1px solid rgba(255,255,255,.25);
+    display: none; pointer-events: none; letter-spacing: .5px; text-align: center; line-height: 1.6; }
   #prompt b { color: #e8c96a; }
 
-  /* ---------- Vehicle list ---------- */
-  #vlist {
-    position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
-    z-index: 10; display: flex; gap: 8px; pointer-events: none;
-  }
-  .vchip {
-    background: rgba(0,0,0,.45); border: 1px solid rgba(255,255,255,.15);
-    border-radius: 20px; color: #aaa; padding: 5px 14px; font-size: 12px;
-    letter-spacing: 1px; transition: all .25s;
-  }
-  .vchip.near { color: #ffd970; border-color: rgba(255,217,112,.5); }
-  .vchip.active { color: #7fe07f; border-color: rgba(127,224,127,.6); }
+  #hold { position: fixed; left: 50%; top: 58%; transform: translateX(-50%); z-index: 12; width: 260px; display: none;
+    text-align: center; color: #fff; font-size: 13px; text-shadow: 0 1px 3px #000; pointer-events: none; }
+  #hold .mbar { height: 8px; margin-top: 4px; }
+  #hold .mbar i { background: #9fd0ff; }
+
+  #fire { position: fixed; left: 50%; top: 22%; transform: translateX(-50%); z-index: 12; display: none; pointer-events: none;
+    background: rgba(160,20,10,.8); color: #fff; padding: 10px 26px; border-radius: 8px; font-size: 20px; font-weight: 700;
+    letter-spacing: 2px; text-align: center; animation: blink .6s infinite alternate; }
+  #fire small { display: block; font-size: 13px; font-weight: 400; letter-spacing: 1px; }
+  @keyframes blink { from { opacity: 1; } to { opacity: .55; } }
+
+  #hitText { position: fixed; left: 50%; top: 40%; transform: translateX(-50%); z-index: 12; pointer-events: none;
+    color: #ffd970; font-size: 17px; font-weight: 600; text-shadow: 0 1px 4px #000; opacity: 0; transition: opacity .3s; white-space: nowrap; }
+  #msgs { position: fixed; left: 16px; top: 45%; z-index: 10; pointer-events: none; font-size: 13px; color: #e8e2c8;
+    text-shadow: 0 1px 3px #000; max-width: 420px; }
+  #msgs div { margin-bottom: 3px; transition: opacity .8s; }
+  #dmgFlash { position: fixed; inset: 0; z-index: 8; pointer-events: none; opacity: 0; transition: opacity .4s;
+    box-shadow: inset 0 0 160px rgba(200,0,0,.8); }
+
+  #markers { position: fixed; inset: 0; z-index: 9; pointer-events: none; overflow: hidden; }
+  .mk { position: absolute; transform: translate(-50%, -100%); font-size: 11px; text-align: center; white-space: nowrap;
+    text-shadow: 0 1px 2px #000; }
+  .mk i { display: block; margin: 0 auto; width: 0; height: 0; border-left: 7px solid transparent; border-right: 7px solid transparent;
+    border-top: 10px solid #ff4a3a; }
+  .mk.dead { color: #bbb; } .mk.dead i { border-top-color: #aaa; }
+  .mk.enemy { color: #ff8a7a; }
+  .mk.own { color: #8fe08f; } .mk.own i { border-top-color: #7fe07f; }
+
+  #repair { position: fixed; left: 50%; top: 50%; transform: translate(-50%,-50%); z-index: 30; display: none;
+    background: rgba(12,14,10,.9); border: 1px solid rgba(255,255,255,.25); border-radius: 10px; padding: 16px 22px;
+    color: #ddd; min-width: 360px; font-size: 14px; }
+  #repair h3 { color: #c9b48a; letter-spacing: 2px; font-size: 16px; margin-bottom: 8px; }
+  #repair .opt { padding: 3px 0; display: flex; justify-content: space-between; gap: 20px; }
+  #repair .opt.off { color: #666; }
+  #repair .opt b { color: #e8c96a; margin-right: 8px; }
+  #repair .foot { margin-top: 10px; font-size: 12px; color: #9aa98c; }
 
   /* ---------- Minimap ---------- */
-  #minimapWrap {
-    position: fixed; right: 18px; top: 18px; z-index: 10;
-    width: 170px; text-align: center;
-  }
-  #minimap { width: 170px; height: 170px; border-radius: 8px; border: 1px solid rgba(255,255,255,.25); display: block; }
-  #mmLabel { color: #b7a97f; font-size: 11px; letter-spacing: 2px; margin-top: 5px; text-shadow: 0 1px 3px #000; }
+  #minimapWrap { position: fixed; right: 16px; top: 16px; z-index: 10; width: 180px; text-align: center; }
+  #minimap { width: 180px; height: 180px; border-radius: 8px; border: 1px solid rgba(255,255,255,.25); display: block; }
+  #mmLabel { color: #b7a97f; font-size: 11px; letter-spacing: 1px; margin-top: 5px; text-shadow: 0 1px 3px #000; }
 
-  /* ---------- Pause ---------- */
-  #pause {
-    position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,.65);
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    color: #ddd; backdrop-filter: blur(4px);
-  }
-  #pause.hidden { display: none; }
-  #pause h2 { font-size: 30px; letter-spacing: 4px; color: #c9b48a; margin-bottom: 20px; }
-  #pause table { font-size: 14px; color: #bbb; border-spacing: 6px 4px; }
-  #pause td.k { color: #e8c96a; text-align: right; padding-right: 14px; font-weight: 600; }
-  #pause .resume { margin-top: 24px; color: #9aa98c; font-size: 13px; letter-spacing: 1px; }
+  /* ---------- Pause / game over ---------- */
+  .overlay { position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,.7);
+    display: flex; flex-direction: column; align-items: center; justify-content: center; color: #ddd; backdrop-filter: blur(4px); }
+  .overlay.hidden { display: none; }
+  #pause h2, #gameover h2 { font-size: 30px; letter-spacing: 4px; color: #c9b48a; margin-bottom: 18px; }
+  #pause table { font-size: 13.5px; color: #bbb; border-spacing: 6px 3px; }
+  #pause td.k { color: #e8c96a; text-align: right; padding-right: 14px; font-weight: 600; white-space: nowrap; }
+  #pause td.h { color: #c9b48a; padding-top: 8px; letter-spacing: 2px; font-size: 12px; }
+  #pause .resume { margin-top: 20px; color: #9aa98c; font-size: 13px; letter-spacing: 1px; }
+  #gameover h2 { color: #ff6b5a; font-size: 40px; }
+  #gameover p { font-size: 16px; margin-bottom: 8px; }
+  #gameover button { margin-top: 20px; padding: 10px 28px; font-size: 16px; background: #5c6b4a; color: #fff;
+    border: 1px solid #9aa98c; border-radius: 6px; cursor: pointer; letter-spacing: 2px; }
 </style>
 </head>
 <body>
@@ -107,36 +153,83 @@
 
 <div id="loader">
   <h1>DBH<span>-</span>WW1</h1>
-  <p>WORLD WAR ONE TANK BATTLEFIELD</p>
+  <p>ДОРОГА В БЕСКОНЕЧНОСТЬ</p>
   <div id="bar"><div id="barFill"></div></div>
   <div id="loadText">Загрузка...</div>
 </div>
 
+<div id="dmgFlash"></div>
+<div id="sight">
+  <svg width="420" height="420" viewBox="-210 -210 420 420" fill="none" stroke="rgba(20,20,20,.9)" stroke-width="2">
+    <path d="M0 0 L-14 22 M0 0 L14 22"/>
+    <path d="M-200 0 H-40 M40 0 H200"/>
+    <path d="M-100 -6 V6 M-70 -4 V4 M100 -6 V6 M70 -4 V4"/>
+    <path d="M0 40 V120 M-8 60 H8 M-6 80 H6 M-8 100 H8"/>
+    <text x="20" y="64" font-size="11" fill="rgba(20,20,20,.9)" stroke="none">4</text>
+    <text x="20" y="84" font-size="11" fill="rgba(20,20,20,.9)" stroke="none">8</text>
+    <text x="20" y="104" font-size="11" fill="rgba(20,20,20,.9)" stroke="none">12</text>
+  </svg>
+</div>
+<div id="markers"></div>
 <div id="crosshair"></div>
+<div id="gunMark"></div>
 <div id="prompt"></div>
-<div id="hud"></div>
-<div id="gauge">
+<div id="hold"><span id="holdText"></span><div class="mbar"><i id="holdFill"></i></div></div>
+<div id="fire"></div>
+<div id="hitText"></div>
+<div id="msgs"></div>
+
+<div id="topbar" class="panel"></div>
+<div id="inv" class="panel"></div>
+
+<div id="systems" class="panel">
+  <h4 id="sysTitle"></h4>
+  <div id="sysWrap">
+    <canvas id="schem" width="92" height="170"></canvas>
+    <div id="sysRows"></div>
+  </div>
+</div>
+
+<div id="gauge" class="panel">
   <div id="gaugeSpeed">0<small> км/ч</small></div>
   <div id="gaugeName"></div>
-  <div id="gaugeGear"></div>
+  <div id="gaugeInfo"></div>
 </div>
-<div id="vlist"></div>
+
 <div id="minimapWrap">
-  <canvas id="minimap" width="170" height="170"></canvas>
+  <canvas id="minimap" width="180" height="180"></canvas>
   <div id="mmLabel">КАРТА</div>
 </div>
 
-<div id="pause" class="hidden">
+<div id="repair"></div>
+
+<div id="pause" class="overlay hidden">
   <h2>ПАУЗА</h2>
   <table>
-    <tr><td class="k">W A S D</td><td>движение</td></tr>
-    <tr><td class="k">SHIFT</td><td>бег</td></tr>
-    <tr><td class="k">ПРОБЕЛ</td><td>прыжок / ручник</td></tr>
-    <tr><td class="k">E</td><td>сесть в технику / выйти</td></tr>
-    <tr><td class="k">МЫШЬ</td><td>осмотреться / камера танка</td></tr>
+    <tr><td></td><td class="h">ПЕШКОМ</td></tr>
+    <tr><td class="k">W A S D / SHIFT</td><td>движение / бег</td></tr>
+    <tr><td class="k">C / ПРОБЕЛ</td><td>присесть / прыжок</td></tr>
+    <tr><td class="k">E</td><td>сесть в танк (без экипажа) / выйти</td></tr>
+    <tr><td class="k">F</td><td>подобрать предмет, обыскать танк; удерживать — приварить бронелист</td></tr>
+    <tr><td class="k">G</td><td>бросить бронелист</td></tr>
+    <tr><td class="k">T (удерживать)</td><td>срезать бронелист резаком</td></tr>
+    <tr><td></td><td class="h">В ТАНКЕ</td></tr>
+    <tr><td class="k">W / S, A / D</td><td>газ / задний ход, поворот</td></tr>
+    <tr><td class="k">ПРОБЕЛ</td><td>тормоз</td></tr>
+    <tr><td class="k">МЫШЬ</td><td>обзор и наводка башни</td></tr>
+    <tr><td class="k">ЛКМ / ПКМ</td><td>выстрел / прицел</td></tr>
+    <tr><td class="k">F</td><td>огнетушитель</td></tr>
+    <tr><td class="k">R</td><td>ремкомплект — починить систему</td></tr>
     <tr><td class="k">ESC</td><td>пауза</td></tr>
   </table>
-  <div class="resume">нажми ESC чтобы продолжить</div>
+  <div class="resume">нажми ESC или кликни, чтобы продолжить</div>
+</div>
+
+<div id="gameover" class="overlay hidden">
+  <h2>КОНЕЦ ИГРЫ</h2>
+  <p id="goReason"></p>
+  <p id="goStats"></p>
+  <button onclick="location.reload()">ЗАНОВО</button>
 </div>
 
 <script type="importmap">
@@ -149,4 +242,4 @@
 </script>
 <script type="module" src="web/js/main.js"></script>
 </body>
-</html
+</html>
