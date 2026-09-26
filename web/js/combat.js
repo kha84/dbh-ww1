@@ -287,6 +287,7 @@ export class Combat {
     };
     this.fx.ricochet(hitPoint);
     if (tank.wrecked) {
+      tank.addMark(hitPoint, dir, 'dent');
       this.fx.explosion(hitPoint, 0.7, false);
       this.sfx.boom(hitPoint.distanceTo(this.listener), 0.7);
       this.onEvent(res);
@@ -349,6 +350,7 @@ export class Combat {
       }
     }
     tank.lastHitT = performance.now() / 1000;
+    tank.addMark(hitPoint, dir, res.ricochet ? 'scrape' : res.pen ? 'hole' : 'dent');
 
     // consequences
     if (res.fire) {

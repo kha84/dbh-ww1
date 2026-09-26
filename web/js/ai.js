@@ -1,7 +1,7 @@
 // Enemy tanks: encounter spawner along the road (patrols and dug-in ambushes) + simple AI
 import * as THREE from 'three';
 import { hash, rng } from './noise.js';
-import { Tank, TANK_DEFS } from './tanks.js';
+import { Tank } from './tanks.js';
 
 const ENC_LEN = 450;          // road stretch per potential encounter
 const dbg = new URLSearchParams(location.search);
@@ -192,9 +192,8 @@ class TankAI {
 
 // ------------------------------------------------------------------ director
 export class EnemyDirector {
-  constructor(world, factory, scene, seed) {
+  constructor(world, scene, seed) {
     this.world = world;
-    this.factory = factory;
     this.scene = scene;
     this.seed = seed;
     this.spawned = new Set();
@@ -204,8 +203,7 @@ export class EnemyDirector {
   }
 
   pickType(r) {
-    const table = [['t55', 0.42], ['markV', 0.2], ['avre', 0.2], ['abrams', 0.18]]
-      .filter(([k]) => this.factory.available(k));
+    const table = [['t55', 0.42], ['markV', 0.2], ['avre', 0.2], ['abrams', 0.18]];
     const sum = table.reduce((a, [, w]) => a + w, 0);
     let x = r() * sum;
     for (const [k, w] of table) { if ((x -= w) <= 0) return k; }
@@ -213,9 +211,7 @@ export class EnemyDirector {
   }
 
   makeTank(key, pos, heading, r, opts = {}) {
-    const def = TANK_DEFS[key];
-    const vis = this.factory.buildVisual(key);
-    return new Tank(this.scene, def, vis, pos, heading, {
+    return new Tank(this.scene, key, pos, heading, {
       team: 'enemy', crew: true, kits: r() < 0.55 ? 1 + (r() < 0.3 ? 1 : 0) : 0, ...opts,
     });
   }

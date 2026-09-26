@@ -75,6 +75,18 @@ function signTexture(title, sub) {
   return t;
 }
 
+function numberTexture(n) {
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const g = c.getContext('2d');
+  g.fillStyle = 'rgba(240,240,232,.92)';
+  g.font = 'bold 110px Arial'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText(n, 64, 70);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
 export function buildSettlement(world, plan) {
   const r = rng(plan.seed);
   const group = new THREE.Group();
@@ -114,7 +126,7 @@ export function buildSettlement(world, plan) {
     obstacles.push(o);
     return o;
   };
-  const addItem = (type, x, z) => items.push({ id: `s${plan.k}:${itemN++}`, type, x, z });
+  const addItem = (type, x, z, extra = {}) => items.push({ id: `s${plan.k}:${itemN++}`, type, x, z, ...extra });
 
   // ------------------------------------------------------------ builders
   const house = (along, off, w, d, hWall, story = 1, flat = false) => {
@@ -288,29 +300,66 @@ export function buildSettlement(world, plan) {
     if (r() < 0.4) { const p = at(k, 0, -7); addItem('repair_kit', p.x, p.z); }
   }
 
+  let crane = null;
   if (plan.type === 'repair') {
     const side = r() < 0.5 ? -1 : 1;
     const y = world.roadH(plan.z);
     // concrete pad between road and hangar
     const pad = frame(0, side * 16);
-    part(box, MAT.concrete, pad.x, y - 0.25, pad.z, 14, 0.36, 26, pad.rot, false);
-    // stripes on the pad
-    for (const lz of [-11, 11]) {
+    part(box, MAT.concrete, pad.x, y - 0.25, pad.z, 14, 0.36, 28, pad.rot, false);
+    const paint = (mat, lx, lz, sx, sz) => {
+      const p = at(pad, lx, lz);
+      part(box, mat, p.x, y + 0.11, p.z, sx, 0.02, sz, pad.rot, false);
+    };
+    // tank bay under the crane
+    paint(MAT.yellow, -2.7, 0, 0.25, 8.8); paint(MAT.yellow, 2.7, 0, 0.25, 8.8);
+    paint(MAT.yellow, 0, -4.4, 5.65, 0.25); paint(MAT.yellow, 0, 4.4, 5.65, 0.25);
+    // two numbered turret stands
+    const slots = [];
+    [-9.5, 9.5].forEach((lz, i) => {
       const p = at(pad, 0, lz);
-      part(box, MAT.yellow, p.x, y + 0.11, p.z, 13, 0.02, 0.5, pad.rot, false);
-    }
-    // gantry crane over the pad
-    for (const lz of [-8, 8]) {
+      part(box, MAT.darkConcrete, p.x, y + 0.1, p.z, 2.2, 0.25, 2.2, pad.rot);
+      for (const [lx, lz2, sx, sz] of [[-2.1, 0, 0.2, 4.4], [2.1, 0, 0.2, 4.4], [0, -2.1, 4.4, 0.2], [0, 2.1, 4.4, 0.2]])
+        paint(MAT.white, lx, lz + lz2, sx, sz);
+      const n = at(pad, -side * 3.6, lz);
+      const plate = new THREE.Mesh(new THREE.PlaneGeometry(1.8, 1.8),
+        new THREE.MeshStandardMaterial({ map: numberTexture(String(i + 1)), transparent: true, roughness: 0.9 }));
+      plate.rotation.set(-Math.PI / 2, 0, pad.rot + (side > 0 ? -Math.PI / 2 : Math.PI / 2));
+      plate.position.set(n.x, y + 0.125, n.z);
+      plate.receiveShadow = true;
+      group.add(plate);
+      slots.push({ x: p.x, z: p.z, y: y + 0.35 });
+    });
+    // overhead crane: posts, runway beams along the pad (bridge and trolley are animated by the workshop)
+    const beamY = y + 7.2;
+    for (const lz of [-12.8, 12.8]) {
       for (const lx of [-6.5, 6.5]) {
         const p = at(pad, lx, lz);
-        part(box, MAT.yellow, p.x, y, p.z, 0.4, 7, 0.4, pad.rot);
-        obstacle({ x: p.x, z: p.z, rot: pad.rot }, 0.3, 0.3, y, y + 7);
+        part(box, MAT.yellow, p.x, y, p.z, 0.45, 7.2, 0.45, pad.rot);
+        obstacle({ x: p.x, z: p.z, rot: pad.rot }, 0.3, 0.3, y, y + 7.2);
       }
       const p = at(pad, 0, lz);
-      part(box, MAT.yellow, p.x, y + 7, p.z, 13.4, 0.5, 0.5, pad.rot);
+      part(box, MAT.yellow, p.x, beamY, p.z, 13.4, 0.5, 0.5, pad.rot);
     }
-    const beam = at(pad, 0, 0);
-    part(box, MAT.yellow, beam.x, y + 7, beam.z, 0.5, 0.5, 16.5, pad.rot);
+    for (const lx of [-6.5, 6.5]) {
+      const p = at(pad, lx, 0);
+      part(box, MAT.yellow, p.x, beamY, p.z, 0.5, 0.5, 26.1, pad.rot);
+    }
+    // crane control panel
+    const pp = at(pad, side * 8.3, -3.5);
+    part(box, MAT.metal, pp.x, y, pp.z, 0.6, 1.05, 0.9, pad.rot);
+    const scr = new THREE.Mesh(new THREE.PlaneGeometry(0.8, 0.5),
+      new THREE.MeshStandardMaterial({ map: signTexture('КРАН', 'пульт управления'), roughness: 0.6 }));
+    const sp = at(pad, side * 8.0, -3.5);
+    scr.position.set(sp.x, y + 1.25, sp.z);
+    scr.rotation.set(0, pad.rot + (side > 0 ? -Math.PI / 2 : Math.PI / 2), 0);
+    scr.rotateX(-0.5);
+    group.add(scr);
+    part(box, MAT.metal, sp.x, y + 1.0, sp.z, 0.25, 0.32, 0.9, pad.rot);
+    part(box, MAT.red, pp.x, y + 1.08, pp.z, 0.12, 0.08, 0.12, pad.rot);
+    obstacle({ x: pp.x, z: pp.z, rot: pad.rot }, 0.35, 0.5, y, y + 1.4);
+    crane = { k: plan.k, x: pad.x, z: pad.z, rot: pad.rot, y, side, beamY, slots,
+              spot: at(pad, 0, 0), panel: { x: pp.x, z: pp.z } };
     // hangar
     const hf = frame(0, side * 36);
     const hy = groundMin(hf.x, hf.z, 10) - 0.3;
@@ -341,8 +390,17 @@ export function buildSettlement(world, plan) {
     for (let i = 0; i < nk; i++) { const p = at(w, -side * 5.5, -2 + i * 2); addItem('repair_kit', p.x, p.z); }
     if (plan.hasCutter) { const p = at(w, -side * 5.5, 2.5); addItem('cutter', p.x, p.z); }
     if (r() < 0.35 || plan.k === 1) { const p = at(pad, -side * 1, 16); addItem('plate', p.x, p.z); }
+    // used spare parts lying by the hangar
+    const nParts = plan.k === 1 ? 2 : (r() < 0.6 ? 1 : 0) + (r() < 0.3 ? 1 : 0);
+    const keys = ['t55', 'abrams', 'avre', 'markV'];
+    for (let i = 0; i < nParts; i++) {
+      const kind = ['engine', 'gun', 'fuel', 'drive'][Math.floor(r() * 4)];
+      const key = kind === 'drive' ? keys[Math.floor(r() * 3)] : keys[Math.floor(r() * 4)];
+      const p = frame(-8 - i * 4.5, side * 25.5);
+      addItem('part', p.x, p.z, { kind, key, hp: Math.round(55 + r() * 45) });
+    }
   }
 
   world.scene.add(group);
-  return { plan, group, obstacles, zones, items };
+  return { plan, group, obstacles, zones, items, crane };
 }

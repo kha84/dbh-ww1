@@ -6,7 +6,12 @@
 The game features:
 - An endless road ("drive beyond horizons") through procedurally streamed terrain, with villages, towns,
   gas stations and tank repair stations along it
-- First-person on foot, third-person / gunner-sight in tanks (T-55, Abrams, Chieftain AVRE, Mark V)
+- First-person on foot; in tanks (T-55, Abrams, Chieftain AVRE, Mark V) third-person / gunner-sight, or first person
+  inside the crew compartment with commander / gunner / driver stations
+- Procedural ("vector") models for all tanks; every replaceable part is its own object
+- Frankenstein tanks: engine, gun, external fuel tanks and turret drive are swapped by hand in the field, the turret
+  with the crane at a repair station; performance is computed from the parts (power, weight, drive/turret match)
+- Hit marks (holes / dents / scrapes) stay on the armour until a plate is welded on
 - Tank gunnery with ballistics and per-tank ammo; armour, penetration and internal systems
   (hull, engine, transmission, turret drive, gun, ammo rack, fuel tank) that degrade the tank when damaged
 - Enemy tanks with simple AI: patrols along the road and ambushes in caponiers
@@ -18,7 +23,7 @@ The game features:
 python3 -m http.server 8000
 # open http://localhost:8000/index.html
 ```
-Server is required for ES modules + GLB loading (file:// won't work).
+Server is required for ES modules (file:// won't work).
 
 ## Web project structure
 ```
@@ -28,8 +33,13 @@ web/js/main.js          # orchestrator: input, camera modes (walk / 3rd person /
 web/js/world.js         # endless world: road centreline roadX(z)/roadH(z), chunked terrain streamed around
                         #   the player, lakes, forest, obstacle boxes (OBB push-out + shell raycast)
 web/js/settlements.js   # roadside villages / towns / gas stations / repair stations (+ items, service zones)
-web/js/tanks.js         # TANK_DEFS (stats, armour, module layouts), procedural T-55, GLB loading with turret
-                        #   split, Tank class (physics, gun laying with ballistics, systems damage)
+web/js/parts.js         # part catalog: HULLS / TURRETS / GUNS / ENGINES / FUELS / DRIVES, seats & interior layouts,
+                        #   computeSpec(hull, parts) -> tank.def (speed from power/weight, gun stats, modules...)
+web/js/models.js        # procedural models: hulls, turrets, guns, engines, fuel sets, drives, crew compartments;
+                        #   static meshes are merged (bake) into a few vertex-coloured meshes per rigid group
+web/js/tanks.js         # Tank class: composition (setPart / removeTurret / installTurret), physics, gun laying with
+                        #   ballistics, systems damage, engine bay, interior toggle, hit marks (decals)
+web/js/workshop.js      # repair-station overhead crane: turret stands 1/2, control panel options, lift animation
 web/js/combat.js        # shells, hit tests, armour penetration -> module/crew damage, fires, particle effects
 web/js/ai.js            # EnemyDirector: encounters along the road (patrols / ambushes in caponiers) + tank AI
 web/js/items.js         # inventory, world pickups, armour plate carried in hands
@@ -39,9 +49,14 @@ web/js/noise.js         # perlin/fbm, hash, seeded rng
 
 ## Controls (web)
 - On foot: WASD move, SHIFT run, C crouch, SPACE jump, E enter/exit tank (only crewless ones),
-  F pick up / loot tank / hold to weld a plate, G drop plate, hold T cut a plate with the cutter, R repair kit menu
+  F pick up / loot tank / hold to weld a plate, G drop what is in hands, hold T cut a plate with the cutter,
+  R repair kit menu. Looking at a part slot of a crewless tank: F takes the part into hands / installs the carried
+  part, Q (or F) opens / closes the engine bay (the engine won't run while it is open). F at the crane panel opens
+  the crane menu (digits 1-4).
 - In tank: W/S throttle, A/D steer, SPACE brake, mouse aims (turret follows), LMB fire, RMB gunner sight,
-  F fire extinguisher, R repair kit menu (digits choose the system), ESC pause
+  F fire extinguisher, R repair kit menu (digits choose the system), V third person / inside view, ESC pause.
+  Inside: Q stand up / sit at the nearest station, 1/2/3 commander / gunner / driver. Commander = full control,
+  gunner = gun only, driver = driving only; standing up = WASD moves around the compartment.
 
 ## Web debugging
 URL params: `?nowater=1&noclouds=1&notrees=1&notanks=1&noenemies=1&noshadows=1&nofog=1&waterred=1&watery=N&noaa=1&logdepth=1`
@@ -58,9 +73,17 @@ URL params: `?nowater=1&noclouds=1&notrees=1&notanks=1&noenemies=1&noshadows=1&n
 - Water meshes are trimmed per chunk to cells actually below WATER_LEVEL so they can't poke through terrain.
 - Settlements are planned deterministically per 850 m stretch (`settlementPlan(k)`), built/unloaded by distance.
   k=0 is always a village, k=1 a repair station with the cutter.
-- GLB models face -X; loader bakes a +90 deg rotation so forward = +Z at heading 0, then splits turret triangles
-  off the hull using `def.split` (normalised u/v/w box) so the turret can rotate. Mark V has no turret (gun arc).
-- Module/crew boxes in TANK_DEFS are normalised to the hull (or turret) box: u -1..1 across (+X = tank's left),
-  v 0..1 up, w -1..1 rear..front. `ext: true` modules are hit without penetrating armour.
+- All tanks are procedural. Hull-local axes: +Z forward, +X is the tank's LEFT. A tank = hull + parts
+  { engine, gun, fuel, drive, turret }; each part is { kind, key, hp, vis } and carries its visual group (and its hit
+  marks) wherever it goes. tank.hp.engine/gun/fuel/turret are getters onto the parts (0 when missing); hull,
+  transmission and ammo belong to the hull. Drives fit any hull but turn only a turret of their own type
+  (def.driveOk). Mark V is turretless: its gun sits in a front mount with a limited arc (turret = gun mount pivot).
+- Module/crew boxes in parts.js are normalised to the hull (or turret) box: u -1..1 across (+X = tank's left),
+  v 0..1 up, w -1..1 rear..front; special boxes (ringDrive / gunMount / fuelMount) come from the hull anchors.
+  `ext: true` modules are hit without penetrating armour.
+- Interiors are built lazily when the player first looks inside; objects flagged userData.interior are shown only
+  then (gun breeches too). Walkable areas / seats / vision slits are data in parts.js.
+- Repair stations don't fix replaceable parts at 0% (replace them); hull systems (transmission, ammo rack) are fixed.
+- Crane stands keep their turrets per settlement (Workshop.store) across settlement unload/reload.
 - Enemy fuel/ammo hit kills the crew (tank stops, can be captured); for the player's tank it starts a fire
   that must be put out with F before the timer runs out, otherwise game over.

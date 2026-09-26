@@ -1,12 +1,24 @@
-// Inventory, world pickups (repair kits, cutter) and armour plates carried in hands
+// Inventory, world pickups (repair kits, cutter, tank parts) and heavy things carried in hands
 import * as THREE from 'three';
+import { partVisual } from './tanks.js';
+import { partLabel } from './parts.js';
 
 export const ITEM_DEFS = {
   repair_kit: { name: 'Ремкомплект', icon: '🧰', desc: 'чинит одну систему (не уничтоженную)' },
   torch:      { name: 'Газовая горелка', icon: '🔥', desc: 'приварить бронелист к корпусу' },
   cutter:     { name: 'Резак', icon: '🪚', desc: 'срезать бронелист с целого танка' },
   plate:      { name: 'Бронелист', icon: '🛡', desc: 'только в руках' },
+  part:       { name: 'Деталь танка', icon: '⚙', desc: 'только в руках' },
 };
+
+// how a part is held in front of the camera
+const HAND_POSE = {
+  engine: { pos: [0.05, -0.95, -1.7], rot: [0.2, 0.5, 0], s: 0.55 },
+  gun:    { pos: [0.4, -0.75, -1.1], rot: [0.05, -0.25, 0], s: 0.4 },
+  fuel:   { pos: [0.0, -0.8, -1.4], rot: [0.25, 0.3, 0], s: 0.55 },
+  drive:  { pos: [0.0, -0.85, -1.5], rot: [0.5, 0, 0], s: 0.45 },
+};
+export const CARRY_SPEED = { plate: 0.6, engine: 0.45, gun: 0.5, fuel: 0.7, drive: 0.6 };
 
 const mats = {
   kit: new THREE.MeshStandardMaterial({ color: 0x4f6b35, roughness: 0.7 }),
@@ -72,23 +84,66 @@ export class Items {
     this.pickups = new Map();
     this.taken = new Set();
     this.inventory = { repair_kit: 1, torch: 1, cutter: 0 };
-    this.hands = null;             // null | 'plate'
+    this.hands = null;             // null | 'plate' | 'part'
+    this.handPart = null;          // the part carried when hands === 'part'
     this.dropN = 0;
     this.t = 0;
   }
 
-  add(id, type, x, z) {
+  add(id, type, x, z, part = null) {
     if (this.taken.has(id) || this.pickups.has(id)) return;
-    const mesh = buildItemMesh(type);
+    let mesh;
+    if (type === 'part') {
+      mesh = new THREE.Group();
+      const g = partVisual(part).group;
+      g.position.set(0, g.userData.groundY || 0, 0);
+      g.rotation.set(0, 0, 0);
+      g.scale.setScalar(1);
+      g.visible = true;
+      g.traverse(o => { if (o.isMesh) o.castShadow = true; if (o.userData.interior) o.visible = false; });
+      mesh.add(g);
+      const glow = buildItemMesh('none').userData.glow;
+      glow.position.y = 1.2;
+      mesh.add(glow);
+      mesh.userData.glow = glow;
+    } else mesh = buildItemMesh(type);
     const y = this.world.heightAt(x, z);
     mesh.position.set(x, y, z);
     mesh.rotation.y = Math.random() * Math.PI * 2;
     this.scene.add(mesh);
-    this.pickups.set(id, { id, type, mesh, pos: mesh.position });
+    this.pickups.set(id, { id, type, mesh, pos: mesh.position, part });
   }
 
-  drop(type, x, z) {
-    this.add(`drop:${this.dropN++}`, type, x, z);
+  drop(type, x, z, part = null) {
+    this.add(`drop:${this.dropN++}`, type, x, z, part);
+  }
+
+  label(p) { return p.type === 'part' ? partLabel(p.part) : ITEM_DEFS[p.type].name; }
+
+  // put a part into the hands (child of the camera)
+  holdPart(part, camera) {
+    this.hands = 'part';
+    this.handPart = part;
+    const g = partVisual(part).group;
+    const pose = HAND_POSE[part.kind];
+    camera.add(g);
+    g.position.set(...pose.pos);
+    g.rotation.set(...pose.rot);
+    g.scale.setScalar(pose.s);
+    g.visible = true;
+    g.traverse(o => { if (o.isMesh) o.castShadow = false; });
+  }
+  releasePart() {
+    const part = this.handPart;
+    this.hands = null;
+    this.handPart = null;
+    if (part) part.vis.group.traverse(o => { if (o.isMesh) o.castShadow = true; });
+    return part;
+  }
+  carrySpeed() {
+    if (this.hands === 'plate') return CARRY_SPEED.plate;
+    if (this.hands === 'part') return CARRY_SPEED[this.handPart.kind];
+    return 1;
   }
 
   remove(id, taken = true) {
@@ -109,10 +164,15 @@ export class Items {
   }
 
   // take into inventory / hands; returns message or null
-  take(p) {
+  take(p, camera) {
     if (p.type === 'plate') {
       if (this.hands) return null;
       this.hands = 'plate';
+    } else if (p.type === 'part') {
+      if (this.hands) return null;
+      this.remove(p.id);
+      this.holdPart(p.part, camera);
+      return partLabel(p.part);
     } else {
       this.inventory[p.type] = (this.inventory[p.type] || 0) + 1;
     }

@@ -65,7 +65,7 @@
   #hpbar { height: 6px; background: #333; border-radius: 3px; margin: 4px 0 8px; overflow: hidden; }
   #hpfill { height: 100%; background: #7fe07f; width: 100%; transition: width .2s; }
 
-  #systems { position: fixed; left: 16px; bottom: 16px; z-index: 10; padding: 10px 12px; display: none; width: 290px; }
+  #systems { position: fixed; left: 16px; bottom: 16px; z-index: 10; padding: 10px 12px; display: none; width: 320px; }
   #systems h4 { font-size: 12px; letter-spacing: 2px; color: #e8dcc0; margin-bottom: 6px; text-transform: uppercase; }
   #systems h4 small { color: #9aa98c; letter-spacing: 0; text-transform: none; font-weight: 400; }
   #sysWrap { display: flex; gap: 10px; }
@@ -76,6 +76,12 @@
   .srow .b { height: 4px; background: #333; border-radius: 2px; overflow: hidden; margin-top: 1px; }
   .srow .b i { display: block; height: 100%; }
   .srow.dead .n { color: #ff6b5a; }
+  .srow em { font-style: normal; color: #e8c96a; font-size: 10.5px; }
+  #sysRows .spec { font-size: 11px; color: #b7a97f; margin-bottom: 5px; }
+  #sysRows .spec .bad { color: #ff6b5a; }
+  .gline.seat b { color: #e8c96a; }
+  #repair .info { color: #aaa; font-size: 13px; }
+  #repair .info b { color: #ddd; font-weight: 500; }
 
   #gauge { position: fixed; right: 16px; bottom: 16px; z-index: 10; padding: 10px 14px; display: none; min-width: 210px; text-align: right; }
   #gaugeSpeed { font-size: 38px; font-weight: 600; line-height: 1; color: #e8dcc0; }
@@ -119,7 +125,7 @@
   .mk.enemy { color: #ff8a7a; }
   .mk.own { color: #8fe08f; } .mk.own i { border-top-color: #7fe07f; }
 
-  #repair { position: fixed; left: 50%; top: 50%; transform: translate(-50%,-50%); z-index: 30; display: none;
+  #repair { position: fixed; left: 50%; top: 50%; transform: translate(-50%,-50%); z-index: 30; display: none; pointer-events: none;
     background: rgba(12,14,10,.9); border: 1px solid rgba(255,255,255,.25); border-radius: 10px; padding: 16px 22px;
     color: #ddd; min-width: 360px; font-size: 14px; }
   #repair h3 { color: #c9b48a; letter-spacing: 2px; font-size: 16px; margin-bottom: 8px; }
@@ -211,8 +217,11 @@
     <tr><td class="k">C / ПРОБЕЛ</td><td>присесть / прыжок</td></tr>
     <tr><td class="k">E</td><td>сесть в танк (без экипажа) / выйти</td></tr>
     <tr><td class="k">F</td><td>подобрать предмет, обыскать танк; удерживать — приварить бронелист</td></tr>
-    <tr><td class="k">G</td><td>бросить бронелист</td></tr>
+    <tr><td class="k">F (взгляд на деталь)</td><td>снять / установить двигатель, орудие, баки, поворотный механизм</td></tr>
+    <tr><td class="k">Q</td><td>открыть / закрыть моторный отсек</td></tr>
+    <tr><td class="k">G</td><td>бросить то, что в руках</td></tr>
     <tr><td class="k">T (удерживать)</td><td>срезать бронелист резаком</td></tr>
+    <tr><td class="k">F у пульта крана</td><td>снять / поставить башню (ремпункт)</td></tr>
     <tr><td></td><td class="h">В ТАНКЕ</td></tr>
     <tr><td class="k">W / S, A / D</td><td>газ / задний ход, поворот</td></tr>
     <tr><td class="k">ПРОБЕЛ</td><td>тормоз</td></tr>
@@ -220,6 +229,8 @@
     <tr><td class="k">ЛКМ / ПКМ</td><td>выстрел / прицел</td></tr>
     <tr><td class="k">F</td><td>огнетушитель</td></tr>
     <tr><td class="k">R</td><td>ремкомплект — починить систему</td></tr>
+    <tr><td class="k">V</td><td>вид снаружи / изнутри танка</td></tr>
+    <tr><td class="k">Q / 1 2 3</td><td>изнутри: встать-сесть / командир, наводчик, мехвод</td></tr>
     <tr><td class="k">ESC</td><td>пауза</td></tr>
   </table>
   <div class="resume">нажми ESC или кликни, чтобы продолжить</div>
