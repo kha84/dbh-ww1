@@ -3,13 +3,28 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
     "allowJs": true,
     "checkJs": true,
     "noEmit": true,
     "strict": false,
     "skipLibCheck": true,
-    "types": ["vite/client"]
+    "types": [
+      "vite/client"
+    ],
+    "paths": {
+      "three": [
+        "./node_modules/@types/three/build/three.webgpu.d.ts"
+      ]
+    }
   },
-  "include": ["web/js/**/*.js", "web/js/**/*.ts", "vite.config.js"]
+  "include": [
+    "web/js/**/*.js",
+    "web/js/**/*.ts",
+    "vite.config.js"
+  ]
 }

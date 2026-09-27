@@ -53,6 +53,21 @@ const SETTLE_SIZE = {
   town:    { halfLen: 190, halfW: 85 },
 };
 
+// broken trees: the tree meshes go into a group clipped by world-space planes (stump below the break, the falling
+// top above it); the cut shows the inside of the trunk, so the materials are double-sided copies (one per material)
+function clipGroup(planes) {
+  const g = new THREE.ClippingGroup();
+  g.clippingPlanes = planes;
+  g.clipShadows = true;
+  return g;
+}
+const CUT_MATS = new Map();
+function cutMaterial(mat) {
+  let m = CUT_MATS.get(mat);
+  if (!m) { m = mat.clone(); m.side = THREE.DoubleSide; CUT_MATS.set(mat, m); }
+  return m;
+}
+
 /**
  * @typedef {object} WorldOptions
  * @property {boolean} [rivers]      rivers + bridges (on by default)
@@ -425,11 +440,8 @@ export class World {
       if (m.isInstancedMesh) m.dispose();
       if (!m.userData.sharedGeo) m.geometry.dispose();
     }
-    // broken trees: stumps and logs own cloned (clipped) materials
-    for (const g of ch.extra) {
-      this.scene.remove(g);
-      g.traverse(o => { if (o.isMesh && o.material.clippingPlanes) o.material.dispose(); });
-    }
+    // broken trees: stumps and logs (clipping groups sharing the double-sided tree materials)
+    for (const g of ch.extra) this.scene.remove(g);
     if (ch.extra.length) this.logs = this.logs.filter(l => l.ch !== ch);
     this.chunks.delete(k);
   }
@@ -684,26 +696,20 @@ export class World {
     for (const im of t.ims) { im.setMatrixAt(t.i, _zeroM); im.instanceMatrix.needsUpdate = true; }
 
     const parts = this.treeParts[t.kind];
-    const clipped = (mat, plane) => {
-      const m = mat.clone();
-      m.clippingPlanes = [plane];
-      m.clipShadows = true;
-      m.side = THREE.DoubleSide;
-      return m;
-    };
     // fresh cut radius (the trunk tapers 0.32 -> 0.20 over its 2.8 m)
     const ly = t.stumpH / (t.s * t.sy);
     const cutR = ly < 2.8 ? (0.32 - 0.12 * ly / 2.8) * t.s : 0;
 
     // stump: the whole tree clipped below y
     const stump = new THREE.Group();
-    const lo = new THREE.Plane(new THREE.Vector3(0, -1, 0), y);
+    const body = clipGroup([new THREE.Plane(new THREE.Vector3(0, -1, 0), y)]);
+    stump.add(body);
     for (const [geo, mat] of parts) {
-      const m = new THREE.Mesh(geo, clipped(mat, lo));
+      const m = new THREE.Mesh(geo, cutMaterial(mat));
       m.matrixAutoUpdate = false;
       m.matrix.copy(t.mat);
       m.castShadow = true;
-      stump.add(m);
+      body.add(m);
     }
     if (cutR) {
       const c = new THREE.Mesh(this.cutGeo, this.cutMat);
@@ -722,12 +728,13 @@ export class World {
     inner.position.set(-t.x, -y, -t.z);
     top.add(inner);
     const plane = new THREE.Plane();
+    inner.add(clipGroup([plane]));
     for (const [geo, mat] of parts) {
-      const m = new THREE.Mesh(geo, clipped(mat, plane));
+      const m = new THREE.Mesh(geo, cutMaterial(mat));
       m.matrixAutoUpdate = false;
       m.matrix.copy(t.mat);
       m.castShadow = true;
-      inner.add(m);
+      inner.children[0].add(m);
     }
     if (cutR) {
       const c = new THREE.Mesh(this.cutGeo, this.cutMat);
@@ -759,26 +766,19 @@ export class World {
     // the old stump goes, a lower one takes its place
     const old = t.stumpObj;
     this.scene.remove(old);
-    old.traverse(o => { if (o.isMesh && o.material.clippingPlanes) o.material.dispose(); });
     ch.extra.splice(ch.extra.indexOf(old), 1);
     const parts = this.treeParts[t.kind];
-    const clipped = (mat, planes) => {
-      const m = mat.clone();
-      m.clippingPlanes = planes;
-      m.clipShadows = true;
-      m.side = THREE.DoubleSide;
-      return m;
-    };
     const ly = t.stumpH / (t.s * t.sy);
     const cutR = ly < 2.8 ? (0.32 - 0.12 * ly / 2.8) * t.s : 0;
     const stump = new THREE.Group();
-    const lo = new THREE.Plane(new THREE.Vector3(0, -1, 0), y);
+    const body = clipGroup([new THREE.Plane(new THREE.Vector3(0, -1, 0), y)]);
+    stump.add(body);
     for (const [geo, mat] of parts) {
-      const m = new THREE.Mesh(geo, clipped(mat, [lo]));
+      const m = new THREE.Mesh(geo, cutMaterial(mat));
       m.matrixAutoUpdate = false;
       m.matrix.copy(t.mat);
       m.castShadow = true;
-      stump.add(m);
+      body.add(m);
     }
     const disc = (grp, py) => {
       if (!cutR) return;
@@ -800,12 +800,14 @@ export class World {
     inner.position.set(-t.x, -y, -t.z);
     top.add(inner);
     const plane = new THREE.Plane(), plane2 = new THREE.Plane();
+    const piece = clipGroup([plane, plane2]);
+    inner.add(piece);
     for (const [geo, mat] of parts) {
-      const m = new THREE.Mesh(geo, clipped(mat, [plane, plane2]));
+      const m = new THREE.Mesh(geo, cutMaterial(mat));
       m.matrixAutoUpdate = false;
       m.matrix.copy(t.mat);
       m.castShadow = true;
-      inner.add(m);
+      piece.add(m);
     }
     disc(top, 0.005);
     this.scene.add(top);

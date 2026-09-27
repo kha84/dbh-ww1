@@ -19,6 +19,7 @@ import { showMenu } from './menu.js';
 import { snapshot, restore, restoreBefore, writeSave, loadSave } from './save.js';
 import { Net, NET_KEY } from './net.js';
 import { $ } from './game/dom.js';
+import { createRenderer, createSky, BASE_FOV } from './game/render.js';
 import { createPanels } from './game/panels.js';
 import { createStash } from './game/stash.js';
 import { createMenus } from './game/menus.js';
@@ -83,76 +84,10 @@ const GRAVITY = 20;
 const MOUSE_SENS = 0.0021;
 const TANK_REACH = 3.5;        // metres from hull surface for interactions
 
-// ================== renderer / scene ==================
-const app = document.getElementById('app');
-const renderer = new THREE.WebGLRenderer({
-  antialias: dbg.get('noaa') !== '1',
-  powerPreference: 'high-performance',
-  logarithmicDepthBuffer: dbg.get('logdepth') === '1',
-  preserveDrawingBuffer: dbg.get('shot') === '1',
-});
-renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
-renderer.shadowMap.enabled = dbg.get('noshadows') !== '1';
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.05;
-renderer.outputColorSpace = THREE.SRGBColorSpace;
-renderer.localClippingEnabled = true;     // broken trees are clipped at the break
-app.appendChild(renderer.domElement);
-
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x9ec8e8);
-
+// ================== renderer / scene (game/render.js) ==================
+const { renderer, scene, camera } = createRenderer(dbg, document.getElementById('app'));
 const world = new World(scene, SEED, worldOptions(MODE || 'road'));
-const VIEW_DIST = world.VIEW * 128;
-if (dbg.get('nofog') !== '1') scene.fog = new THREE.Fog(0x9ec8e8, VIEW_DIST * 0.3, VIEW_DIST * 0.95);
-
-const BASE_FOV = 70;
-const camera = new THREE.PerspectiveCamera(BASE_FOV, window.innerWidth / window.innerHeight, 0.1, 1500);
-scene.add(camera);   // camera children (plate in hands) must render
-
-// ================== lights & sky ==================
-const hemi = new THREE.HemisphereLight(0xbdd8f0, 0x5c6b4a, 0.85);
-scene.add(hemi);
-const sun = new THREE.DirectionalLight(0xfff2d9, 2.0);
-sun.castShadow = dbg.get('noshadows') !== '1';
-sun.shadow.mapSize.set(2048, 2048);
-sun.shadow.camera.near = 10;
-sun.shadow.camera.far = 600;
-const shadowRange = 140;
-sun.shadow.camera.left = -shadowRange;
-sun.shadow.camera.right = shadowRange;
-sun.shadow.camera.top = shadowRange;
-sun.shadow.camera.bottom = -shadowRange;
-sun.shadow.bias = -0.0006;
-scene.add(sun);
-scene.add(sun.target);
-
-// clouds: a sky dome of puffs that travels with the player
-const clouds = new THREE.Group();
-if (dbg.get('noclouds') !== '1') {
-  const cloudGeo = new THREE.SphereGeometry(1, 10, 8);
-  const cloudMat = new THREE.MeshStandardMaterial({ color: 0xffffff, transparent: true, opacity: 0.55, roughness: 1, fog: false });
-  const MAX_CLOUDS = 240;
-  const im = new THREE.InstancedMesh(cloudGeo, cloudMat, MAX_CLOUDS);
-  const m = new THREE.Matrix4(), v = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
-  let used = 0;
-  for (let i = 0; i < 48 && used < MAX_CLOUDS; i++) {
-    const cx = (Math.random() - 0.5) * 1100, cz = (Math.random() - 0.5) * 1100, cy = 110 + Math.random() * 50;
-    const n = 3 + Math.floor(Math.random() * 4);
-    for (let j = 0; j < n && used < MAX_CLOUDS; j++) {
-      s.set(14 + Math.random() * 22, 6 + Math.random() * 6, 12 + Math.random() * 18);
-      v.set(cx + (Math.random() - 0.5) * 46, cy + (Math.random() - 0.5) * 8, cz + (Math.random() - 0.5) * 40);
-      m.compose(v, q, s);
-      im.setMatrixAt(used++, m);
-    }
-  }
-  im.count = used;
-  im.frustumCulled = false;
-  clouds.add(im);
-  scene.add(clouds);
-}
+const sky = createSky(scene, dbg, world.VIEW * 128);
 
 // ================== world systems ==================
 const fx = new Effects(scene);
@@ -785,7 +720,7 @@ function exitVehicle(force = false) {
 }
 
 // ================== main loop ==================
-const clock = new THREE.Clock();
+const timer = new THREE.Timer();
 let despawnT = 0, repairRenderT = 0, craneRenderT = 0, stashRenderT = 0, engineNoiseT = 0;
 
 function frame(dt) {
@@ -924,11 +859,7 @@ function frame(dt) {
     }
   }
 
-  // sun & clouds follow
-  sun.position.set(anchor.x + 120, anchor.y + 180, anchor.z + 60);
-  sun.target.position.set(anchor.x, anchor.y, anchor.z);
-  sun.target.updateMatrixWorld();
-  clouds.position.set(anchor.x, 0, anchor.z);
+  sky.follow(anchor);
 
   // progress
   state.maxZ = Math.max(state.maxZ, anchor.z);
@@ -979,20 +910,13 @@ function frame(dt) {
   $('mmLabel').textContent = state.duel ? 'ДУЭЛЬ' : nextSettlementLabel(anchor);
 }
 
-function animate() {
-  requestAnimationFrame(animate);
-  const dt = Math.min(0.05, clock.getDelta());
+function animate(t) {
+  timer.update(t);
+  const dt = Math.min(0.05, timer.getDelta());
   // network play: the world does not stop for a pause
   if ((!state.paused || (net && net.connected)) && state.started && !state.over) frame(dt);
   renderer.render(scene, camera);
 }
-
-// ================== resize ==================
-window.addEventListener('resize', () => {
-  camera.aspect = window.innerWidth / window.innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight);
-});
 
 // ---- game modules (web/js/game/): each gets this context; functions of the modules are reached through
 // wrappers (the modules are created below, after the context)
@@ -1170,10 +1094,10 @@ function netCtx() {
 }
 
 boot();
-animate();
+renderer.setAnimationLoop(animate);      // (waits for the renderer to initialise)
 
 // handle for debugging / automated tests
-window.game = { state, tanks, world, items, combat, director, workshop, player, camera, keys, spawnTank, fx, frame, MODE, saveGame,
+window.game = { renderer, scene, state, tanks, world, items, combat, director, workshop, player, camera, keys, spawnTank, fx, frame, MODE, saveGame,
   snapshot: () => snapshot({ state, player, items, tanks, director, world, workshop, infantry, garrisoned, SEED }),
   guns, infantry, SEED, selectWeapon, viewModel, startReload, placeSandbag, mgAction, toggleTankWeapon, updateDriveControls,
   openStash, doStash, stowPlate, loadShells,

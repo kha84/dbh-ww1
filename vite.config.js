@@ -44,6 +44,8 @@ function mailbox() {
 export default defineConfig({
   base: './',
   plugins: [mailbox()],
+  // one copy of three.js for everything: the WebGPU build (WebGPURenderer, node materials, TSL)
+  resolve: { alias: [{ find: /^three$/, replacement: 'three/webgpu' }] },
   server: { host: true, port: 8000 },
   preview: { host: true, port: 8000 },
   build: {
