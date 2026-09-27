@@ -120,12 +120,16 @@ export function computeSpec(hullKey, parts, bags = null) {
 }
 
 // ------------------------------------------------------------------ tank ranking
-// combat value of a stock tank: firepower + frontal protection + mobility. Used to order the tank types
-// from the weakest (met at the start of the road) to the most advanced (met far down the road).
+// combat value of a stock tank: firepower + frontal protection + mobility
 export function tankRating(key) {
   const d = computeSpec(key, defaultParts(key));
   const fire = d.pen * Math.sqrt(d.dmg) * Math.pow(6 / d.reload, 0.25);
   const prot = (d.armor.hull.front + d.armor.turret.front) / 2;
   return fire * 0.6 + prot * 0.8 + d.maxSpeed * 4;
 }
-export const TANK_TIERS = Object.keys(HULLS).sort((a, b) => tankRating(a) - tankRating(b));
+const YEAR = Object.fromEntries(TANK_DEFS.map(d => [d.key, d.year || 0]));
+// tank types in the order they appeared in the world (same year: the weaker one first). The road follows it:
+// the oldest machines are met at the start, the newest far down the road.
+export const TANK_TIERS = Object.keys(HULLS).sort((a, b) => YEAR[a] - YEAR[b] || tankRating(a) - tankRating(b));
+// the weakest tank of all: the player starts the road in it
+export const STARTER_TANK = Object.keys(HULLS).reduce((a, b) => tankRating(b) < tankRating(a) ? b : a);

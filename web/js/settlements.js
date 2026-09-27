@@ -2,6 +2,7 @@
 import * as THREE from 'three';
 import { rng } from './noise.js';
 import { difficultyAt, pickTankKey, lootRoll } from './loot.js';
+import { sprayColor } from './paint.js';
 
 export const SETTLEMENT_NAMES = {
   village: ['Берёзовка', 'Ивановка', 'Сосновка', 'Малиновка', 'Кривцы', 'Заречье', 'Горелово',
@@ -136,6 +137,8 @@ export function buildSettlement(world, plan) {
   const d = difficultyAt(plan.z);
   // weapons / cartridges / grenades / kits lying about
   const addLoot = (x, z) => { const it = lootRoll(r, d, 1)[0]; addItem(it.type, x, z, it); };
+  // spray can: half of them in the paint of the machines met around here
+  const addSpray = (x, z) => addItem('spray', x, z, { color: sprayColor(r, pickTankKey(r, d)), paint: Math.round(50 + r() * 50) });
 
   // ------------------------------------------------------------ builders
   const houses = [];
@@ -309,7 +312,13 @@ export function buildSettlement(world, plan) {
       const p = at(h, (h.x > world.roadX(h.z) ? -1 : 1) * 7, -2);
       addItem('torch', p.x, p.z);
     }
-    // weapons, cartridges, sandbags, fuel cans in the yards
+    // weapons, cartridges, sandbags, fuel cans, spray cans in the yards
+    const nSpray = (r() < 0.45 ? 1 : 0) + (town && r() < 0.5 ? 1 : 0);
+    for (let i = 0; i < nSpray && hf.length; i++) {
+      const h = hf[Math.floor(r() * hf.length)];
+      const p = at(h, (h.x > world.roadX(h.z) ? -1 : 1) * 6.5, (r() - 0.5) * 5);
+      addSpray(p.x, p.z);
+    }
     const nLoot = town ? 4 + Math.floor(r() * 3) : 2 + Math.floor(r() * 2);
     for (let i = 0; i < nLoot && hf.length; i++) {
       const h = hf[Math.floor(r() * hf.length)];
@@ -403,6 +412,7 @@ export function buildSettlement(world, plan) {
     if (r() < 0.5) { const p = at(k, -side * 4, 3); addLoot(p.x, p.z); }
     if (r() < 0.4) { const p = at(k, 0, -7); addItem('repair_kit', p.x, p.z); }
     if (plan.hasTorch) { const p = at(k, 1.5, -7); addItem('torch', p.x, p.z); }
+    if (r() < 0.35) { const p = at(k, -side * 4, 5); addSpray(p.x, p.z); }
   }
 
   let crane = null;
@@ -507,6 +517,8 @@ export function buildSettlement(world, plan) {
       addItem('part', p.x, p.z, { kind, key, hp: Math.round(55 + r() * 45) });
     }
     for (let i = 0; i < 2; i++) { const p = at(w, -side * 5.5, -4 - i); addItem('sandbag', p.x, p.z); }
+    const nSpray = 1 + (r() < 0.5 ? 1 : 0);
+    for (let i = 0; i < nSpray; i++) { const p = at(w, -side * 6.5, 4 + i * 0.8); addSpray(p.x, p.z); }
     { const p = at(w, -side * 6.5, 0); addItem('canister', p.x, p.z, { fuel: 20 }); }
     { const p = at(w, -side * 6.5, 2); addLoot(p.x, p.z); }
   }

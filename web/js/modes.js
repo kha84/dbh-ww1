@@ -98,6 +98,8 @@ export function setupRange(ctx) {
   });
   // spares at the start line
   ctx.items.add('range:plate', 'plate', 18, -262);
+  ctx.items.add('range:spray1', 'spray', 19.2, -262.5, { color: 0xd8d8d0, paint: 100 });
+  ctx.items.add('range:spray2', 'spray', 19.6, -262.1, { color: 0xb39a6b, paint: 100 });
   ctx.items.add('range:can1', 'canister', 17, -266, { fuel: 20 });
   ctx.items.add('range:can2', 'canister', 17.8, -266, { fuel: 20 });
   ctx.items.add('range:bag1', 'sandbag', 19, -268);

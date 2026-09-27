@@ -23,7 +23,7 @@ export const U = {
 // palettes { main, dark, engine[, riveted] } registered by the tank definitions (tankdefs/index.js)
 export const PALETTES = {};
 
-function rivetTexture(base, dark) {
+export function rivetTexture(base, dark) {
   const c = document.createElement('canvas');
   c.width = c.height = 128;
   const g = c.getContext('2d');
@@ -83,6 +83,9 @@ export function mats(key) {
     m.main = S(0xffffff, 0.85, 0.15, { map: rivetTexture(hex(p.main), hex(dk)) });
     m.dark = S(0xffffff, 0.9, 0.1, { map: rivetTexture(hex(p.dark), hex(new THREE.Color(p.dark).multiplyScalar(0.55).getHex())) });
   }
+  // the paint of the tank: these surfaces change colour when the tank is repainted (see paint.js)
+  m.main.userData.paint = 'main';
+  m.dark.userData.paint = 'dark';
   matCache[key] = m;
   return m;
 }
@@ -99,13 +102,17 @@ export function add(parent, geo, mat, x = 0, y = 0, z = 0, sx = 1, sy = 1, sz = 
 
 // Merge the static meshes under `node` into a few meshes: untextured pieces are baked into one
 // vertex-coloured mesh, textured ones are merged per material. Children flagged userData.keep
-// (moving parts, toggled pieces) and interiors are left alone.
+// (moving parts, toggled pieces) and interiors are left alone. Painted surfaces (materials with
+// userData.paint) are remembered: vertex ranges of the coloured mesh (userData.paint = [[start, count, role]..])
+// or the role of a textured mesh (userData.paintRole) - paint.js recolours them.
 const VC_MAT = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.82, metalness: 0.2 });
 export function bake(node) {
   node.updateMatrixWorld(true);
   const inv = new THREE.Matrix4().copy(node.matrixWorld).invert();
   const buckets = new Map();
   const victims = [];
+  const ranges = [];
+  let vcCount = 0;
   const visit = (o) => {
     for (const c of o.children) {
       if (c.userData.keep || c.userData.interior) continue;
@@ -117,6 +124,8 @@ export function bake(node) {
         if (!geo.attributes.uv) geo.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(n * 2), 2));
         let mat = c.material;
         if (!mat.map) {
+          if (mat.userData.paint) ranges.push([vcCount, n, mat.userData.paint]);
+          vcCount += n;
           const col = mat.color, arr = new Float32Array(n * 3);
           for (let i = 0; i < n; i++) { arr[i * 3] = col.r; arr[i * 3 + 1] = col.g; arr[i * 3 + 2] = col.b; }
           geo.setAttribute('color', new THREE.Float32BufferAttribute(arr, 3));
@@ -137,6 +146,8 @@ export function bake(node) {
   for (const [mat, geos] of buckets) {
     const m = new THREE.Mesh(mergeGeometries(geos, false), mat);
     m.castShadow = true; m.receiveShadow = true;
+    if (mat === VC_MAT && ranges.length) m.userData.paint = ranges;
+    else if (mat.userData.paint) m.userData.paintRole = mat.userData.paint;
     node.add(m);
   }
   return node;

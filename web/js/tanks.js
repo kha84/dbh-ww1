@@ -8,6 +8,8 @@ import { buildHull, buildTurret, buildGun, buildEngine, buildFuel, buildDrive,
          buildHullInterior, buildTurretInterior } from './models.js';
 import { buildSecondTurretInterior } from './interiors.js';
 import { WEAPONS, makeWeapon, bakedWeaponMesh } from './weapons.js';
+import { PALETTES } from './modelkit.js';
+import { paintObject, patchMaterial, PATCH_GEO } from './paint.js';
 
 export const G = 9.81;
 
@@ -20,11 +22,18 @@ export const MODULE_NAMES = {
 export const TANK_KEYS = Object.keys(HULLS);
 
 const PART_BUILDERS = { engine: buildEngine, gun: buildGun, fuel: buildFuel, drive: buildDrive, turret: buildTurret };
-// lazily build the visual of a part; it stays with the part wherever it goes
+// lazily build the visual of a part; it stays with the part wherever it goes (in its paint, if it was repainted)
 export function partVisual(part) {
-  if (!part.vis) part.vis = PART_BUILDERS[part.kind](part.key);
+  if (!part.vis) {
+    part.vis = PART_BUILDERS[part.kind](part.key);
+    if (part.paint != null) paintObject(part.vis.group, part.paint);
+  }
   return part.vis;
 }
+// colour of a part / of a tank type's stock paint
+export const partColor = part => part.paint ?? PALETTES[part.key].main;
+
+const MAX_PATCHES = 60;
 
 // ---------------------------------------------------------------- hit marks
 function markTexture(kind) {
@@ -69,6 +78,14 @@ function markRes() {
 }
 const _ray = new THREE.Raycaster();
 const _nm = new THREE.Matrix3(), _basis = new THREE.Matrix4(), _hq = new THREE.Quaternion();
+
+// orientation of a flat patch lying on a surface with normal n (its +Z), kept upright (+Y towards up)
+function facing(n, out) {
+  const t = Math.abs(n.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(0, 0, 1);
+  t.addScaledVector(n, -t.dot(n)).normalize();
+  _basis.makeBasis(new THREE.Vector3().crossVectors(t, n), t, n);
+  return out.setFromRotationMatrix(_basis);
+}
 
 function visibleChain(o, stop) {
   for (let p = o; p && p !== stop.parent; p = p.parent) if (!p.visible) return false;
@@ -133,6 +150,8 @@ export class Tank {
     this.key = key;
     this.hull = buildHull(key);
     this.root = this.hull.root;
+    this.paint = opts.paint ?? null;             // hull colour when repainted (null: the stock paint of the type)
+    if (this.paint != null) paintObject(this.root, this.paint);
     this.turretless = !!HULLS[key].turretless;
     // yaw pivot: turret ring (or the Mark V gun mount)
     this.turret = new THREE.Group();
@@ -149,6 +168,8 @@ export class Tank {
     this.mgMount.add(post);
     this.mgPost = post;
     this.secondYaw = 0;                          // twin-turret tanks: yaw of the machine-gun turret relative to the hull
+    // multi-turret tanks (T-28, T-35): small hull turrets, start turned as close to the front as their arc allows
+    this.auxYaw = (this.hull.aux || []).map(a => { a.group.rotation.y = THREE.MathUtils.clamp(0, a.arc[0], a.arc[1]); return a.group.rotation.y; });
     this.mgPivot = new THREE.Group();
     this.mgPivot.position.y = 0.3;
     this.mgPivot.rotation.order = 'YXZ';
@@ -196,7 +217,8 @@ export class Tank {
     for (let i = 0; i < (opts.bags || 0); i++) this.addSandbag();
     this.extinguishers = 3;
     this.loot = { repair_kit: opts.kits || 0, torch: opts.torches || 0 };
-    this.plates = opts.plates || 0;              // spare armour plates stowed on board
+    // spare armour plates stowed on board: their colours (a count = plates painted like the tank)
+    this.plates = Array.isArray(opts.plates) ? [...opts.plates] : new Array(opts.plates || 0).fill(this.hullColor);
     this.fire = null;                            // { t, max, source, selfOut }
     this.wrecked = false;
     this.sink = opts.sink || 0;
@@ -217,6 +239,7 @@ export class Tank {
     this.update(0, null);
   }
 
+  get hullColor() { return this.paint ?? PALETTES[this.key].main; }
   get operated() { return !this.wrecked && (this.crew || this.playerInside); }
   // all the fuel is in the external tanks: it travels with them
   get fuel() { return this.parts.fuel ? this.parts.fuel.fuel : 0; }
@@ -614,6 +637,7 @@ export class Tank {
     this.turret.rotation.y = this.turretYaw;
     this.gun.rotation.x = -this.gunElev;
     if (this.secondTurret) this.placeSecondTurret(dt);
+    if (this.hull.aux && dt > 0) this.aimAux(dt);
     this.root.updateMatrixWorld(true);
     if (dt > 0 && this.mg && !this.wrecked) this.aimMG(dt, this.operated ? (this.mgTarget || this.aimPoint) : null);
 
@@ -642,6 +666,21 @@ export class Tank {
       this.secondYaw += THREE.MathUtils.clamp(want - this.secondYaw, -r, r);
     }
     S.group.rotation.y = this.secondYaw - this.turretYaw;
+  }
+
+  // auxiliary hull turrets (multi-turret tanks) turn on their own towards the target, each within its arc
+  aimAux(dt) {
+    const tgt = this.operated && !this.wrecked ? (this.mgTarget || this.aimPoint) : null;
+    if (!tgt) return;
+    this.root.updateMatrixWorld(true);
+    const lp = this.root.worldToLocal(_v.copy(tgt));
+    this.hull.aux.forEach((a, i) => {
+      const p = a.group.position;
+      const want = THREE.MathUtils.clamp(Math.atan2(lp.x - p.x, lp.z - p.z), a.arc[0], a.arc[1]);
+      const r = (a.speed || 1) * dt;
+      this.auxYaw[i] += THREE.MathUtils.clamp(want - this.auxYaw[i], -r, r);
+      a.group.rotation.y = this.auxYaw[i];
+    });
   }
 
   // dug in only inside the caponier pit, climbs out smoothly as it leaves
@@ -751,7 +790,7 @@ export class Tank {
     this.hp.hull = 0;
     this.speed = 0;
     this.root.traverse(o => {
-      if (o.isMesh && !o.userData.mark) {
+      if (o.isMesh && (!o.userData.mark || o.userData.patch)) {
         o.material = o.material.clone();
         o.material.color.multiplyScalar(0.22);
       }
@@ -784,6 +823,7 @@ export class Tank {
     _basis.makeBasis(b, t, n);
     const m = new THREE.Mesh(R.geo, R[kind]);
     m.userData.mark = true;
+    m.userData.kind = kind;
     m.renderOrder = 2;
     const s = kind === 'hole' ? 0.42 : kind === 'dent' ? 0.34 : 0.5;
     m.scale.set(s * (kind === 'scrape' ? 0.45 : 1), s * (kind === 'scrape' ? 1.6 : 1), 1);
@@ -794,12 +834,108 @@ export class Tank {
     this.marks.push(m);
     if (this.marks.length > 45) this.marks.shift().removeFromParent();
   }
-  // a welded plate covers the damage
+  // the repair station makes the damage good (welded patches stay)
   clearMarks() {
     const rm = [];
-    this.root.traverse(o => { if (o.userData.mark) rm.push(o); });
+    this.root.traverse(o => { if (o.userData.mark && !o.userData.patch) rm.push(o); });
     for (const o of rm) o.removeFromParent();
     this.marks = [];
+  }
+
+  // ------------------------------------------------ paint and patches
+  // welded patches on the tank (they live on the hull and on the parts, and travel with the parts)
+  patches() {
+    const res = [];
+    this.root.traverse(o => { if (o.userData.patch) res.push(o); });
+    return res;
+  }
+  addPatch(host, pos, quat, sx, sy, color) {
+    const m = new THREE.Mesh(PATCH_GEO, patchMaterial(color));
+    m.userData.mark = true;
+    m.userData.patch = true;
+    m.userData.color = color;
+    m.position.copy(pos);
+    m.quaternion.copy(quat);
+    m.scale.set(sx, sy, 1);
+    m.castShadow = false; m.receiveShadow = true;
+    host.add(m);
+    return m;
+  }
+  // welding a plate: holes and dents are covered by patches in the colour of the plate. `at` ({ point, dir }):
+  // where the welder looks, a patch goes there when there is no damage to cover
+  patchMarks(color, at = null) {
+    let n = 0;
+    for (const m of this.marksAll()) {
+      if (m.userData.kind !== 'hole' && m.userData.kind !== 'dent') continue;
+      const s = m.userData.kind === 'hole' ? 0.62 : 0.5;
+      const nrm = _v.set(0, 0, 1).applyQuaternion(m.quaternion);
+      this.addPatch(m.parent, m.position.clone().addScaledVector(nrm, -0.004), facing(nrm, new THREE.Quaternion()),
+        s * (0.9 + Math.random() * 0.3), s * (0.9 + Math.random() * 0.3), color);
+      m.removeFromParent();
+      n++;
+    }
+    this.marks = this.marks.filter(m => m.parent);
+    if (!n && at) {
+      const hit = this.surfaceHit(at.point, at.dir);
+      if (hit) { this.addPatch(hit.host, hit.pos, hit.quat, 0.6, 0.5, color); n++; }
+    }
+    const all = this.patches();
+    for (let i = 0; i < all.length - MAX_PATCHES; i++) all[i].removeFromParent();
+    return n;
+  }
+  // hit marks (not patches) still on the tank
+  marksAll() {
+    const res = [];
+    this.root.traverse(o => { if (o.userData.mark && !o.userData.patch) res.push(o); });
+    return res;
+  }
+  // repaint the tank: hull, turret, gun, fuel tanks and turret drive; patches take the new colour, scrapes vanish
+  paintTank(color) {
+    this.paint = color;
+    for (const k of ['turret', 'gun', 'fuel', 'drive']) if (this.parts[k]) this.parts[k].paint = color;
+    const engine = this.parts.engine && this.parts.engine.vis && this.parts.engine.vis.group;
+    paintObject(this.root, color, o => o === engine);           // the engine inside keeps its own colours
+    for (const p of this.patches()) this.paintPatch(p, color);
+    for (const m of this.marksAll()) if (m.userData.kind === 'scrape') m.removeFromParent();
+    this.marks = this.marks.filter(m => m.parent);
+  }
+  paintPatch(p, color) {
+    p.userData.color = color;
+    p.material = patchMaterial(color);
+  }
+  // the patch the ray (world) points at, within maxD
+  patchAt(origin, dir, maxD = 4) {
+    const list = this.patches();
+    if (!list.length) return null;
+    _ray.set(origin, dir);
+    _ray.far = maxD;
+    const hits = _ray.intersectObjects(list, false);
+    return hits.length ? hits[0].object : null;
+  }
+  // where a ray meets the tank's surface: { host, pos, quat } (a patch placed there faces out)
+  surfaceHit(origin, dir, maxD = 5) {
+    this.root.updateMatrixWorld(true);
+    _ray.set(origin, dir);
+    _ray.far = maxD;
+    const hit = _ray.intersectObject(this.root, true).find(h => h.face && h.object.isMesh && !h.object.userData.mark &&
+      !h.object.userData.bag && visibleChain(h.object, this.root));
+    if (!hit) return null;
+    let host = hit.object;
+    while (host !== this.root && !host.userData.markHost) host = host.parent;
+    const n = hit.face.normal.clone().applyMatrix3(_nm.getNormalMatrix(hit.object.matrixWorld)).normalize();
+    if (n.dot(dir) > 0) n.negate();
+    host.updateMatrixWorld(true);
+    const pos = host.worldToLocal(hit.point.clone().addScaledVector(n, 0.004));
+    const quat = facing(n.applyQuaternion(host.getWorldQuaternion(_hq).invert()), new THREE.Quaternion());
+    return { host, pos, quat };
+  }
+  // objects patches can sit on, by id (for saves): hull, parts, the second turret, auxiliary turrets
+  markHosts() {
+    const res = [['hull', this.root]];
+    for (const [k, p] of Object.entries(this.parts)) if (p && p.vis) res.push([k, p.vis.group]);
+    if (this.secondTurret) res.push(['second', this.secondTurret.group]);
+    (this.hull.aux || []).forEach((a, i) => res.push([`aux${i}`, a.group]));
+    return res;
   }
 
   // world-space hit volumes as {part, box, obj}
@@ -808,6 +944,7 @@ export class Tank {
     if (this.vis.turretBox) v.push({ part: 'turret', box: this.vis.turretBox, obj: this.turret });
     const S = this.secondTurret;
     if (S) v.push({ part: 'turret', box: S.box, obj: S.group });
+    if (this.hull.aux) for (const a of this.hull.aux) v.push({ part: 'hull', box: a.box, obj: a.group });
     return v;
   }
 

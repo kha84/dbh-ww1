@@ -16,7 +16,11 @@ import vickers from './vickers.js';
 import bt7 from './bt7.js';
 import charb1 from './charb1.js';
 import type89 from './type89.js';
+import t28 from './t28.js';
+import t35 from './t35.js';
+import pz4 from './pz4.js';
+import sherman from './sherman.js';
 
-export const TANK_DEFS = [ft, markV, vickers, t26, type89, pz2, bt7, charb1, t44, is2, t55, avre, leo2, abrams];
+export const TANK_DEFS = [ft, markV, vickers, t26, t28, t35, type89, pz2, bt7, charb1, sherman, pz4, t44, is2, t55, avre, leo2, abrams];
 export const DEFS = Object.fromEntries(TANK_DEFS.map(d => [d.key, d]));
 for (const d of TANK_DEFS) PALETTES[d.key] = d.palette;

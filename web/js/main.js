@@ -2,11 +2,12 @@
 import * as THREE from 'three';
 import { World, WATER_LEVEL, segBox, pushOut } from './world.js';
 import { Tank, MODULE_IDS, MODULE_NAMES, SYSTEM_IDS, G, partVisual } from './tanks.js';
-import { HULLS, GUNS, SYSTEM_PART, PART_NAMES, ORIGIN_NAMES, SANDBAG, makePart, partLabel } from './parts.js';
+import { HULLS, GUNS, SYSTEM_PART, PART_NAMES, ORIGIN_NAMES, SANDBAG, STARTER_TANK, makePart, partLabel } from './parts.js';
 import { turretCeiling } from './models.js';
 import { Combat, Effects, describeHit } from './combat.js';
 import { EnemyDirector } from './ai.js';
-import { Items, ITEM_DEFS, TOOL_USE, SHELLS_PER_BOX, CANISTER_L, buildItemMesh, shellsLabel, ammoLabel, grenadeLabel } from './items.js';
+import { Items, ITEM_DEFS, TOOL_USE, SHELLS_PER_BOX, CANISTER_L, SPRAY_USE, buildItemMesh, shellsLabel, ammoLabel, grenadeLabel } from './items.js';
+import { STEEL, colorName, swatch } from './paint.js';
 import { Workshop } from './workshop.js';
 import { Sfx } from './audio.js';
 import { SETTLEMENT_LABEL } from './settlements.js';
@@ -167,6 +168,8 @@ function itemData(it) {
     case 'ammo': return { cal: it.cal, n: it.n };
     case 'grenade': return { key: it.key, n: it.n || 1 };
     case 'canister': return { fuel: it.fuel ?? CANISTER_L };
+    case 'plate': return { color: it.color ?? STEEL };
+    case 'spray': return { color: it.color, paint: it.paint ?? 100 };
     case 'sandbag': return it.place ? { place: it.place, wall: it.wall, col: it.col } : null;
     default: return null;
   }
@@ -425,6 +428,7 @@ document.addEventListener('keydown', e => {
     } else openRepair();
   }
   if (e.code === 'KeyX' && state.mode === 'drive') toggleTankWeapon();
+  if (e.code === 'KeyO' && state.mode === 'walk') nextSpray();
   const dg = /^Digit([0-9])$/.exec(e.code);
   if (dg) {
     const n = (parseInt(dg[1], 10) + 9) % 10;          // 1..9 -> 0..8, 0 -> 9
@@ -1009,11 +1013,11 @@ function placeSandbag(t) {
 }
 
 function stowPlate(t) {
-  if (t.plates >= PLATES_MAX) { msg(`В ${t.def.name} больше не уложить — ${PLATES_MAX} бронелиста максимум`); return; }
-  t.plates++;
+  if (t.plates.length >= PLATES_MAX) { msg(`В ${t.def.name} больше не уложить — ${PLATES_MAX} бронелиста максимум`); return; }
+  t.plates.push(items.plateColor);
   items.hands = null;
   sfx.click();
-  msg(`Бронелист уложен в ${t.def.name} (${t.plates}/${PLATES_MAX})`, '#9fd0ff');
+  msg(`Бронелист уложен в ${t.def.name} (${t.plates.length}/${PLATES_MAX})`, '#9fd0ff');
 }
 
 function loadShells(t) {
@@ -1071,8 +1075,8 @@ function stashOptions(t) {
   return [
     { id: 'kits', label: 'Ремкомплекты', ok: kits > 0, note: kits > 0 ? `×${kits} — забрать` : 'нет' },
     { id: 'torch', label: 'Газовые горелки', ok: torches > 0, note: torches > 0 ? `×${torches} — забрать` : 'нет' },
-    { id: 'plate', label: 'Бронелист в руки', ok: t.plates > 0 && handsFree,
-      note: t.plates > 0 ? `${t.plates}/${PLATES_MAX}` + (handsFree ? '' : ' — руки заняты') : 'нет' },
+    { id: 'plate', label: 'Бронелист в руки', ok: t.plates.length > 0 && handsFree,
+      note: t.plates.length > 0 ? `${t.plates.map(swatch).join('')} ${t.plates.length}/${PLATES_MAX}` + (handsFree ? '' : ' — руки заняты') : 'нет' },
     { id: 'shells', label: `Снаряды ${GUNS[key].caliber} в руки`, ok: ammo > 0 && handsFree,
       note: ammo > 0 ? `${ammo} шт. — ящик до ${SHELLS_PER_BOX}` + (handsFree ? '' : ', руки заняты') : 'нет' },
     { id: 'bag', label: 'Снять мешок с песком', ok: t.bags.length > 0 && handsFree,
@@ -1173,9 +1177,9 @@ function doStash(i) {
     msg(`Взято из танка: газовая горелка ×${t.loot.torch}`, '#e8c96a');
     t.loot.torch = 0;
   } else if (o.id === 'plate') {
-    t.plates--;
+    items.plateColor = t.plates.pop();
     items.hands = 'plate';
-    msg(`Бронелист вынут из ${t.def.name} (осталось ${t.plates})`, '#9fd0ff');
+    msg(`Бронелист (${colorName(items.plateColor)}) вынут из ${t.def.name} (осталось ${t.plates.length})`, '#9fd0ff');
     closeStash();
   } else if (o.id === 'shells') {
     const key = shellKey(t);
@@ -1215,7 +1219,7 @@ function dropHeld() {
     msg(type === 'canister' ? `Канистра поставлена (${Math.round(data.fuel)} л)` : 'Мешок с песком брошен');
   } else if (items.hands === 'plate') {
     items.hands = null;
-    items.drop('plate', x, z);
+    items.drop('plate', x, z, { color: items.plateColor });
     msg('Бронелист брошен');
   } else if (items.hands === 'shells') {
     const b = items.handShells;
@@ -1241,7 +1245,24 @@ function currentHoldAction() {
     return { kind: 'weld', tank: t, need: 3.5, text: 'Привариваю бронелист...' };
   if (!items.hands && keys['KeyT'] && items.inventory.cutter > 0 && !t.crew && t.hp.hull >= 75)
     return { kind: 'cut', tank: t, need: 5, text: 'Срезаю бронелист...' };
+  if (!items.hands && keys['KeyP'] && items.spray && !t.crew) {
+    const job = paintJob(t);
+    if (job.use > items.spray.paint + 0.01) return null;
+    return { kind: 'paint', tank: t, patch: job.patch, use: job.use, need: job.patch ? 1.2 : 3 + t.def.weight * 0.08,
+             text: job.patch ? 'Закрашиваю заплатку...' : `Крашу ${t.def.name}...` };
+  }
   return null;
+}
+
+// what the spray can would paint on this tank: the patch under the crosshair or the whole tank
+function paintJob(t) {
+  const patch = t.patchAt(camera.getWorldPosition(new THREE.Vector3()), lookDir(), 4.5);
+  return { patch, use: patch ? SPRAY_USE.patch : SPRAY_USE.tank(t.def.weight) };
+}
+function nextSpray() {
+  if (!items.sprays.length) { msg('Баллончиков с краской нет'); return; }
+  const c = items.nextSpray();
+  msg(`Баллончик: ${colorName(c.color)} (${Math.round(c.paint)}%)` + (items.sprays.length > 1 ? ` — ${items.sprayIdx + 1} из ${items.sprays.length}` : ''), '#d8b0ff');
 }
 
 function updateHold(dt) {
@@ -1275,6 +1296,27 @@ function updateHold(dt) {
   $('hold').style.display = 'block';
   $('holdText').textContent = h.text;
   $('holdFill').style.width = `${Math.min(100, h.t / h.need * 100)}%`;
+  if (h.kind === 'paint') {
+    if (Math.random() < dt * 8) {
+      const at = camera.getWorldPosition(new THREE.Vector3()).addScaledVector(lookDir(), 1.2);
+      fx.spawn('dust', at, new THREE.Vector3((Math.random() - 0.5), 0.3, (Math.random() - 0.5)), 0.4);
+    }
+    if (h.t >= h.need) {
+      const c = items.spray, t = h.tank;
+      if (h.patch && h.patch.parent) {
+        t.paintPatch(h.patch, c.color);
+        msg(`Заплатка закрашена: ${colorName(c.color)}`, '#d8b0ff');
+      } else {
+        t.paintTank(c.color);
+        msg(`${t.def.name} перекрашен: ${colorName(c.color)}`, '#d8b0ff');
+      }
+      items.useSpray(h.use);
+      if (!items.spray || items.spray.color !== c.color) msg('Баллончик пуст — выброшен', '#d8b0ff');
+      state.hold = null;
+      $('hold').style.display = 'none';
+    }
+    return;
+  }
   const tool = h.kind === 'weld' ? 'torch' : 'cutter';
   const gas = items.useTool(tool, TOOL_USE[tool] * dt);
   if (gas === 'spare') msg(`${ITEM_DEFS[tool].name}: газ кончился — взята запасная`, '#e8c96a');
@@ -1290,15 +1332,18 @@ function updateHold(dt) {
   if (h.t >= h.need) {
     if (h.kind === 'weld') {
       h.tank.hp.hull = 100;
-      h.tank.clearMarks();
+      const n = h.tank.patchMarks(items.plateColor, { point: camera.getWorldPosition(new THREE.Vector3()), dir: lookDir() });
       items.hands = null;
-      msg(`Корпус ${h.tank.def.name} залатан`, '#9fe07f');
+      msg(`Корпус ${h.tank.def.name} залатан` + (n ? ` — заплатки: ${colorName(items.plateColor)}` : ''), '#9fe07f');
     } else {
       h.tank.hp.hull = Math.max(1, h.tank.hp.hull - 40);
       const p = player.position;
       const d = new THREE.Vector3(Math.sin(state.yaw), 0, Math.cos(state.yaw));
-      items.drop('plate', p.x - d.x * 1.2, p.z - d.z * 1.2);
-      msg(`Бронелист срезан с ${h.tank.def.name} (корпус −40%)`, '#9fd0ff');
+      // the plate is cut out of the hull: it has the colour of the hull
+      const color = h.tank.hullColor;
+      items.drop('plate', p.x - d.x * 1.2, p.z - d.z * 1.2, { color });
+      h.tank.addMark(camera.getWorldPosition(new THREE.Vector3()).addScaledVector(lookDir(), 1.0), lookDir(), 'hole');
+      msg(`Бронелист (${colorName(color)}) срезан с ${h.tank.def.name} (корпус −40%)`, '#9fd0ff');
     }
     state.hold = null;
     $('hold').style.display = 'none';
@@ -1823,6 +1868,11 @@ function updateInventory() {
     if (k !== 'repair_kit' && n) v = `газ ${Math.ceil(items.charge[k])}%` + (n > 1 ? ` · ×${n}` : '');
     html += `<div class="row ${n ? '' : 'none'}"><span>${ITEM_DEFS[k].icon} ${ITEM_DEFS[k].name}</span><span>${v}</span></div>`;
   }
+  if (items.sprays.length) {
+    const c = items.spray;
+    html += `<div class="row"><span>${ITEM_DEFS.spray.icon} ${swatch(c.color)} ${colorName(c.color)}</span><span>${Math.round(c.paint)}%` +
+            (items.sprays.length > 1 ? ` · ${items.sprayIdx + 1}/${items.sprays.length} <b>O</b>` : '') + `</span></div>`;
+  }
   // small arms
   html += `<h4 style="margin-top:6px">ОРУЖИЕ</h4>`;
   for (const [i, slot] of [[1, 'small'], [2, 'big']]) {
@@ -1838,6 +1888,7 @@ function updateInventory() {
   const held = !items.hands ? '—' : items.hands === 'shells' ? `${ITEM_DEFS.shells.icon} ${shellsLabel(items.handShells)}`
     : items.hands === 'part' ? `${ITEM_DEFS.part.icon} ${partLabel(items.handPart)}`
     : items.hands === 'canister' ? `${ITEM_DEFS.canister.icon} канистра, ${Math.round(items.handCan.fuel)} л`
+    : items.hands === 'plate' ? `${ITEM_DEFS.plate.icon} бронелист ${swatch(items.plateColor)} ${colorName(items.plateColor)}`
     : ITEM_DEFS[items.hands].icon + ' ' + ITEM_DEFS[items.hands].name;
   html += `<div class="hands">В руках: ${held}</div>`;
   if (html !== invKey) { invEl.innerHTML = html; invKey = html; }
@@ -1865,7 +1916,7 @@ function updateGauge(v) {
     `<div class="gline"><span>Топливо</span><b>${Math.round(v.fuel)} / ${v.fuelMax} л</b></div>` +
     `<div class="mbar"><i style="width:${fuelP}%;background:${fuelP < 15 ? '#e0503a' : '#c9b48a'}"></i></div>` +
     `<div class="gline"><span>Огнетушители</span><b>${v.extinguishers}</b></div>` +
-    `<div class="gline"><span>Бронелисты в укладке</span><b>${v.plates}</b></div>` +
+    `<div class="gline"><span>Бронелисты в укладке</span><b>${v.plates.map(swatch).join('')} ${v.plates.length}</b></div>` +
     (v.bags.length ? `<div class="gline"><span>Мешки с песком</span><b>${v.bags.length}</b></div>` : '');
 }
 
@@ -1955,10 +2006,10 @@ function updatePrompt() {
     if (items.hands === 'plate') {
       if (t && !t.wrecked && t.hp.hull < 100) {
         lines.push(items.inventory.torch > 0
-          ? `Удерживай <b>F</b> — приварить бронелист (корпус ${Math.round(t.hp.hull)}%)`
+          ? `Удерживай <b>F</b> — приварить бронелист ${swatch(items.plateColor)} (корпус ${Math.round(t.hp.hull)}%)`
           : 'Нет газовой горелки');
       }
-      if (t && !t.wrecked && !t.crew) lines.push(`<b>E</b> — уложить бронелист в ${t.def.name} (${t.plates}/${PLATES_MAX})`);
+      if (t && !t.wrecked && !t.crew) lines.push(`<b>E</b> — уложить бронелист в ${t.def.name} (${t.plates.length}/${PLATES_MAX})`);
       lines.push('<b>G</b> — бросить бронелист');
     } else if (items.hands === 'shells') {
       if (t && !t.wrecked && !t.crew) lines.push(`<b>E</b> — зарядить в ${t.def.name} (${Math.floor(t.ammo)}/${t.def.ammoMax})`);
@@ -1995,6 +2046,14 @@ function updatePrompt() {
           lines.push(t.hp.hull >= 75 ? 'Удерживай <b>T</b> — срезать бронелист резаком' : 'Корпус повреждён — бронелист не срезать');
         }
         if (items.inventory.repair_kit > 0) lines.push('<b>R</b> — ремкомплект');
+        if (!items.hands && items.spray) {
+          const job = paintJob(t), c = items.spray;
+          lines.push(job.use > c.paint + 0.01
+            ? `Краски ${swatch(c.color)} мало: ${Math.round(c.paint)}% из ${Math.round(job.use)}%`
+            : job.patch ? `Удерживай <b>P</b> — закрасить заплатку ${swatch(job.patch.userData.color)} → ${swatch(c.color)} ${colorName(c.color)}`
+            : `Удерживай <b>P</b> — перекрасить ${t.def.name} ${swatch(t.hullColor)} → ${swatch(c.color)} ${colorName(c.color)} (${Math.round(job.use)}% краски)`);
+          if (items.sprays.length > 1) lines.push('<b>O</b> — другой баллончик');
+        }
       }
     }
   } else {
@@ -2153,6 +2212,7 @@ function frame(dt) {
 
   // ---------- HUD
   handPlate.visible = walking && items.hands === 'plate';
+  if (handPlate.visible) handPlate.userData.plateMat.color.set(items.plateColor);
   handShells.visible = walking && items.hands === 'shells';
   handCan.visible = walking && items.hands === 'canister';
   handBag.visible = walking && items.hands === 'sandbag';
@@ -2229,9 +2289,10 @@ function setupStart() {
   player.position.set(px, world.heightAt(px, pz), pz);
   state.yaw = hd;
 
-  // two light tanks at the spawn: a Pz.II or a T-26 each
+  // the road starts with the weakest machine of all (the rest come along the road in the order they appeared
+  // in the world): the player's one and a spare of the same type across the road
   const r0 = rng((SEED * 2654435761) >>> 0);
-  const k1 = r0() < 0.5 ? 'pz2' : 't26', k2 = r0() < 0.5 ? 'pz2' : 't26';
+  const k1 = STARTER_TANK, k2 = STARTER_TANK;
   const [tx, tz] = at(3, 10);
   const mine = spawnTank(k1, tx, tz, hd, { team: 'player', fuelFrac: 0.8 });
   mine.cargo.weapons.push(makeWeapon(r0() < 0.5 ? 'mosin' : 'kar98k'));
@@ -2245,11 +2306,13 @@ function setupStart() {
   items.add('start:can', 'canister', cx, cz, { fuel: CANISTER_L });
   const [bx, bz] = at(11, 1.5);
   items.add('start:bag', 'sandbag', bx, bz);
+  const [sx0, sz0] = at(10.5, -3.5);
+  items.add('start:spray', 'spray', sx0, sz0, { color: mine.hullColor, paint: 60 });
   // a revolver and a few rounds in the pocket
   items.small = makeWeapon('nagant');
   items.addAmmo('7.62×38R', 14);
   msg(`Мир #${SEED}. У дороги — твой ${HULLS[k1].name}, через дорогу ещё один ${HULLS[k2].name}.`, '#e8c96a');
-  msg('Рядом лежат бронелист, канистра и мешок с песком. В кармане — наган (1), в укладке танка — винтовка.', '#e8c96a');
+  msg('Рядом лежат бронелист, канистра, мешок с песком и баллончик с краской. В кармане — наган (1), в укладке танка — винтовка.', '#e8c96a');
   msg('Дорога ведёт вперёд — дальше техника противника всё сильнее. Удачи, танкист!', '#e8c96a');
   $('seedInfo').textContent = `Мир #${SEED} — повторить: ?seed=${SEED}`;
 }

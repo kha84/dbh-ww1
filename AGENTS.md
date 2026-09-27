@@ -10,12 +10,14 @@ The game features:
 - An endless road ("drive beyond horizons") through procedurally streamed terrain, with villages, towns,
   gas stations and tank repair stations along it, rivers crossing it (bridges: timber trestle / steel / stone; some
   shallow ones are fords); every game gets a random world seed (`?seed=N` replays one)
-- First-person on foot; in tanks (Renault FT, Mark V, Vickers 6-ton (twin turrets), T-26, Type 89, Pz.II, BT-7,
-  Char B1 bis, T-44, IS-2, T-55, Chieftain AVRE, Leopard 2, Abrams) third-person / gunner-sight, or first person inside
+- First-person on foot; in tanks (Renault FT, Mark V, Vickers 6-ton (twin turrets), T-26, T-28 (three turrets),
+  T-35 (five turrets), Type 89, Pz.II, BT-7, Char B1 bis, Sherman, Pz.IV, T-44, IS-2, T-55, Chieftain AVRE, Leopard 2,
+  Abrams) third-person / gunner-sight, or first person inside
   the crew compartment with commander / gunner / driver stations; every tank has its own interior (paint by nation /
   era, radios, racks, fuel cells, gearboxes, ball MGs, displays...)
-- Tank types are ordered by combat value (`TANK_TIERS`): the spawn has two Pz.II / T-26, further down the road the enemy
-  (and the spare parts at repair stations) get more advanced
+- Tank types are ordered by the year they appeared (`TANK_TIERS`, same year: weaker first): the road starts with two of
+  the weakest tank of all (`STARTER_TANK`, by `tankRating`), further down the road the enemy (and the spare parts at
+  repair stations) follow the historical order
 - Enemy infantry (roadside posts, garrisons, escorts, tank crews bailing out of burning tanks) with small arms and grenades
   and a squad AI: cover (houses, walls, sandbags, berms, wrecks, trees, terrain), peeking / hiding, stances (stand,
   crouch, prone), suppression, bounding by fire teams, flanking, grenades, dodging grenades, falling back, tank hunting
@@ -30,7 +32,10 @@ The game features:
 - Procedural ("vector") models for all tanks; every replaceable part is its own object
 - Frankenstein tanks: engine, gun, external fuel tanks and turret drive are swapped by hand in the field, the turret
   with the crane at a repair station; performance is computed from the parts (power, weight, drive/turret match)
-- Hit marks (holes / dents / scrapes) stay on the armour until a plate is welded on
+- Hit marks (holes / dents / scrapes) stay on the armour; welding a plate covers holes / dents with patches in the colour
+  of the plate (new plates are bare steel, a plate cut out of a hull has the hull's colour, stowed plates keep theirs)
+- Paint: spray cans of different colours (settlements, repair / gas stations; half of them in the paint of the tanks
+  met around) repaint a whole tank (hull + turret, gun, fuel tanks, drive; patches too, scrapes vanish) or one patch
 - Tank gunnery with ballistics and per-tank ammo; armour, penetration and internal systems
   (hull, engine, transmission, turret drive, gun, ammo rack, fuel tank) that degrade the tank when damaged
 - Enemy tanks with simple AI: patrols along the road and ambushes in caponiers
@@ -63,6 +68,7 @@ web/js/rivers.js        # river plans (between settlements), channel carving, br
 web/js/settlements.js   # roadside villages / towns / gas stations / repair stations (+ items, service zones)
 web/js/tankdefs/        # ONE FILE PER TANK TYPE: gameplay data (hull / turret / gun / engine / fuel / drive, seats,
                         #   interior layout + props) and its procedural models; index.js = registry (TANK_DEFS)
+web/js/paint.js         # paint: colour names, spray can colours, recolouring baked models (paintObject), patch material
 web/js/modelkit.js      # shared model toolkit: materials per palette, bake (merge), profiles / prisms, running gear,
                         #   track loops, engine deck, cupolas, breech, generic engines (ENGINE_TYPES) and fuel sets
 web/js/parts.js         # part catalog assembled from tankdefs: HULLS / TURRETS / GUNS / ENGINES / FUELS / DRIVES / TANK_MG,
@@ -95,7 +101,8 @@ web/js/noise.js         # perlin/fbm, hash, seeded rng
   F pick up / tank stowage menu (kits, torches, spare plates, a box of shells; digits pick) / hold to weld a plate,
   E with a plate or a shells box in hands next to a crewless tank - stow the plate / load the shells (same calibre
   only), E with a sandbag - heap it on the tank, hold F with a fuel can next to a tank - pour the fuel, hold T cut a plate
-  with the cutter. Tank stowage menu (F): page "Оружие и патроны" (digit 6) stows / takes weapons, cartridges, grenades
+  with the cutter, hold P - paint the tank (or the patch looked at) with the spray can in use, O - next spray can.
+  Tank stowage menu (F): page "Оружие и патроны" (digit 6) stows / takes weapons, cartridges, grenades
   (0 = back). Looking at a part slot of a crewless tank: F takes the part into hands / installs the carried
   part (the MG pintle: takes the MG into the big-weapon slot / mounts a carried MG; the fuel tanks show the fuel left),
   Q (or F) opens / closes the engine bay (the engine won't run while it is open). F at the crane panel opens
@@ -129,6 +136,16 @@ rendering (handy for headless tests; `game.state.noLock = true` lets small arms 
 - Twin turrets (Vickers 6-ton): `turret().second` { group, pos (offset from the ring in hull axes), arc, speed, box };
   it keeps its place on the hull while the main turret traverses (Tank.placeSecondTurret), turns to the MG target
   (secondYaw) and carries the machine gun; seats with `in: 'second'` sit in it (Tank.seatObject(seat)).
+- Multi-turret tanks (T-28, T-35): small hull turrets are `hull.aux` [{ group, arc, speed, box }] (from
+  `hullResult(..., { extra: { aux } })`); they belong to the hull, turn towards `mgTarget || aimPoint` within their arc
+  (Tank.aimAux) and are hit volumes of the hull. Only the main turret is a part.
+- Paint (paint.js): palette materials carry `userData.paint` ('main' | 'dark'); `bake` records the vertex ranges of the
+  merged mesh (`userData.paint`) or the role of a textured mesh (`userData.paintRole`); `paintObject(root, color)`
+  rewrites them (riveted textures are redrawn). `tank.paint` / `part.paint` (null = stock palette) - parts keep their
+  paint (partVisual repaints a freshly built visual), `tank.hullColor`, `tank.paintTank(c)`. `tank.plates` = colours of
+  the stowed plates, `items.plateColor` = the plate in hands, `items.sprays` [{ color, paint % }] / `sprayIdx`.
+- Patches: `tank.patchMarks(color, at)` turns hole / dent marks into patch meshes (userData.patch, also `mark`) on the
+  same host (they travel with the parts); `clearMarks` (repair station) keeps them; saved per host (`markHosts()`).
 - Rivers: `world.riverPlan(k)` for the gap after settlement k (null or plan), carved in `world.height`; bridges are
   built / disposed by distance (`world.bridges`), `world.bridgeAt(x, z)` gives the deck height and `heightAt` uses it
   (tanks / soldiers / shells walk on the deck); the road ribbon dips into fords.

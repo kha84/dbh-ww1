@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { partVisual, sandbagMesh } from './tanks.js';
 import { partLabel } from './parts.js';
 import { WEAPONS, GRENADES, isSmall, bakedWeaponMesh, buildGrenadeMesh, weaponLabel } from './weapons.js';
+import { STEEL, colorName } from './paint.js';
 
 export const ITEM_DEFS = {
   repair_kit: { name: 'Ремкомплект', icon: '🧰', desc: 'чинит одну систему (не уничтоженную)' },
@@ -16,7 +17,10 @@ export const ITEM_DEFS = {
   grenade:    { name: 'Граната', icon: '●' },
   canister:   { name: 'Канистра с топливом', icon: '⛽', desc: 'только в руках' },
   sandbag:    { name: 'Мешок с песком', icon: '▰', desc: 'только в руках' },
+  spray:      { name: 'Баллончик с краской', icon: '🎨', desc: 'покрасить танк или заплатку (P)' },
 };
+// paint used from a full spray can (%): a whole tank (by its weight) / one patch
+export const SPRAY_USE = { tank: w => Math.min(90, 25 + w * 1.2), patch: 6 };
 export const CANISTER_L = 20;       // litres in a full fuel can
 
 // gas use per second of work (% of a full tool)
@@ -96,8 +100,18 @@ export function buildItemMesh(type, data = null) {
       add(new THREE.ConeGeometry(0.06, 0.18, 10), mats.dark, 0.44, 0.36, -0.17 + i * 0.17, 0, 0, -Math.PI / 2);
     }
   } else if (type === 'plate') {
-    add(new THREE.BoxGeometry(1.5, 0.06, 1.0), mats.steel, 0, 0.35, 0, 0, 0, 0.45);
+    const pm = mats.steel.clone();
+    pm.color.set(data && data.color != null ? data.color : STEEL);
+    add(new THREE.BoxGeometry(1.5, 0.06, 1.0), pm, 0, 0.35, 0, 0, 0, 0.45);
     add(new THREE.BoxGeometry(0.12, 0.12, 1.0), mats.dark, -0.62, 0.06, 0);
+    g.userData.plateMat = pm;
+  } else if (type === 'spray') {
+    const cm = new THREE.MeshStandardMaterial({ color: data ? data.color : 0x888888, roughness: 0.35, metalness: 0.5 });
+    add(new THREE.CylinderGeometry(0.05, 0.05, 0.2, 12), cm, 0, 0.1, 0);
+    add(new THREE.CylinderGeometry(0.052, 0.05, 0.03, 12), mats.steel, 0, 0.21, 0);
+    add(new THREE.CylinderGeometry(0.03, 0.035, 0.05, 10), cm, 0, 0.245, 0);
+    add(new THREE.BoxGeometry(0.018, 0.018, 0.02), mats.dark, 0, 0.26, 0.03);
+    add(new THREE.BoxGeometry(0.102, 0.08, 0.102), mats.white, 0, 0.09, 0);
   } else if (type === 'ammo') {
     add(new THREE.BoxGeometry(0.34, 0.2, 0.2), mats.olive, 0, 0.1, 0);
     add(new THREE.BoxGeometry(0.12, 0.03, 0.05), mats.dark, 0, 0.215, 0);
@@ -122,7 +136,7 @@ export function buildItemMesh(type, data = null) {
     if (isSmall(data.key)) v.group.scale.setScalar(1.4);
     g.add(v.group);
   }
-  const glow = glowSprite(type === 'plate' ? 'rgba(160,200,255,0.55)' : type === 'weapon' || type === 'ammo' || type === 'grenade'
+  const glow = glowSprite(type === 'plate' ? 'rgba(160,200,255,0.55)' : type === 'spray' ? 'rgba(220,160,255,0.55)' : type === 'weapon' || type === 'ammo' || type === 'grenade'
     ? 'rgba(255,170,90,0.55)' : 'rgba(255,220,120,0.6)');
   glow.position.y = 0.5;
   g.add(glow);
@@ -146,6 +160,9 @@ export class Items {
     this.handPart = null;          // the part carried when hands === 'part'
     this.handShells = null;        // { key, caliber, n } when hands === 'shells'
     this.handCan = null;           // { fuel } when hands === 'canister'
+    this.plateColor = STEEL;       // colour of the armour plate in the hands
+    this.sprays = [];              // spray cans: [{ color, paint (%) }], the one in use: sprayIdx
+    this.sprayIdx = 0;
     // small arms: one small (pistol / revolver / SMG) and one big weapon (rifle / automatic / MG), cartridges by
     // calibre, grenades by type; drawn: which one is in the hands ('small' | 'big' | 'grenade' | null)
     this.small = null;
@@ -198,6 +215,8 @@ export class Items {
     if (p.type === 'ammo') return ammoLabel(p.data.cal, p.data.n);
     if (p.type === 'grenade') return grenadeLabel(p.data.key, p.data.n);
     if (p.type === 'canister') return `${ITEM_DEFS.canister.name} (${Math.round(p.data.fuel)} л)`;
+    if (p.type === 'plate') return `${ITEM_DEFS.plate.name} (${colorName(p.data && p.data.color != null ? p.data.color : STEEL)})`;
+    if (p.type === 'spray') return `${ITEM_DEFS.spray.name}: ${colorName(p.data.color)} (${Math.round(p.data.paint)}%)`;
     return ITEM_DEFS[p.type].name;
   }
 
@@ -238,6 +257,23 @@ export class Items {
     if (this.inventory[type] > 0) { this.charge[type] += 100; return 'spare'; }
     this.charge[type] = 0;
     return 'empty';
+  }
+
+  // the spray can in use (or null)
+  get spray() { return this.sprays[this.sprayIdx] || null; }
+  nextSpray() {
+    if (this.sprays.length) this.sprayIdx = (this.sprayIdx + 1) % this.sprays.length;
+    return this.spray;
+  }
+  // spend paint of the can in use; an empty can is thrown away
+  useSpray(amount) {
+    const c = this.spray;
+    if (!c) return;
+    c.paint -= amount;
+    if (c.paint <= 0.5) {
+      this.sprays.splice(this.sprayIdx, 1);
+      this.sprayIdx = Math.max(0, Math.min(this.sprayIdx, this.sprays.length - 1));
+    }
   }
 
   // put a part into the hands (child of the camera)
@@ -291,6 +327,14 @@ export class Items {
     if (p.type === 'plate') {
       if (this.hands) return null;
       this.hands = 'plate';
+      this.plateColor = p.data && p.data.color != null ? p.data.color : STEEL;
+      this.remove(p.id);
+      return this.label(p);
+    } else if (p.type === 'spray') {
+      this.sprays.push({ ...p.data });
+      this.sprayIdx = this.sprays.length - 1;
+      this.remove(p.id);
+      return this.label(p);
     } else if (p.type === 'part') {
       if (this.hands) return null;
       this.remove(p.id);

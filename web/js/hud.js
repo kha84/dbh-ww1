@@ -119,7 +119,7 @@ export class Minimap {
     // items
     for (const it of g.items.pickups.values()) {
       const [x, y] = toMap(it.pos.x, it.pos.z);
-      mmCtx.fillStyle = it.type === 'plate' ? '#9fd0ff' : '#ffe070';
+      mmCtx.fillStyle = it.type === 'plate' ? '#9fd0ff' : it.type === 'spray' ? '#d8b0ff' : '#ffe070';
       mmCtx.beginPath(); mmCtx.arc(x, y, 2, 0, 7); mmCtx.fill();
     }
     // infantry that sees us / is close

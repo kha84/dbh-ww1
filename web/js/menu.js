@@ -7,8 +7,8 @@ import { listSaves, deleteSave } from './save.js';
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const go = params => { location.search = '?' + new URLSearchParams(params).toString(); };
 
-// tanks sorted by year for the pickers
-const TANKS = [...TANK_TIERS].sort((a, b) => (DEFS[a].year || 0) - (DEFS[b].year || 0));
+// tanks in the order they appeared (TANK_TIERS is sorted by year)
+const TANKS = TANK_TIERS;
 function tankOptions(sel, withRandom = false) {
   return (withRandom ? `<option value="random">Случайный</option>` : '') +
     TANKS.map(k => `<option value="${k}" ${k === sel ? 'selected' : ''}>${esc(HULLS[k].name)} (${DEFS[k].year})</option>`).join('');
