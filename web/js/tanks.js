@@ -6,6 +6,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { HULLS, TURRETS, SYSTEM_PART, TANK_MG, SANDBAG, computeSpec, defaultParts } from './parts.js';
 import { buildHull, buildTurret, buildGun, buildEngine, buildFuel, buildDrive,
          buildHullInterior, buildTurretInterior } from './models.js';
+import { buildSecondTurretInterior } from './interiors.js';
 import { WEAPONS, makeWeapon, bakedWeaponMesh } from './weapons.js';
 
 export const G = 9.81;
@@ -146,6 +147,8 @@ export class Tank {
     const post = new THREE.Mesh(PINTLE_GEO, PINTLE_MAT);
     post.castShadow = true;
     this.mgMount.add(post);
+    this.mgPost = post;
+    this.secondYaw = 0;                          // twin-turret tanks: yaw of the machine-gun turret relative to the hull
     this.mgPivot = new THREE.Group();
     this.mgPivot.position.y = 0.3;
     this.mgPivot.rotation.order = 'YXZ';
@@ -293,6 +296,10 @@ export class Tank {
     if (this.parts.drive) this.parts.drive.vis.group.visible = !T && !this.turretless;
     this.updateEngineVisibility();
     const mp = T ? T.mgPos : this.hull.mgAt;
+    // the machine gun sits in the second turret of twin-turret tanks (no pintle post there)
+    const mgParent = T && T.second ? T.second.group : this.turret;
+    if (this.mgMount.parent !== mgParent) mgParent.add(this.mgMount);
+    this.mgPost.visible = !(T && T.second);
     this.mgMount.position.copy(mp);
     this.fuel = Math.min(this.fuel, this.fuelMax);
     if (this.ammo !== undefined) this.ammo = Math.min(this.ammo, this.def.ammoMax);
@@ -303,10 +310,16 @@ export class Tank {
     const res = [];
     for (const [role, s] of Object.entries(HULLS[this.key].seats)) res.push({ role, space: 'hull', ...s });
     if (this.parts.turret) {
-      for (const [role, s] of Object.entries(TURRETS[this.parts.turret.key].seats)) res.push({ role, space: 'turret', ...s });
+      for (const [role, s] of Object.entries(TURRETS[this.parts.turret.key].seats)) res.push({ role, space: s.in === 'second' ? 'second' : 'turret', ...s });
     }
     return res;
   }
+  // the object a seat's pos / eye are local to
+  seatObject(s) {
+    if (s.space === 'second') return partVisual(this.parts.turret).second.group;
+    return s.space === 'turret' ? this.turret : this.root;
+  }
+  get secondTurret() { const T = this.parts.turret; return T && T.vis && T.vis.second ? T.vis.second : null; }
 
   // ------------------------------------------------ machine gun on the pintle
   setMG(weapon) {
@@ -442,6 +455,7 @@ export class Tank {
       if (T && !T.interior) {
         T.interior = buildTurretInterior(T.key);
         T.group.add(T.interior);
+        if (T.second) T.second.group.add(buildSecondTurretInterior(T.key));
       }
     }
     this.setInteriorFlags(this.root, on);
@@ -599,6 +613,7 @@ export class Tank {
     if (dt > 0 && this.aimPoint && this.operated) this.layGun(dt);
     this.turret.rotation.y = this.turretYaw;
     this.gun.rotation.x = -this.gunElev;
+    if (this.secondTurret) this.placeSecondTurret(dt);
     this.root.updateMatrixWorld(true);
     if (dt > 0 && this.mg && !this.wrecked) this.aimMG(dt, this.operated ? (this.mgTarget || this.aimPoint) : null);
 
@@ -608,6 +623,25 @@ export class Tank {
       if (this.rammedT > 0) this.rammedT -= dt;
       this.updateFire(dt);
     }
+  }
+
+  // twin turrets: the machine-gun turret keeps its place on the hull while the gun turret traverses and turns on
+  // its own towards the machine-gun target (within its arc)
+  placeSecondTurret(dt) {
+    const S = this.secondTurret;
+    const c = Math.cos(-this.turretYaw), s = Math.sin(-this.turretYaw);
+    S.group.position.set(S.pos.x * c + S.pos.z * s, S.pos.y, -S.pos.x * s + S.pos.z * c);
+    const tgt = this.operated && !this.wrecked ? (this.mgTarget || this.aimPoint) : null;
+    if (tgt && dt > 0) {
+      this.root.updateMatrixWorld(true);
+      const lp = this.root.worldToLocal(_v.copy(tgt));
+      const base = this.turret.position;
+      const hx = base.x + S.pos.x, hz = base.z + S.pos.z;
+      const want = THREE.MathUtils.clamp(Math.atan2(lp.x - hx, lp.z - hz), S.arc[0], S.arc[1]);
+      const r = (S.speed || 1) * dt;
+      this.secondYaw += THREE.MathUtils.clamp(want - this.secondYaw, -r, r);
+    }
+    S.group.rotation.y = this.secondYaw - this.turretYaw;
   }
 
   // dug in only inside the caponier pit, climbs out smoothly as it leaves
@@ -772,6 +806,8 @@ export class Tank {
   hitVolumes() {
     const v = [{ part: 'hull', box: this.vis.hullBox, obj: this.root }];
     if (this.vis.turretBox) v.push({ part: 'turret', box: this.vis.turretBox, obj: this.turret });
+    const S = this.secondTurret;
+    if (S) v.push({ part: 'turret', box: S.box, obj: S.group });
     return v;
   }
 

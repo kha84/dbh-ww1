@@ -3,6 +3,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { WATER_LEVEL, segBox } from './world.js';
+import { buildWeaponModel, buildGrenadeModel } from './weaponmodels.js';
 
 const GRAV = 9.81;
 
@@ -98,6 +99,9 @@ export const WEAPONS = {
   pkt:       M('ПКТ / ПКМ', '7.62×54R', 100, 60, 750, 3, { m: { len: 1.19, stock: 'wood' } }),
   bren:      M('Bren Mk I', '.303', 30, 60, 520, 2, { reload: 3, m: { len: 1.15, mag: 'top' } }),
   hotchkiss: M('Hotchkiss M1914', '8×50R', 24, 58, 450, 1, { reload: 3.5, m: { len: 1.39, mag: 'side', stock: 'metal', h: 0.12 } }),
+  vickers:   M('Vickers Mk I', '.303', 250, 60, 450, 1, { reload: 5, m: { len: 1.1, stock: 'none', h: 0.14 } }),
+  reibel:    M('MAC 31 «Рейбель»', '7.5×54', 150, 58, 750, 2, { m: { len: 1.03, mag: 'drum', stock: 'none' } }),
+  type97:    M('Тип 97 (танковый)', '7.7×58', 20, 60, 500, 2, { m: { len: 1.18, mag: 'top', stock: 'wood' } }),
 };
 
 // cartridge boxes found / dropped: rounds per box
@@ -127,135 +131,20 @@ export function makeWeapon(key, mag = WEAPONS[key].mag) {
 }
 export const weaponLabel = w => `${WEAPONS[w.key].name} (${WEAPONS[w.key].cal})`;
 
-// ===================================================================== models
-const MAT = {
-  metal: new THREE.MeshStandardMaterial({ color: 0x45484b, roughness: 0.45, metalness: 0.6 }),
-  blued: new THREE.MeshStandardMaterial({ color: 0x2f353d, roughness: 0.4, metalness: 0.65 }),
-  wood: new THREE.MeshStandardMaterial({ color: 0x6b4526, roughness: 0.75, metalness: 0.05 }),
-  wood2: new THREE.MeshStandardMaterial({ color: 0x8a5a30, roughness: 0.7, metalness: 0.05 }),
-  poly: new THREE.MeshStandardMaterial({ color: 0x26282a, roughness: 0.85, metalness: 0.1 }),
-  olive: new THREE.MeshStandardMaterial({ color: 0x4b5030, roughness: 0.8, metalness: 0.2 }),
-  brass: new THREE.MeshStandardMaterial({ color: 0xb8903a, roughness: 0.4, metalness: 0.8 }),
-  glass: new THREE.MeshStandardMaterial({ color: 0x223344, roughness: 0.1, metalness: 0.6 }),
-};
-const G = {
-  box: new THREE.BoxGeometry(1, 1, 1),
-  cylZ: new THREE.CylinderGeometry(1, 1, 1, 10).rotateX(Math.PI / 2),
-  cylX: new THREE.CylinderGeometry(1, 1, 1, 14).rotateZ(Math.PI / 2),
-  cyl: new THREE.CylinderGeometry(1, 1, 1, 12),
-  sph: new THREE.SphereGeometry(1, 12, 8),
-};
-function part(g, geo, mat, x, y, z, sx, sy, sz, rx = 0, ry = 0, rz = 0) {
-  const m = new THREE.Mesh(geo, mat);
-  m.position.set(x, y, z); m.scale.set(sx, sy, sz); m.rotation.set(rx, ry, rz);
-  m.castShadow = true;
-  g.add(m);
-  return m;
-}
-
+// ===================================================================== models (see weaponmodels.js)
 const meshCache = new Map();
-// weapon model: origin at the grip / trigger, barrel along +Z, sights up (+Y). Returns { group, muzzle, top }
+// weapon model: origin at the grip / trigger, barrel along +Z, sights up (+Y). Returns { group, muzzle, top, hand2 }
 export function buildWeaponMesh(key) {
-  const W = WEAPONS[key], m = W.m;
-  const g = new THREE.Group();
-  const cat = W.cat;
-  const furn = m.wood ? (W.era === 1 ? MAT.wood2 : MAT.wood) : MAT.poly;
-  let muzzle, top;
-  if (cat === 'pistol' || cat === 'revolver') {
-    const L = m.len, h = m.h;
-    if (cat === 'revolver') {
-      const fl = L - m.bl;                                               // frame length
-      part(g, G.box, MAT.blued, 0, 0.035, fl / 2 - 0.05, 0.028, h, fl);
-      part(g, G.cylZ, MAT.metal, 0, 0.03, 0.03, 0.021, 0.021, 0.045);                          // cylinder
-      part(g, G.cylZ, MAT.blued, 0, 0.045, fl - 0.05 + m.bl / 2, 0.009, 0.009, m.bl);         // barrel
-      part(g, G.box, MAT.blued, 0, 0.056, fl - 0.05 + m.bl / 2, 0.006, 0.006, m.bl);          // rib
-      muzzle = fl - 0.05 + m.bl;
-    } else {
-      part(g, G.box, MAT.blued, 0, 0.035, L / 2 - 0.06, 0.027, h, L);                          // slide
-      part(g, G.cylZ, MAT.metal, 0, 0.038, L - 0.06 + m.bl / 2, 0.008, 0.008, m.bl + 0.01);
-      if (m.mag === 'box') part(g, G.box, MAT.metal, 0, -0.02, 0.07, 0.022, 0.07, 0.03);        // C96 front magazine
-      muzzle = L - 0.06 + m.bl;
-    }
-    part(g, G.box, cat === 'revolver' ? MAT.wood : MAT.poly, 0, -0.035, -0.035, 0.03, 0.1, 0.042, 0.3, 0, 0);   // grip
-    part(g, G.box, MAT.metal, 0, -0.004, 0.015, 0.006, 0.02, 0.04);                             // trigger guard
-    top = 0.035 + h / 2 + 0.005;
-  } else if (cat === 'smg') {
-    const L = m.len, h = m.h;
-    part(g, G.box, MAT.blued, 0, 0.03, L / 2 - 0.08, 0.045, h, L);                               // body
-    part(g, G.cylZ, MAT.metal, 0, 0.035, L - 0.08 + 0.025, 0.012, 0.012, 0.05);
-    part(g, G.box, MAT.poly, 0, -0.045, 0.0, 0.035, 0.1, 0.045, 0.15, 0, 0);                     // grip
-    if (m.mag === 'grip') part(g, G.box, MAT.metal, 0, -0.1, 0.005, 0.025, 0.08, 0.03, 0.15, 0, 0);
-    else if (m.mag === 'curved') part(g, G.box, MAT.metal, 0, -0.06, 0.1, 0.022, 0.13, 0.03, -0.3, 0, 0);
-    else part(g, G.box, MAT.metal, 0, -0.06, 0.1, 0.022, 0.13, 0.03);
-    if (m.stock === 'fold' || m.stock === 'wire') part(g, G.box, MAT.metal, 0, 0.02, -0.2, 0.012, 0.012, 0.22);
-    if (m.stock === 'poly') part(g, G.box, MAT.poly, 0, 0.02, -0.16, 0.03, 0.05, 0.16);
-    muzzle = L - 0.08 + 0.05;
-    top = 0.03 + h / 2 + 0.008;
-  } else {
-    // long guns: stock behind the grip, receiver, barrel / handguard in front
-    const L = m.len, h = m.h;
-    const stockL = m.stock === 'none' ? 0.05 : cat === 'mg' ? 0.33 : 0.34;
-    const recL = cat === 'mg' ? 0.42 : cat === 'auto' ? 0.3 : 0.26;
-    const front = L - stockL;                                             // from the grip to the muzzle
-    const barrel = Math.max(0.1, front - recL * 0.8);
-    const bz0 = recL * 0.8;
-    // receiver
-    part(g, G.box, MAT.blued, 0, 0.03, recL * 0.3, 0.05, h, recL);
-    top = 0.03 + h / 2 + 0.012;
-    // barrel + front sight
-    const br = cat === 'mg' ? 0.014 : 0.009;
-    part(g, G.cylZ, MAT.metal, 0, 0.04, bz0 + barrel / 2, br, br, barrel);
-    part(g, G.box, MAT.metal, 0, 0.06, bz0 + barrel - 0.02, 0.006, 0.03, 0.01);
-    muzzle = bz0 + barrel;
-    if (cat === 'mg' && key !== 'm1919') part(g, G.cylZ, MAT.metal, 0, 0.04, bz0 + barrel * 0.35, 0.024, 0.024, barrel * 0.5);   // jacket
-    if (key === 'm1919') part(g, G.cylZ, MAT.metal, 0, 0.04, bz0 + barrel * 0.4, 0.03, 0.03, barrel * 0.75);
-    // handguard / forend
-    if (cat !== 'mg') {
-      const hl = cat === 'rifle' ? barrel * 0.82 : barrel * 0.55;
-      part(g, G.box, furn, 0, 0.025, bz0 + hl / 2, 0.045, 0.05, hl);
-    }
-    // grip / wrist and stock
-    if (m.stock !== 'none') {
-      if (m.stock === 'wire') {
-        part(g, G.box, MAT.metal, 0.018, 0.0, -stockL / 2, 0.01, 0.01, stockL);
-        part(g, G.box, MAT.metal, -0.018, 0.0, -stockL / 2, 0.01, 0.01, stockL);
-        part(g, G.box, MAT.metal, 0, -0.02, -stockL, 0.05, 0.1, 0.012);
-      } else {
-        const smat = m.stock === 'metal' ? MAT.metal : m.stock === 'poly' ? MAT.poly : furn;
-        part(g, G.box, smat, 0, -0.01, -stockL / 2, 0.042, 0.1, stockL, 0.12, 0, 0);
-        part(g, G.box, smat, 0, -0.045, -stockL + 0.03, 0.044, 0.14, 0.06, 0.12, 0, 0);
-      }
-    }
-    part(g, G.box, cat === 'rifle' ? furn : MAT.poly, 0, -0.045, 0.0, 0.035, 0.1, 0.04, 0.25, 0, 0);   // grip / wrist
-    // magazines
-    const mz = recL * 0.35;
-    if (m.mag === 'curved') part(g, G.box, MAT.metal, 0, -0.07, mz, 0.025, 0.18, 0.05, -0.35, 0, 0);
-    else if (m.mag === 'box') part(g, G.box, MAT.metal, 0, -0.06, mz, 0.025, 0.14, 0.05);
-    else if (m.mag === 'drum') part(g, G.cyl, MAT.metal, cat === 'mg' ? -0.06 : 0, cat === 'mg' ? 0.0 : -0.07, mz, 0.08, 0.05, 0.08, 0, 0, Math.PI / 2);
-    else if (m.mag === 'pan') part(g, G.cyl, MAT.metal, 0, top + 0.02, mz, 0.12, 0.03, 0.12);
-    else if (m.mag === 'top') part(g, G.box, MAT.metal, 0, top + 0.07, mz, 0.03, 0.15, 0.06, -0.2, 0, 0);
-    else if (m.mag === 'side') part(g, G.box, MAT.brass, 0.07, 0.03, mz, 0.1, 0.02, 0.05);
-    else if (m.mag === 'belt') {
-      part(g, G.box, MAT.olive, -0.08, -0.02, mz, 0.1, 0.1, 0.13);                              // ammo box
-      part(g, G.box, MAT.brass, -0.03, 0.03, mz, 0.05, 0.012, 0.03);                            // belt
-    }
-    if (m.scope) {
-      part(g, G.cylZ, MAT.blued, 0, top + 0.035, recL * 0.3, 0.018, 0.018, 0.26);
-      part(g, G.cylZ, MAT.glass, 0, top + 0.035, recL * 0.3 + 0.131, 0.016, 0.016, 0.004);
-      top += 0.035;
-    }
-    if (m.handle) part(g, G.box, MAT.poly, 0, top + 0.02, recL * 0.25, 0.015, 0.04, 0.16);
-    if (m.bipod) for (const sx of [-1, 1]) part(g, G.box, MAT.metal, sx * 0.03, -0.06, bz0 + barrel * 0.7, 0.008, 0.2, 0.008, 0.3, 0, sx * 0.25);
-    if (cat === 'rifle' && m.mag === 'internal') part(g, G.box, MAT.metal, 0.04, 0.04, 0.02, 0.05, 0.012, 0.012);   // bolt handle
-  }
-  return { group: g, muzzle, top };
+  const r = buildWeaponModel(key, WEAPONS[key]);
+  r.group.traverse(o => { if (o.isMesh) o.castShadow = true; });
+  return r;
 }
 
 // a copy of a weapon model (the catalog mesh is shared)
 export function weaponMesh(key) {
   if (!meshCache.has(key)) meshCache.set(key, buildWeaponMesh(key));
   const c = meshCache.get(key);
-  return { group: c.group.clone(), muzzle: c.muzzle, top: c.top };
+  return { group: c.group.clone(), muzzle: c.muzzle, top: c.top, hand2: c.hand2, scopeX: c.scopeX };
 }
 
 // the whole weapon baked into one vertex-coloured mesh (soldiers, tank pintles, pickups)
@@ -275,26 +164,17 @@ export function bakedWeaponMesh(key) {
       g.setAttribute('color', new THREE.Float32BufferAttribute(arr, 3));
       geos.push(g);
     });
-    bakedCache.set(key, { geo: mergeGeometries(geos, false), muzzle: src.muzzle, top: src.top });
+    bakedCache.set(key, { geo: mergeGeometries(geos, false), muzzle: src.muzzle, top: src.top, hand2: src.hand2 });
   }
   const c = bakedCache.get(key);
   const mesh = new THREE.Mesh(c.geo, VC_MAT);
   mesh.castShadow = true;
-  return { group: mesh, muzzle: c.muzzle, top: c.top };
+  return { group: mesh, muzzle: c.muzzle, top: c.top, hand2: c.hand2 };
 }
 
 export function buildGrenadeMesh(key) {
-  const D = GRENADES[key];
-  const g = new THREE.Group();
-  const mat = new THREE.MeshStandardMaterial({ color: D.color, roughness: 0.8, metalness: 0.2 });
-  if (D.stick) {
-    part(g, G.cyl, mat, 0, 0.1, 0, 0.035, 0.09, 0.035);
-    part(g, G.cyl, MAT.wood2, 0, 0.0, 0, 0.014, 0.18, 0.014);
-  } else {
-    part(g, G.sph, mat, 0, 0.04, 0, 0.03, 0.042, 0.03);
-    part(g, G.cyl, MAT.metal, 0, 0.09, 0, 0.01, 0.02, 0.01);
-    part(g, G.box, MAT.metal, 0.012, 0.075, 0, 0.004, 0.05, 0.012);
-  }
+  const g = buildGrenadeModel(key, GRENADES[key]);
+  g.traverse(o => { if (o.isMesh) o.castShadow = true; });
   return g;
 }
 
@@ -314,6 +194,7 @@ export class Guns {
     this.onPlayerHit = () => {};
     this.onExplosion = () => {};     // (pos, radius, dmg, owner)
     this.onGrenadeTank = () => {};   // anti-tank grenade struck a tank: (tank, point, dir, def, owner)
+    this.onShot = () => {};          // every round fired: (origin, hitPoint, owner, W) - infantry hears / is suppressed
     this.tracers = [];
     this.pool = [];
     this.grenades = [];
@@ -342,9 +223,10 @@ export class Guns {
         if (tt !== null && tt * maxD < best) { best = tt * maxD; hit = { kind: 'tank', tank: t }; }
       }
     }
-    // infantry: vertical capsules
+    // infantry: vertical capsules (enemies - soldiers and enemy tanks - don't hit their own men)
+    const friendly = owner && (owner.soldier || (owner.tank && owner.tank.team === 'enemy' && !owner.player));
     for (const s of this.soldiers) {
-      if (!s.alive || s === (owner && owner.soldier)) continue;
+      if (!s.alive || friendly) continue;
       const r = this.capsule(origin, dir, s.pos, s.height, 0.32, best);
       if (r) { best = r.d; hit = { kind: 'soldier', soldier: s, head: r.y > s.pos.y + s.height - 0.3 }; }
     }
@@ -426,6 +308,7 @@ export class Guns {
     this.fx.spawn('flash', muzzle, null, W.cat === 'mg' ? 0.28 : 0.18);
     this.sfx.gun(muzzle.distanceTo(this.listener), SMALL_CATS.includes(W.cat) ? 0.6 : W.cat === 'mg' ? 1.1 : 1);
     if (tracer) this.tracer(muzzle, hit.point);
+    this.onShot(origin, hit.point, owner, W);
     return hit;
   }
 

@@ -23,7 +23,7 @@ const bermGeo = (() => {
   return g;
 })();
 
-function buildCaponier(world, x, z, heading) {
+export function buildCaponier(world, x, z, heading) {
   const group = new THREE.Group();
   const obstacles = [];
   const c = Math.cos(heading), s = Math.sin(heading);
@@ -47,7 +47,7 @@ function buildCaponier(world, x, z, heading) {
   place(-3.9, 0.6, 8, 0, 1.9);              // right
   world.scene.add(group);
   return {
-    group, obstacles, x, z,             // pit centre: the tank is dug in only while inside it
+    group, obstacles, x, z, heading,    // pit centre: the tank is dug in only while inside it
     dispose() {
       world.scene.remove(group);
       for (const o of obstacles) world.removeObstacle(o);
@@ -59,7 +59,7 @@ function buildCaponier(world, x, z, heading) {
 export class TankAI {
   constructor(tank, mode, world, opts) {
     this.tank = tank;
-    this.mode = mode;                  // 'patrol' | 'ambush'
+    this.mode = mode;                  // 'patrol' | 'ambush' | 'hunt' (duel: seeks the player out)
     this.world = world;
     this.z0 = opts.z0; this.z1 = opts.z1;
     this.dir = opts.dir || 1;
@@ -135,6 +135,23 @@ export class TankAI {
       aim.add(this.err);
       t.aimPoint = this.los ? aim : this.lastPos.clone().setY(this.lastPos.y + 1.5);
 
+      if (this.mode === 'hunt') {
+        // duel: fire from where it stands, now and then shift position sideways, close in when too far
+        this.shiftT = (this.shiftT ?? 6 + Math.random() * 6) - dt;
+        if (this.shiftT <= 0) {
+          this.shiftT = 7 + Math.random() * 8;
+          const a = Math.atan2(target.pos.x - p.x, target.pos.z - p.z) + (Math.random() < 0.5 ? 1.2 : -1.2);
+          this.shiftTo = new THREE.Vector3(p.x + Math.sin(a) * 25, 0, p.z + Math.cos(a) * 25);
+        }
+        if (!this.los || dist > 260) this.driveTo(this.lastPos.x, this.lastPos.z, 0.7);
+        else if (this.shiftTo && Math.hypot(this.shiftTo.x - p.x, this.shiftTo.z - p.z) > 4) this.driveTo(this.shiftTo.x, this.shiftTo.z, 0.45);
+        else {
+          this.shiftTo = null;
+          const hullNeedsTurn = t.def.turretArc &&
+            Math.abs(wrap(Math.atan2(target.pos.x - p.x, target.pos.z - p.z) - t.heading)) > t.def.turretArc * 0.8;
+          if (hullNeedsTurn) this.driveTo(target.pos.x, target.pos.z, 0.02); else c.brake = 1;
+        }
+      }
       if (this.mode === 'patrol') {
         const hullNeedsTurn = t.def.turretArc &&
           Math.abs(wrap(Math.atan2(target.pos.x - p.x, target.pos.z - p.z) - t.heading)) > t.def.turretArc * 0.8;
@@ -174,6 +191,13 @@ export class TankAI {
     // ---- idle behaviour
     t.mgTarget = null;
     this.scan += dt;
+    if (this.mode === 'hunt') {
+      // knows roughly where the enemy is: advance towards it
+      if (target) this.driveTo(target.pos.x + Math.sin(this.scan * 0.05) * 40, target.pos.z, 0.55);
+      t.aimPoint = target ? target.pos.clone().setY(target.pos.y + 1.5) : null;
+      this.handleStuck(dt);
+      return;
+    }
     if (this.mode === 'ambush') {
       const wz = this.watchZ + Math.sin(this.scan * 0.15) * 60;
       t.aimPoint = new THREE.Vector3(this.world.roadX(wz), this.world.roadH(wz) + 2, wz);
@@ -223,7 +247,8 @@ export class EnemyDirector {
     this.spawned = new Set();
     this.ais = [];
     this.caponiers = [];
-    this.props = [];                // roadside scenery of posts (sandbag walls)
+    this.walls = [];                // sandbag walls of the infantry posts (their bags are pickups)
+    this.items = null;              // set by the game
     this.onLoot = () => {};         // (id, type, x, z, data): loot lying on the ground
     this.disabled = dbg.get('notanks') === '1' || dbg.get('noenemies') === '1';
     this.noInfantry = dbg.get('noinfantry') === '1' || dbg.get('noenemies') === '1';
@@ -254,14 +279,15 @@ export class EnemyDirector {
     return t;
   }
 
-  squad(x, z, n, r, d, heading) {
+  squad(x, z, n, r, d, heading, o = {}) {
     if (this.noInfantry || !this.infantry) return [];
     const kits = [];
     for (let i = 0; i < n; i++) kits.push(soldierKit(r, d));
-    return this.infantry.spawnSquad(x, z, kits, heading, r);
+    return this.infantry.spawnSquad(x, z, kits, heading, r, o);
   }
 
-  // roadside post: a sandbag wall with a squad behind it and a couple of spare bags
+  // roadside post: a sandbag wall with a squad behind it and a couple of spare bags. Every bag of the wall is
+  // a pickup (it can be carried off to a tank); the wall is an obstacle (cover) that shrinks as bags are taken.
   spawnPost(j, zc, r, d) {
     const z = zc + (r() - 0.5) * 260;
     if (this.world.settlementNear(this.world.roadX(z), z, 40)) return;
@@ -272,22 +298,38 @@ export class EnemyDirector {
     const x = this.world.roadX(z) + sx * off, zz = z + sz * off;
     if (this.world.heightAt(x, zz) < this.world.WATER_LEVEL + 0.8) return;
     const face = side > 0 ? hd - Math.PI / 2 : hd + Math.PI / 2;      // facing the road
-    const g = new THREE.Group();
+    const wall = { id: `p${j}`, cols: [], z: zz, x };
+    const spots = [];
     for (let i = -2; i <= 2; i++) {
+      const px = x - sx * side * 1.2 + Math.sin(hd) * i * 0.75, pz = zz - sz * side * 1.2 + Math.cos(hd) * i * 0.75;
+      const gy = this.world.heightAt(px, pz);
+      const col = { x: px, z: pz, gy, ids: [], obstacle: null };
       for (let k = 0; k < 2; k++) {
-        const b = sandbagMesh();
-        const px = x - sx * side * 1.2 + Math.sin(hd) * i * 0.75, pz = zz - sz * side * 1.2 + Math.cos(hd) * i * 0.75;
-        b.position.set(px, this.world.heightAt(px, pz) + k * 0.33, pz);
-        b.rotation.y = hd + (k ? 0.3 : 0);
-        g.add(b);
+        const id = `${wall.id}:w${i + 2}${k}`;
+        col.ids.push(id);
+        this.onLoot(id, 'sandbag', px, pz, { place: { y: gy + k * 0.33, rot: hd + (k ? 0.3 : 0) }, wall, col });
       }
+      col.obstacle = this.world.addObstacle({ x: px, z: pz, hx: 0.36, hz: 0.28, rot: hd, y0: gy - 0.5, y1: gy + 0.7, wall: true });
+      wall.cols.push(col);
+      spots.push({ x: px + sx * side * 0.9, z: pz + sz * side * 0.9, dir: face });   // behind the wall, looking at the road
     }
-    this.scene.add(g);
-    this.props.push({ group: g, z: zz });
-    this.squad(x + Math.sin(hd) * 2, zz + Math.cos(hd) * 2, 3 + Math.floor(r() * 3 + d * 2), r, d, face);
+    this.walls.push(wall);
+    this.squad(x + sx * side * 1.5, zz + sz * side * 1.5, 3 + Math.floor(r() * 3 + d * 2), r, d, face,
+      { spots, guardDir: face, patrol: [{ x: x + Math.sin(hd) * 8, z: zz + Math.cos(hd) * 8 }, { x: x - Math.sin(hd) * 8, z: zz - Math.cos(hd) * 8 }] });
     const nb = 1 + (r() < 0.5 ? 1 : 0);
     for (let i = 0; i < nb; i++) this.onLoot(`p${j}:${i}`, 'sandbag', x + sx * side * 2.5 + i * 1.2, zz + sz * side * 2.5);
     if (r() < 0.5) this.onLoot(`p${j}:a`, 'ammo', x + sx * side * 2.2 - 1.5, zz + sz * side * 2.2, lootRoll(r, d, 1).find(l => l.type === 'ammo') || null);
+  }
+
+  // a bag of a post wall was picked up: the one above it drops down, the wall gets lower / opens up
+  bagTaken(p) {
+    const col = p.data && p.data.col;
+    if (!col) return;
+    col.ids = col.ids.filter(id => id !== p.id);
+    const rest = col.ids.map(id => this.items && this.items.pickups.get(id)).filter(Boolean);
+    rest.forEach((q, k) => { q.mesh.position.y = col.gy + k * 0.33; q.data.place.y = q.mesh.position.y; });
+    if (!rest.length) { this.world.removeObstacle(col.obstacle); col.obstacle = null; }
+    else col.obstacle.y1 = col.gy + 0.35 * rest.length;
   }
 
   // knocked-out vehicles by the road: partly broken, some burnt out; they hold loot
@@ -411,9 +453,12 @@ export class EnemyDirector {
 
   // remove scenery far behind / ahead
   prune(anchor) {
-    this.props = this.props.filter(p => {
-      if (Math.abs(p.z - anchor.z) < 1600) return true;
-      this.scene.remove(p.group);
+    this.walls = this.walls.filter(w => {
+      if (Math.abs(w.z - anchor.z) < 1600) return true;
+      for (const c of w.cols) {
+        if (c.obstacle) this.world.removeObstacle(c.obstacle);
+        for (const id of c.ids) if (this.items) this.items.remove(id, false);
+      }
       return false;
     });
   }

@@ -3,6 +3,7 @@
 import * as THREE from 'three';
 import { makeNoise, fbm, smoothstep, hash, rng } from './noise.js';
 import { buildSettlement, SETTLEMENT_NAMES } from './settlements.js';
+import { planRiver, carve, buildBridge } from './rivers.js';
 
 export const WATER_LEVEL = 2.0;
 export const CHUNK = 128;          // chunk size (m)
@@ -13,6 +14,36 @@ export const SETTLE_LEN = 850;     // road stretch per potential settlement
 const SETTLE_OFS = 380;
 
 const dbg = new URLSearchParams(location.search);
+const ARENA_H = WATER_LEVEL + 8;         // ground level of the arenas
+
+// analytic terrain features of the tank range: { type, x, z, rot, ... } -> height offset at (x, z)
+function feature(f, x, z) {
+  const dx = x - f.x, dz = z - f.z;
+  const c = Math.cos(f.rot || 0), s = Math.sin(f.rot || 0);
+  const u = dx * s + dz * c, v = dx * c - dz * s;             // u along the feature's heading, v across
+  switch (f.type) {
+    case 'hill': { const d = Math.hypot(dx, dz); return d < f.r ? f.h * (Math.cos(Math.PI * d / f.r) + 1) / 2 : 0; }
+    case 'pond': { const d = Math.hypot(dx, dz); return d < f.r ? -f.d * (1 - (d / f.r) ** 2) : 0; }
+    case 'table': {                                              // ramp up, flat top, ramp down
+      if (Math.abs(v) > f.w / 2 + 2) return 0;
+      const side = 1 - smoothstep(f.w / 2, f.w / 2 + 2, Math.abs(v));
+      const L = f.up + f.top + f.down;
+      if (u < 0 || u > L) return 0;
+      const k = u < f.up ? u / f.up : u < f.up + f.top ? 1 : 1 - (u - f.up - f.top) / f.down;
+      return f.h * k * side;
+    }
+    case 'ditch': {
+      if (Math.abs(u) > f.l / 2) return 0;
+      const k = Math.max(0, 1 - (v / (f.w / 2)) ** 2) * (1 - smoothstep(f.l / 2 - 3, f.l / 2, Math.abs(u)));
+      return -f.d * k;
+    }
+    case 'bumps': {
+      if (Math.abs(v) > f.w / 2 || u < 0 || u > f.l) return 0;
+      return f.a * (0.5 + 0.5 * Math.sin(u * (f.k || 1.1))) * (1 - smoothstep(f.w / 2 - 1.5, f.w / 2, Math.abs(v)));
+    }
+    default: return 0;
+  }
+}
 const ckey = (cx, cz) => (cx + 32768) * 65536 + (cz + 32768);
 
 const SETTLE_SIZE = {
@@ -23,9 +54,11 @@ const SETTLE_SIZE = {
 };
 
 export class World {
-  constructor(scene, seed = 1337) {
+  // opts: { rivers, settlements, road } (all on by default)
+  constructor(scene, seed = 1337, opts = {}) {
     this.scene = scene;
     this.seed = seed;
+    this.opts = { rivers: true, settlements: true, road: true, ...opts };
     this.WATER_LEVEL = WATER_LEVEL;
     this.VIEW = parseInt(dbg.get('view') || '4', 10);   // chunk radius
 
@@ -47,24 +80,35 @@ export class World {
     this.ruins = new Set();          // ids of destroyed houses (kept across settlement reloads)
     this.brokenTrees = new Map();    // tree id -> { y, dx, dz } (kept across chunk reloads)
     this.logs = [];                  // falling tree tops being animated
+    this.riverInfo = new Map();      // gap k -> river plan (or null)
+    this.bridges = new Map();        // gap k -> built bridge
 
     this.makeMaterials();
   }
 
   // ---------------------------------------------------------------- road
   roadX(z) {
+    if (this.opts.arena) return 0;                     // arenas: a straight track along the Z axis
     return 130 * fbm(this.nRoad, z * 0.0011 + 0.37, 3.1, 3) + 12 * this.nRoad(z * 0.005 + 11.3, 7.7);
   }
   roadSlope(z) { return (this.roadX(z + 1) - this.roadX(z - 1)) / 2; }   // dx/dz
   roadHeading(z) { return Math.atan2(this.roadSlope(z), 1); }            // heading (0 = +Z)
   roadH(z) {
+    if (this.opts.arena) return ARENA_H;
     return WATER_LEVEL + 6 + 9 * (fbm(this.nRoadH, z * 0.0016 + 2.2, 1.3, 3) + 0.6);
   }
 
   // ---------------------------------------------------------- settlements
   settlementPlan(k) {
-    if (k < 0) return null;
+    if (k < 0 || !this.opts.settlements) return null;
     if (this.settleInfo.has(k)) return this.settleInfo.get(k);
+    if (this.opts.plans) {                             // arenas: a fixed list of settlements
+      const p0 = this.opts.plans.find(p => p.k === k) || null;
+      const plan = p0 && { ...SETTLE_SIZE[p0.type], seed: Math.floor(hash(this.seed, k, 1234) * 4294967296), hasCutter: true, hasTorch: true,
+        name: SETTLEMENT_NAMES[p0.type][0], ...p0 };
+      this.settleInfo.set(k, plan);
+      return plan;
+    }
     const r = rng(Math.floor(hash(this.seed, k, 991) * 4294967296));
     let type;
     if (k === 0) type = 'village';
@@ -114,6 +158,32 @@ export class World {
     return null;
   }
 
+  // --------------------------------------------------------------- rivers
+  riverPlan(k) {
+    if (!this.opts.rivers) return null;
+    if (!this.riverInfo.has(k)) this.riverInfo.set(k, planRiver(this, k, SETTLE_LEN, SETTLE_OFS));
+    return this.riverInfo.get(k);
+  }
+  // rivers whose channel may reach z
+  riversNear(z) {
+    const k0 = Math.floor((z - SETTLE_OFS) / SETTLE_LEN);
+    const res = [];
+    for (let k = k0 - 1; k <= k0 + 1; k++) {
+      const r = this.riverPlan(k);
+      if (r && z > r.zmin && z < r.zmax) res.push(r);
+    }
+    return res;
+  }
+  // deck height of a bridge at (x, z) or null
+  bridgeAt(x, z) {
+    for (const b of this.bridges.values()) {
+      if (Math.abs(z - b.cz) > b.L + 12) continue;
+      const y = b.deckAt(x, z);
+      if (y !== null) return y;
+    }
+    return null;
+  }
+
   // -------------------------------------------------------------- heights
   naturalHeight(x, z, dr) {
     const nx = x / 800, nz = z / 800;
@@ -127,20 +197,49 @@ export class World {
     return Math.max(h, WATER_LEVEL - 3.2);
   }
 
+  // arenas (duel field, tank range): rolling ground inside a rim of hills + analytic features
+  arenaHeight(x, z) {
+    const o = this.opts;
+    let h = ARENA_H;
+    if (o.arena === 'duel') {
+      h += 5 * fbm(this.nBase, x / 170 + 50, z / 170 + 50, 3) + 2 * fbm(this.nDetail, x / 45, z / 45, 2);
+      h += 4 * Math.max(0, 1 - Math.abs(fbm(this.nMount, x / 260 + 9, z / 260 + 9, 2)) * 5);        // ridges
+    } else h += 0.5 * fbm(this.nDetail, x / 60, z / 60, 2);
+    for (const f of o.features || []) h += feature(f, x, z);
+    const b = o.bounds;
+    if (b) {
+      const ex = Math.max(b.x0 - x, x - b.x1, 0), ez = Math.max(b.z0 - z, z - b.z1, 0);
+      const e = Math.hypot(ex, ez);
+      if (e > 0) h += smoothstep(0, 90, e) * 55 + 10 * fbm(this.nMount, x / 90, z / 90, 3) * smoothstep(0, 60, e);
+    }
+    return h;
+  }
+
   height(x, z) {
+    if (this.opts.arena) {
+      const n = this.arenaHeight(x, z);
+      if (!this.opts.road && !this.opts.settlements) return n;
+      const dr = Math.abs(x);
+      let w = this.opts.road ? 1 - smoothstep(7, 30, dr) : 0;
+      const sw = this.settlementWeight(x, z, 0);
+      if (sw > w) w = sw;
+      return w <= 0 ? n : n + (ARENA_H - n) * w;
+    }
     const rx = this.roadX(z);
     const dr = Math.abs(x - rx);
     const n = this.naturalHeight(x, z, dr);
     let w = 1 - smoothstep(7, 45, dr);
     const sw = this.settlementWeight(x, z, rx);
     if (sw > w) w = sw;
-    if (w <= 0) return n;
-    return n + (this.roadH(z) - n) * w;
+    let h = w <= 0 ? n : n + (this.roadH(z) - n) * w;
+    for (const r of this.riversNear(z)) h = carve(r, x, z, h, WATER_LEVEL);
+    return h;
   }
 
   // bilinear sample of the loaded chunk grids (falls back to the analytic function)
   heightAt(x, z) {
     const cx = Math.floor(x / CHUNK), cz = Math.floor(z / CHUNK);
+    if (this.bridges.size) { const b = this.bridgeAt(x, z); if (b !== null) return b; }
     const ch = this.chunks.get(ckey(cx, cz));
     if (!ch) return this.height(x, z);
     const G = CSEG + 3;
@@ -278,6 +377,12 @@ export class World {
         if (this.onSettlementBuilt) this.onSettlementBuilt(built);
       }
     }
+    // bridges
+    for (let k = k0 - 1; k <= k0 + 1; k++) {
+      const r = this.riverPlan(k);
+      if (r && r.bridge && !this.bridges.has(k) && Math.abs(pos.z - r.z) < 900) this.bridges.set(k, buildBridge(this, r));
+    }
+    for (const [k, b] of this.bridges) if (Math.abs(pos.z - b.cz) > 1300) { b.dispose(); this.bridges.delete(k); }
     for (const [k, s] of this.settlements) {
       if (Math.abs(pos.z - s.plan.z) > 1300) {
         this.scene.remove(s.group);
@@ -433,7 +538,7 @@ export class World {
     }
 
     // ---- road ribbon: segments whose centreline starts inside this chunk
-    {
+    if (this.opts.road) {
       const rp = [], ru = [], ri = [];
       const STEP = 4;
       for (let j = 0; j < CHUNK / STEP; j++) {
@@ -447,7 +552,9 @@ export class World {
           const s = this.roadSlope(z);
           const l = Math.hypot(1, s);
           const px = 1 / l, pz = -s / l;             // perpendicular (to the +X side)
-          const y = this.roadH(z) + 0.14;
+          // follows the ground down through fords, stays level over bridges
+          const bridged = this.riversNear(z).some(r => r.bridge && Math.abs(z - r.z) < r.halfSpan + 4);
+          const y = (bridged ? this.roadH(z) : Math.min(this.roadH(z), this.height(rx, z))) + 0.14;
           rp.push(rx + px * ROAD_HALF, y - 0.03, z + pz * ROAD_HALF,
                   rx, y, z,
                   rx - px * ROAD_HALF, y - 0.03, z - pz * ROAD_HALF);
@@ -490,8 +597,10 @@ export class World {
       const x = ch.x0 + r() * CHUNK, z = ch.z0 + r() * CHUNK;
       const rx = this.roadX(z);
       const dr = Math.abs(x - rx);
-      if (dr < 14) continue;
-      if (Math.abs(z) < 70 && dr < 60) continue;       // spawn area clear
+      if (this.opts.road && dr < 14) continue;
+      if (!this.opts.arena && Math.abs(z) < 70 && dr < 60) continue;       // spawn area clear
+      if (this.opts.clear && this.opts.clear.some(c => Math.hypot(x - c.x, z - c.z) < c.r)) continue;
+      if (this.opts.arena && this.opts.treeDensity !== undefined && r() > this.opts.treeDensity) continue;
       const h = this.heightAt(x, z);
       if (h < WATER_LEVEL + 1.2 || h > 30) continue;
       if (this.slopeAt(x, z) > 0.7) continue;

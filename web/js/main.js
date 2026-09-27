@@ -10,16 +10,26 @@ import { Items, ITEM_DEFS, TOOL_USE, SHELLS_PER_BOX, CANISTER_L, buildItemMesh, 
 import { Workshop } from './workshop.js';
 import { Sfx } from './audio.js';
 import { SETTLEMENT_LABEL } from './settlements.js';
-import { Guns, WEAPONS, GRENADES, CAT_NAMES, isSmall, makeWeapon, weaponMesh, buildGrenadeMesh, weaponLabel } from './weapons.js';
+import { Guns, WEAPONS, GRENADES, CAT_NAMES, isSmall, makeWeapon, weaponLabel } from './weapons.js';
 import { Infantry } from './infantry.js';
+import { ViewModel } from './viewmodel.js';
+import { Markers, Minimap } from './hud.js';
 import { difficultyAt, soldierKit } from './loot.js';
 import { rng } from './noise.js';
+import { worldOptions, setupDuel, setupRange, duelStatus, clampToBounds, MODE_NAMES } from './modes.js';
+import { showMenu } from './menu.js';
+import { snapshot, restore, restoreBefore, writeSave, loadSave } from './save.js';
 
 // debug flags: ?nowater=1 ?noclouds=1 ?notrees=1 ?notanks=1 ?noenemies=1 ?noinfantry=1 ?noshadows=1 ?nofog=1
 //              ?waterred=1 ?watery=N ?noaa=1 ?logdepth=1 ?seed=N ?god=1 ?start=Z ?view=N
+// game: ?mode=road|duel|range (&tank=KEY &enemies=K1,K2), ?load=SAVE_ID; without a mode the main menu is shown
+// (?seed / ?start alone start the road directly)
 const dbg = new URLSearchParams(location.search);
+const LOAD = dbg.has('load') ? loadSave(dbg.get('load')) : null;
+const MODE = LOAD ? 'road' : (dbg.get('mode') || (dbg.has('seed') || dbg.has('start') ? 'road' : null));
+const CFG = { mode: MODE, tank: dbg.get('tank'), enemies: (dbg.get('enemies') || '').split(',').filter(Boolean) };
 // every game gets its own world unless a seed is given (?seed=N replays a world)
-const SEED = dbg.has('seed') ? parseInt(dbg.get('seed'), 10) : Math.floor(Math.random() * 999999) + 1;
+const SEED = LOAD ? LOAD.seed : dbg.has('seed') ? parseInt(dbg.get('seed'), 10) : Math.floor(Math.random() * 999999) + 1;
 
 // ================== state ==================
 const state = {
@@ -82,7 +92,7 @@ app.appendChild(renderer.domElement);
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x9ec8e8);
 
-const world = new World(scene, SEED);
+const world = new World(scene, SEED, worldOptions(MODE || 'road'));
 const VIEW_DIST = world.VIEW * 128;
 if (dbg.get('nofog') !== '1') scene.fog = new THREE.Fog(0x9ec8e8, VIEW_DIST * 0.3, VIEW_DIST * 0.95);
 
@@ -141,7 +151,10 @@ const guns = new Guns(scene, world, fx, sfx);
 const infantry = new Infantry(scene, world, guns);
 const director = new EnemyDirector(world, scene, SEED, infantry);
 director.guns = guns;
+if (MODE && MODE !== 'road') { director.disabled = true; director.noInfantry = true; }
 const items = new Items(scene, world);
+director.items = items;
+items.onTaken = p => director.bagTaken(p);
 const workshop = new Workshop(scene, world);
 const tanks = [];
 
@@ -154,6 +167,7 @@ function itemData(it) {
     case 'ammo': return { cal: it.cal, n: it.n };
     case 'grenade': return { key: it.key, n: it.n || 1 };
     case 'canister': return { fuel: it.fuel ?? CANISTER_L };
+    case 'sandbag': return it.place ? { place: it.place, wall: it.wall, col: it.col } : null;
     default: return null;
   }
 }
@@ -176,7 +190,13 @@ function garrison(s) {
   const kits = [];
   for (let i = 0; i < n; i++) kits.push(soldierKit(r, d));
   const side = h.x > world.roadX(h.z) ? -1 : 1;
-  infantry.spawnSquad(h.x + side * 7 * Math.cos(h.rot), h.z - side * 7 * Math.sin(h.rot), kits, h.rot, r);
+  // they walk between the houses of the settlement
+  const patrol = [];
+  for (let i = 0; i < 4 && s.houses.length; i++) {
+    const hf = s.houses[Math.floor(r() * s.houses.length)].f, sd = hf.x > world.roadX(hf.z) ? -1 : 1;
+    patrol.push({ x: hf.x + sd * 7 * Math.cos(hf.rot), z: hf.z - sd * 7 * Math.sin(hf.rot) });
+  }
+  infantry.spawnSquad(h.x + side * 7 * Math.cos(h.rot), h.z - side * 7 * Math.sin(h.rot), kits, h.rot, r, { patrol, guardDir: h.rot + (side > 0 ? Math.PI / 2 : -Math.PI / 2) });
 }
 
 world.onSettlementBuilt = s => {
@@ -218,10 +238,8 @@ handBag.position.set(0.0, -0.62, -0.9);
 handBag.rotation.set(0.35, 0.2, 0);
 handBag.visible = false;
 camera.add(handBag);
-// weapon in hands (first-person view model)
-const viewModel = new THREE.Group();
-camera.add(viewModel);
-let vmKey = null, vmMuzzle = 0.3, vmTop = 0.05;
+// weapon in hands (first-person view model with hands, bob and sway)
+const viewModel = new ViewModel(camera);
 
 // plate carried in hands (child of the camera)
 const handPlate = buildItemMesh('plate');
@@ -354,6 +372,17 @@ function damagePlayer(amount, bullet = false) {
   }
 }
 
+function victory() {
+  state.duel.over = true;
+  state.over = true;
+  const st = duelStatus(state);
+  $('vStats').textContent = `Уничтожено танков противника: ${st.total} · время боя ${Math.floor(state.time / 60)}:${String(Math.floor(state.time % 60)).padStart(2, '0')}` +
+    ` · ваш танк: ${state.vehicle ? state.vehicle.def.name : '—'}`;
+  $('victory').classList.remove('hidden');
+  if (document.pointerLockElement) document.exitPointerLock();
+  sfx.setEngine(false, 0);
+}
+
 function gameOver(reason) {
   if (state.over) return;
   state.over = true;
@@ -369,6 +398,7 @@ function gameOver(reason) {
 const keys = {};
 document.addEventListener('keydown', e => {
   if (e.code === 'Space' || e.code === 'Tab') e.preventDefault();
+  if (e.code === 'F5') { e.preventDefault(); if (state.started && !e.repeat) saveGame(); return; }
   if (e.code === 'Escape') {
     if (state.repairOpen) { closeRepair(); return; }
     if (state.crane) { closeCrane(); return; }
@@ -418,6 +448,7 @@ document.addEventListener('mousemove', e => {
   if (state.mode === 'walk') {
     state.yaw -= e.movementX * MOUSE_SENS;
     state.pitch -= e.movementY * MOUSE_SENS;
+    viewModel.look(-e.movementX * MOUSE_SENS, -e.movementY * MOUSE_SENS);
     state.pitch = Math.max(-1.45, Math.min(1.45, state.pitch));
   } else if (!canGun()) {
     // inside the tank without the gun: just turn the head
@@ -469,7 +500,32 @@ function setPause(v) {
   if (v && locked) document.exitPointerLock();
   if (!v && !locked) canvas.requestPointerLock()?.catch?.(() => {});
 }
-pauseEl.addEventListener('click', () => { if (state.paused) setPause(false); });
+pauseEl.addEventListener('click', e => { if (state.paused && e.target === pauseEl) setPause(false); });
+$('bResume').onclick = e => { e.stopPropagation(); setPause(false); };
+$('bMenu').onclick = e => { e.stopPropagation(); if (confirm('Выйти в главное меню? Несохранённый прогресс пропадёт.')) location.href = location.pathname; };
+$('bSave').onclick = e => { e.stopPropagation(); saveGame(); };
+$('bAgain').onclick = () => {
+  // the same mode again (a new world on the road unless the seed was chosen)
+  if (MODE === 'road' && !dbg.has('seed')) location.search = '?mode=road';
+  else if (LOAD) location.search = '?mode=road&seed=' + SEED;
+  else location.reload();
+};
+
+// ================== saving ==================
+function saveGame() {
+  if (MODE !== 'road') { msg('Сохранение доступно только в основной игре'); return; }
+  if (state.over) return;
+  try {
+    const data = snapshot({ state, player, items, tanks, director, world, workshop, infantry, garrisoned, SEED });
+    const where = nextSettlementLabel(state.vehicle ? state.vehicle.root.position : player.position).replace(/^Впереди: /, 'у ');
+    const meta = writeSave(data, `Мир #${SEED}, ${data.km} км — ${where}`);
+    msg(`Игра сохранена: ${meta.name}`, '#9fe07f');
+    $('seedInfo').textContent = `Мир #${SEED} — сохранено ${new Date().toLocaleTimeString('ru-RU')}`;
+  } catch (err) {
+    console.error(err);
+    msg('Не удалось сохранить игру (хранилище браузера недоступно или заполнено)', '#ff9a7a');
+  }
+}
 
 // ================== geometry helpers ==================
 // distance from a point to a tank's hull footprint (0 inside)
@@ -660,7 +716,7 @@ function seatByRole(v, role) { return v.seats().find(s => s.role === role); }
 // hull-local position of a seat (turret seats rotate with the turret)
 function seatHullPos(v, s, which = 'pos') {
   const p = new THREE.Vector3(...s[which]);
-  if (s.space === 'turret') { v.turret.localToWorld(p); v.root.worldToLocal(p); }
+  if (s.space !== 'hull') { v.seatObject(s).localToWorld(p); v.root.worldToLocal(p); }
   return p;
 }
 
@@ -1444,8 +1500,7 @@ function shootWeapon(w, W) {
   const dir = lookDir();
   dir.x += (Math.random() - 0.5) * 2 * sp; dir.y += (Math.random() - 0.5) * 2 * sp; dir.z += (Math.random() - 0.5) * 2 * sp;
   dir.normalize();
-  viewModel.updateMatrixWorld(true);
-  const muzzle = viewModel.localToWorld(new THREE.Vector3(0, vmTop - 0.02, -vmMuzzle));
+  const muzzle = viewModel.muzzleWorld();
   guns.fire(camera.position.clone(), dir, W, { player: true }, muzzle, W.cat !== 'rifle');
   // recoil
   state.pitch = Math.min(1.45, state.pitch + W.recoil * (state.aim ? 0.55 : 1) * (0.7 + Math.random() * 0.6));
@@ -1490,45 +1545,20 @@ function updateWeapon(dt) {
   updateViewModel(dt);
 }
 
-// first-person weapon model: hip / aimed pose, recoil kick, reload dip, walking bob
+// first-person weapon model (viewmodel.js): hip / aimed pose, recoil kick, reload dip, bob and sway
 function updateViewModel(dt) {
   const walking = state.mode === 'walk';
   const d = items.drawnWeapon();
-  const key = !walking || items.hands ? null : items.drawn === 'grenade' ? 'g:' + items.grenadeKey : d ? d.w.key : null;
-  if (key !== vmKey) {
-    viewModel.clear();
-    vmKey = key;
-    // models point along +Z, the camera looks along -Z
-    if (key && key.startsWith('g:')) {
-      const g = buildGrenadeMesh(key.slice(2));
-      g.scale.setScalar(1.1);
-      viewModel.add(g);
-      vmMuzzle = 0.05; vmTop = 0.1;
-    } else if (key) {
-      const v = weaponMesh(key);
-      v.group.traverse(o => { if (o.isMesh) o.castShadow = false; });
-      v.group.rotation.set(0.02, Math.PI + 0.09, 0);      // muzzle a little in towards the crosshair
-      viewModel.add(v.group);
-      vmMuzzle = v.muzzle; vmTop = v.top;
-    }
-  }
-  viewModel.visible = !!key;
-  if (!key) return;
-  const aimT = state.aim && items.drawn !== 'grenade' && state.reloadT <= 0 ? 1 : 0;
-  state.aimK += (aimT - state.aimK) * Math.min(1, dt * 12);
+  const key = !walking || items.hands ? null : items.drawn === 'grenade' ? (items.grenadeKey ? 'g:' + items.grenadeKey : null) : d ? d.w.key : null;
+  viewModel.set(key);
   state.kick *= Math.pow(0.001, dt);
-  const small = d && isSmall(d.w.key);
-  const hip = items.drawn === 'grenade' ? [0.2, -0.22, -0.36] : small ? [0.15, -0.14, -0.44] : [0.19, -0.19, -0.48];
-  const aimP = [0, -vmTop - (small ? 0.015 : 0.03), small ? -0.46 : -0.44];
-  const bob = Math.min(1, playerVel.length() / 6) * (1 - state.aimK);
-  const bt = state.time * 9;
-  const k = state.aimK;
-  viewModel.position.set(
-    hip[0] + (aimP[0] - hip[0]) * k + Math.sin(bt) * 0.012 * bob,
-    hip[1] + (aimP[1] - hip[1]) * k + Math.abs(Math.cos(bt)) * 0.012 * bob - (state.reloadT > 0 ? 0.12 : 0),
-    hip[2] + (aimP[2] - hip[2]) * k + state.kick * 0.05);
-  // muzzle climbs on recoil, the gun tilts down while reloading
-  viewModel.rotation.set(state.kick * 0.12 - (state.reloadT > 0 ? 0.6 : 0), -0.09 * k, (state.reloadT > 0 ? 0.4 : 0));
+  const run = (keys['ShiftLeft'] || keys['ShiftRight']) && !state.crouch;
+  const strafe = (keys['KeyD'] ? 1 : 0) - (keys['KeyA'] ? 1 : 0);
+  viewModel.update(dt, {
+    speed: playerVel.length(), run, crouch: state.crouch, strafe, aim: state.aim, kick: state.kick,
+    reload: state.reloadT > 0, onGround: state.onGround, time: state.time,
+  });
+  state.aimK = viewModel.aimK;
 }
 
 function toggleTankWeapon() {
@@ -1566,6 +1596,7 @@ function updateWalk(dt) {
 
   world.collideTrees(p, 0.35);
   world.collideObstacles(p, 0.4);
+  clampToBounds(world, p, 2);
   if (state.runOverT > 0) state.runOverT -= dt;
   for (const t of tanks) {
     const td = tankDist(t, p);
@@ -1631,7 +1662,7 @@ function updateDriveControls() {
     else if (v.hp.gun <= 0) msg('Орудие уничтожено!', '#ff9a7a');
     else if (v.ammo <= 0) msg('Снаряды кончились!', '#ff9a7a');
     else if (v.reload > 0) sfx.click();
-    else combat.fireFrom(v);
+    else if (combat.fireFrom(v)) infantry.noise(v.root.position, 280);
   }
 }
 
@@ -1660,7 +1691,7 @@ function updateDriveCamera(dt) {
     let eye;
     const s = state.seat && seatByRole(v, state.seat);
     if (!s && state.seat) standUp();
-    if (s) eye = s.space === 'turret' ? v.turret.localToWorld(new THREE.Vector3(...s.eye)) : v.root.localToWorld(new THREE.Vector3(...s.eye));
+    if (s) eye = v.seatObject(s).localToWorld(new THREE.Vector3(...s.eye));
     else {
       const I = HULLS[v.key].interior;
       const y = Math.min(I.floor + 1.5, ceilingAt(v, state.inPos.x, state.inPos.z) - 0.13);
@@ -1857,142 +1888,6 @@ function updateWeaponPanel() {
   weaponEl.style.display = 'block';
 }
 
-// enemy / tank markers
-const markersEl = $('markers');
-const markerPool = [];
-let spotT = 0;
-function updateMarkers(dt) {
-  spotT -= dt;
-  const doSpot = spotT <= 0;
-  if (doSpot) spotT = 0.35;
-  let used = 0;
-  const v3 = new THREE.Vector3();
-  for (const t of tanks) {
-    if (t === state.vehicle || t.wrecked) continue;
-    const d = t.root.position.distanceTo(camera.position);
-    if (doSpot) {
-      const top = t.turret.localToWorld(new THREE.Vector3(0, 1.2, 0));
-      if (d < 550 && world.lineOfSight(camera.position, top, 5)) t.spottedT = state.time;
-    }
-    const seen = (t.spottedT !== undefined && state.time - t.spottedT < 3) || d < 40;
-    if (!seen || d > 600) continue;
-    v3.copy(t.root.position); v3.y += t.vis.hullBox.max.y + 3;
-    v3.project(camera);
-    if (v3.z > 1 || Math.abs(v3.x) > 1.1 || Math.abs(v3.y) > 1.1) continue;
-    let el = markerPool[used];
-    if (!el) { el = document.createElement('div'); el.className = 'mk'; markersEl.appendChild(el); markerPool.push(el); }
-    used++;
-    el.style.display = 'block';
-    el.style.left = `${(v3.x * 0.5 + 0.5) * innerWidth}px`;
-    el.style.top = `${(-v3.y * 0.5 + 0.5) * innerHeight}px`;
-    const cls = t.team === 'enemy' && t.crew ? 'enemy' : t.team === 'player' ? 'own' : 'dead';
-    el.className = 'mk ' + cls;
-    const label = cls === 'enemy' ? '' : cls === 'own' ? t.def.name : 'без экипажа';
-    el.innerHTML = `${label}${label ? '<br>' : ''}${Math.round(d)} м<i></i>`;
-  }
-  for (let i = used; i < markerPool.length; i++) markerPool[i].style.display = 'none';
-}
-
-// ================== minimap ==================
-const mm = $('minimap');
-const mmCtx = mm.getContext('2d');
-const MM_S = 180, MM_RANGE = 320;
-const mmBase = document.createElement('canvas');
-mmBase.width = mmBase.height = MM_S;
-const mmBaseCtx = mmBase.getContext('2d');
-let mmCenter = null;
-const MM_SC = MM_S / (2 * MM_RANGE);
-
-function drawMinimapBase(c) {
-  const R = 90;               // sample resolution
-  const img = mmBaseCtx.createImageData(R, R);
-  const d = img.data;
-  for (let py = 0; py < R; py++) {
-    for (let px = 0; px < R; px++) {
-      const wx = c.x - (px / R - 0.5) * 2 * MM_RANGE;
-      const wz = c.z - (py / R - 0.5) * 2 * MM_RANGE;
-      const h = world.heightAt(wx, wz);
-      let r, g, b;
-      if (h < WATER_LEVEL) { r = 45; g = 90; b = 130; }
-      else if (h < 22) { const t = (h - WATER_LEVEL) / 20; r = 60 + t * 50; g = 105 + t * 45; b = 50 + t * 25; }
-      else if (h < 40) { r = 120 + (h - 22) * 3; g = 115 + (h - 22) * 2.5; b = 105; }
-      else { const t = Math.min(1, (h - 40) / 30); r = 175 + t * 70; g = 170 + t * 75; b = 175 + t * 70; }
-      const i = (py * R + px) * 4;
-      d[i] = r; d[i + 1] = g; d[i + 2] = b; d[i + 3] = 255;
-    }
-  }
-  const tmp = document.createElement('canvas');
-  tmp.width = tmp.height = R;
-  tmp.getContext('2d').putImageData(img, 0, 0);
-  mmBaseCtx.imageSmoothingEnabled = true;
-  mmBaseCtx.drawImage(tmp, 0, 0, MM_S, MM_S);
-  // road
-  mmBaseCtx.strokeStyle = '#8a7658';
-  mmBaseCtx.lineWidth = 3;
-  mmBaseCtx.beginPath();
-  for (let z = c.z - MM_RANGE - 20, i = 0; z <= c.z + MM_RANGE + 20; z += 10, i++) {
-    const x = MM_S / 2 - (world.roadX(z) - c.x) * MM_SC, y = MM_S / 2 - (z - c.z) * MM_SC;
-    i ? mmBaseCtx.lineTo(x, y) : mmBaseCtx.moveTo(x, y);
-  }
-  mmBaseCtx.stroke();
-  mmCenter = c.clone();
-}
-
-function drawMinimap(anchor, heading) {
-  if (!mmCenter || Math.hypot(anchor.x - mmCenter.x, anchor.z - mmCenter.z) > 30) drawMinimapBase(anchor);
-  const toMap = (wx, wz) => [MM_S / 2 - (wx - anchor.x) * MM_SC, MM_S / 2 - (wz - anchor.z) * MM_SC];
-  mmCtx.fillStyle = '#222';
-  mmCtx.fillRect(0, 0, MM_S, MM_S);
-  mmCtx.drawImage(mmBase, (anchor.x - mmCenter.x) * MM_SC, (anchor.z - mmCenter.z) * MM_SC);
-  // settlements
-  mmCtx.font = '10px Arial';
-  mmCtx.textAlign = 'center';
-  for (const s of world.settlements.values()) {
-    const [x, y] = toMap(world.roadX(s.plan.z), s.plan.z);
-    mmCtx.fillStyle = 'rgba(0,0,0,.6)';
-    mmCtx.fillText(s.plan.name, x + 1, y + 1);
-    mmCtx.fillStyle = '#ffe9b0';
-    mmCtx.fillText(s.plan.name, x, y);
-    for (const z of s.zones) {
-      const [zx, zy] = toMap(z.x, z.z);
-      mmCtx.fillStyle = z.type === 'repair' ? '#7fb0ff' : z.type === 'fuel' ? '#ffb040' : '#ff7070';
-      mmCtx.fillRect(zx - 3, zy - 3, 6, 6);
-    }
-  }
-  // items
-  for (const it of items.pickups.values()) {
-    const [x, y] = toMap(it.pos.x, it.pos.z);
-    mmCtx.fillStyle = it.type === 'plate' ? '#9fd0ff' : '#ffe070';
-    mmCtx.beginPath(); mmCtx.arc(x, y, 2, 0, 7); mmCtx.fill();
-  }
-  // infantry that sees us / is close
-  mmCtx.fillStyle = '#ff7a5a';
-  for (const sd of infantry.soldiers) {
-    if (!sd.alive || !(sd.los || sd.pos.distanceTo(anchor) < 60)) continue;
-    const [x, y] = toMap(sd.pos.x, sd.pos.z);
-    mmCtx.fillRect(x - 1.5, y - 1.5, 3, 3);
-  }
-  // tanks
-  for (const t of tanks) {
-    if (t === state.vehicle) continue;
-    const seen = t.spottedT !== undefined && state.time - t.spottedT < 3;
-    if (t.team === 'enemy' && t.crew && !seen) continue;
-    const [x, y] = toMap(t.root.position.x, t.root.position.z);
-    mmCtx.fillStyle = t.wrecked ? '#333' : t.team === 'enemy' && t.crew ? '#ff4a3a' : t.team === 'player' ? '#7fe07f' : '#bbb';
-    mmCtx.beginPath(); mmCtx.arc(x, y, 3.2, 0, 7); mmCtx.fill();
-  }
-  // player arrow
-  mmCtx.save();
-  mmCtx.translate(MM_S / 2, MM_S / 2);
-  mmCtx.rotate(-heading + Math.PI);
-  mmCtx.fillStyle = '#ff5544';
-  mmCtx.strokeStyle = '#fff';
-  mmCtx.lineWidth = 1.5;
-  mmCtx.beginPath(); mmCtx.moveTo(0, 7); mmCtx.lineTo(5, -5); mmCtx.lineTo(0, -2); mmCtx.lineTo(-5, -5); mmCtx.closePath();
-  mmCtx.fill(); mmCtx.stroke();
-  mmCtx.restore();
-}
-
 function nextSettlementLabel(p) {
   let best = null;
   for (let k = 0; k < 400; k++) {
@@ -2004,6 +1899,9 @@ function nextSettlementLabel(p) {
   if (Math.abs(d) < best.halfLen) return `${SETTLEMENT_LABEL[best.type]} ${best.name}`;
   return `Впереди: ${best.name} (${SETTLEMENT_LABEL[best.type].toLowerCase()}) ${(d / 1000).toFixed(1)} км`;
 }
+
+const markers = new Markers($('markers'));
+const minimap = new Minimap($('minimap'), world);
 
 // ================== prompts ==================
 function slotPrompt(sl, lines) {
@@ -2119,7 +2017,7 @@ function updatePrompt() {
 
 // ================== main loop ==================
 const clock = new THREE.Clock();
-let despawnT = 0, repairRenderT = 0, craneRenderT = 0, stashRenderT = 0;
+let despawnT = 0, repairRenderT = 0, craneRenderT = 0, stashRenderT = 0, engineNoiseT = 0;
 
 function frame(dt) {
   state.time += dt;
@@ -2142,6 +2040,7 @@ function frame(dt) {
   if (!walking) updateDriveControls();
 
   for (const t of tanks) t.update(dt, world, tanks);
+  if (world.opts.bounds) for (const t of tanks) clampToBounds(world, t.root.position);
 
   if (walking) updateWalk(dt);
   else {
@@ -2176,6 +2075,7 @@ function frame(dt) {
     }
   }
   if (v && v.wrecked && !state.over) gameOver('Танк уничтожен.');
+  if (state.duel && !state.duel.over && duelStatus(state).left === 0) victory();
 
   // combat
   combat.tanks = tanks;
@@ -2210,6 +2110,8 @@ function frame(dt) {
     state.slot = null; state.nearItem = null; state.nearPanel = null;
     state.zone = currentZone(v.root.position);
     state.zoneText = serviceTank(v, state.zone, dt);
+    // soldiers around hear the engine
+    if (Math.abs(v.speed) > 1 && (engineNoiseT -= dt) <= 0) { engineNoiseT = 1; infantry.noise(v.root.position, 50 + Math.abs(v.speed) * 5); }
     $('hold').style.display = 'none';
     sfx.setEngine(v.operated && v.maxSpeedEff > 0, Math.min(1, Math.abs(v.speed) / v.def.maxSpeed + Math.abs(v.controls.throttle) * 0.3));
   }
@@ -2281,13 +2183,17 @@ function frame(dt) {
   updateGauge(v);
   updateInventory();
   updateWeaponPanel();
-  updateMarkers(dt);
+  markers.update(dt, { tanks, vehicle: state.vehicle, camera, world, time: state.time });
   updatePrompt();
-  topEl.innerHTML = `Пройдено: <b>${((state.maxZ - state.startZ) / 1000).toFixed(2)} км</b> &nbsp;·&nbsp; Танков: <b>${state.kills}</b>` +
+  if (state.duel) {
+    const st = duelStatus(state);
+    topEl.innerHTML = `Дуэль &nbsp;·&nbsp; противников осталось: <b>${st.left} / ${st.total}</b>`;
+  } else if (state.range) topEl.innerHTML = `Танкодром &nbsp;·&nbsp; мишеней поражено: <b>${tanks.filter(t => t.derelict && t.marks.length).length}</b>`;
+  else topEl.innerHTML = `Пройдено: <b>${((state.maxZ - state.startZ) / 1000).toFixed(2)} км</b> &nbsp;·&nbsp; Танков: <b>${state.kills}</b>` +
     ` &nbsp;·&nbsp; Пехоты: <b>${state.infKills}</b>`;
   const heading = walking ? state.yaw : v.heading;
-  drawMinimap(anchor, heading);
-  $('mmLabel').textContent = nextSettlementLabel(anchor);
+  minimap.draw(anchor, heading, { items, soldiers: infantry.soldiers, tanks, vehicle: state.vehicle, time: state.time });
+  $('mmLabel').textContent = state.duel ? 'ДУЭЛЬ' : nextSettlementLabel(anchor);
 }
 
 function animate() {
@@ -2348,10 +2254,33 @@ function setupStart() {
   $('seedInfo').textContent = `Мир #${SEED} — повторить: ?seed=${SEED}`;
 }
 
+// modes: put the player into a tank at the start
+function enterTank(t) {
+  state.nearTank = t;
+  tryToggleVehicle();
+}
+
+// continue a saved game
+function restoreGame(d) {
+  const v = restore({ state, player, items, director, world, workshop, infantry, garrisoned, spawnTank, camera }, d);
+  if (v) enterTank(v);
+  if (d.state.view === 'inside' && state.vehicle) enterInside();
+  msg(`Загружена игра: мир #${SEED}, пройдено ${d.km} км`, '#e8c96a');
+  $('seedInfo').textContent = `Мир #${SEED} — повторить: ?seed=${SEED}`;
+}
+
 async function boot() {
-  loadText.textContent = 'Генерация ландшафта...';
+  if (!MODE) {
+    // no game chosen: the main menu (it reloads the page with the chosen mode)
+    loaderEl.classList.add('hidden');
+    showMenu($('menu'));
+    return;
+  }
+  loadText.textContent = LOAD ? 'Загрузка сохранения...' : 'Генерация ландшафта...';
   const startZ = parseFloat(dbg.get('start') || '0');
-  const p0 = new THREE.Vector3(world.roadX(startZ), 0, startZ);
+  const p0 = LOAD ? new THREE.Vector3(...LOAD.player) : MODE === 'duel' ? new THREE.Vector3(0, 0, -235)
+    : MODE === 'range' ? new THREE.Vector3(6, 0, -270) : new THREE.Vector3(world.roadX(startZ), 0, startZ);
+  if (LOAD) restoreBefore({ items, director, world, workshop, garrisoned }, LOAD);
   const total = world.pendingChunks(p0);
   while (world.pendingChunks(p0) > 0) {
     world.update(p0, 30);
@@ -2359,7 +2288,12 @@ async function boot() {
     barFill.style.width = `${(1 - left / total) * 60}%`;
     await new Promise(r => setTimeout(r, 0));
   }
-  setupStart();
+  const ctx = { world, tanks, spawnTank, director, items, player, state, enterTank, msg, cfg: CFG };
+  if (LOAD) restoreGame(LOAD);
+  else if (MODE === 'duel') setupDuel(ctx);
+  else if (MODE === 'range') setupRange(ctx);
+  else setupStart();
+  if (MODE !== 'road') { $('bSave').style.display = 'none'; $('seedInfo').textContent = MODE_NAMES[MODE]; }
   barFill.style.width = '100%';
   loadText.textContent = 'Готово! Нажми, чтобы играть';
   setTimeout(() => {
@@ -2372,7 +2306,8 @@ boot();
 animate();
 
 // handle for debugging / automated tests
-window.game = { state, tanks, world, items, combat, director, workshop, player, camera, keys, spawnTank, fx, frame,
-  guns, infantry, SEED, selectWeapon, startReload, placeSandbag, mgAction, toggleTankWeapon, updateDriveControls,
+window.game = { state, tanks, world, items, combat, director, workshop, player, camera, keys, spawnTank, fx, frame, MODE, saveGame,
+  snapshot: () => snapshot({ state, player, items, tanks, director, world, workshop, infantry, garrisoned, SEED }),
+  guns, infantry, SEED, selectWeapon, viewModel, startReload, placeSandbag, mgAction, toggleTankWeapon, updateDriveControls,
   openStash, doStash, stowPlate, loadShells,
   enterInside, leaveInside, sitAt, pressF, pressQ, dropHeld, tryToggleVehicle, openCrane, doCrane };

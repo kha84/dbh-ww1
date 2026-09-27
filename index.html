@@ -159,12 +159,54 @@
   #pause .resume { margin-top: 20px; color: #9aa98c; font-size: 13px; letter-spacing: 1px; }
   #gameover h2 { color: #ff6b5a; font-size: 40px; }
   #gameover p { font-size: 16px; margin-bottom: 8px; }
-  #gameover button { margin-top: 20px; padding: 10px 28px; font-size: 16px; background: #5c6b4a; color: #fff;
+  #gameover button, #victory button, #pause button { margin: 20px 6px 0; padding: 10px 28px; font-size: 16px; background: #5c6b4a; color: #fff;
     border: 1px solid #9aa98c; border-radius: 6px; cursor: pointer; letter-spacing: 2px; }
+  #gameover button:hover, #victory button:hover, #pause button:hover { background: #6f8058; }
+  #pause .pbtns { margin-top: 8px; }
+  #pause button { font-size: 14px; padding: 8px 20px; }
+  #victory h2 { font-size: 40px; letter-spacing: 4px; color: #9fe07f; margin-bottom: 18px; }
+  #victory p { font-size: 16px; margin-bottom: 8px; }
+
+  /* ---------- Main menu ---------- */
+  #menu { position: fixed; inset: 0; z-index: 120; background: radial-gradient(ellipse at 50% 30%, #2c3324, #121410 70%);
+    display: flex; flex-direction: column; align-items: center; justify-content: center; color: #ddd; overflow-y: auto; padding: 20px; }
+  #menu.hidden { display: none; }
+  #menu h1 { font-size: 54px; letter-spacing: 8px; color: #c9b48a; margin-bottom: 4px; }
+  #menu h1 span { color: #7a8a6a; }
+  #menu h2 { font-size: 28px; letter-spacing: 4px; color: #c9b48a; margin-bottom: 18px; }
+  #menu .sub { color: #8a9478; letter-spacing: 3px; margin-bottom: 34px; }
+  #menu .mbtns { display: flex; flex-direction: column; gap: 12px; width: 420px; max-width: 92vw; }
+  #menu button { background: #3e4a31; color: #eee; border: 1px solid #7f8f6a; border-radius: 7px; cursor: pointer;
+    font-size: 17px; letter-spacing: 1px; padding: 11px 20px; font-family: inherit; }
+  #menu button:hover { background: #55653f; }
+  #menu .mbtns button { text-align: left; font-size: 20px; }
+  #menu button small { display: block; font-size: 12.5px; color: #b5c0a0; letter-spacing: 0; margin-top: 2px; }
+  #menu .mrow { display: flex; align-items: center; gap: 12px; margin: 7px 0; width: 520px; max-width: 94vw; }
+  #menu .mrow label { width: 150px; color: #b7a97f; font-size: 14px; }
+  #menu select, #menu input { flex: 1; background: #1e231a; color: #eee; border: 1px solid #6f7c5c; border-radius: 5px;
+    padding: 8px 10px; font-size: 15px; font-family: inherit; }
+  #menu .tcard { width: 520px; max-width: 94vw; font-size: 13px; color: #aeb99c; background: rgba(0,0,0,.25);
+    border-radius: 6px; padding: 8px 12px; margin: 2px 0 8px; line-height: 1.5; }
+  #menu .tcard b { color: #e8dcc0; }
+  #menu .note { width: 520px; max-width: 94vw; color: #8f9a80; font-size: 13px; margin: 6px 0 10px; }
+  #menu .nsel { display: flex; gap: 6px; }
+  #menu .nsel button { padding: 6px 14px; }
+  #menu .nsel button.on { background: #8a7a4a; border-color: #d8c48a; }
+  #menu .go { background: #6d5a2e; border-color: #d8c48a; }
+  #menu .back { background: transparent; }
+  #menu .slist { width: 560px; max-width: 94vw; max-height: 55vh; overflow-y: auto; }
+  #menu .sitem { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 10px;
+    border-bottom: 1px solid rgba(255,255,255,.1); font-size: 14px; }
+  #menu .sitem small { color: #8f9a80; }
+  #menu .sitem button { padding: 6px 12px; font-size: 14px; margin-left: 6px; }
+  #menu .sitem .del { background: #5a2a22; }
+  #menu .hint { margin-top: 30px; color: #6f7a62; font-size: 13px; }
 </style>
 </head>
 <body>
 <div id="app"></div>
+
+<div id="menu" class="hidden"></div>
 
 <div id="loader">
   <h1>DBH<span>-</span>WW1</h1>
@@ -249,15 +291,22 @@
     <tr><td class="k">Q / 1 2 3</td><td>изнутри: встать-сесть / командир, наводчик, мехвод</td></tr>
     <tr><td class="k">ESC</td><td>пауза</td></tr>
   </table>
-  <div class="resume">нажми ESC или кликни, чтобы продолжить</div>
+  <div class="pbtns"><button id="bResume">Продолжить</button><button id="bSave">Сохранить игру</button><button id="bMenu">Главное меню</button></div>
+  <div class="resume">ESC — продолжить · F5 — быстрое сохранение</div>
   <div id="seedInfo"></div>
+</div>
+
+<div id="victory" class="overlay hidden">
+  <h2>ПОБЕДА</h2>
+  <p id="vStats"></p>
+  <div><button onclick="location.reload()">ЕЩЁ РАЗ</button><button onclick="location.href = location.pathname">ГЛАВНОЕ МЕНЮ</button></div>
 </div>
 
 <div id="gameover" class="overlay hidden">
   <h2>КОНЕЦ ИГРЫ</h2>
   <p id="goReason"></p>
   <p id="goStats"></p>
-  <button onclick="location.reload()">ЗАНОВО</button>
+  <div><button id="bAgain">ЗАНОВО</button><button onclick="location.href = location.pathname">ГЛАВНОЕ МЕНЮ</button></div>
 </div>
 
 <script type="importmap">

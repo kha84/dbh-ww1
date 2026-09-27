@@ -156,6 +156,7 @@ export class Items {
     this.grenadeKey = null;
     this.dropN = 0;
     this.t = 0;
+    this.onTaken = () => {};       // (pickup) after something was picked up
   }
 
   add(id, type, x, z, part = null) {     // part: the tank part ('part'), shells box / weapon / ammo / grenade / can data
@@ -178,6 +179,9 @@ export class Items {
     const y = this.world.heightAt(x, z);
     mesh.position.set(x, y, z);
     mesh.rotation.y = Math.random() * Math.PI * 2;
+    // laid in place (bags of a sandbag wall)
+    const place = part && part.place;
+    if (place) { mesh.position.y = place.y; mesh.rotation.y = place.rot; if (mesh.userData.glow) mesh.userData.glow.visible = false; }
     this.scene.add(mesh);
     this.pickups.set(id, { id, type, mesh, pos: mesh.position, part: type === 'part' ? part : null,
                            shells: type === 'shells' ? part : null, data: part });
@@ -270,7 +274,7 @@ export class Items {
     if (!p) return;
     this.scene.remove(p.mesh);
     this.pickups.delete(id);
-    if (taken) this.taken.add(id);
+    if (taken) { this.taken.add(id); this.onTaken(p); }
   }
 
   nearest(pos, maxD = 2.6) {
@@ -337,7 +341,7 @@ export class Items {
     this.t += dt;
     for (const p of this.pickups.values()) {
       const g = p.mesh.userData.glow;
-      g.material.opacity = 0.55 + 0.35 * Math.sin(this.t * 3 + p.pos.x);
+      if (g) g.material.opacity = 0.55 + 0.35 * Math.sin(this.t * 3 + p.pos.x);
     }
   }
 }

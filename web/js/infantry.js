@@ -1,11 +1,26 @@
-// Infantry: enemy riflemen / machine gunners / tank crews that bailed out. Procedural low-poly soldiers,
-// simple AI (guard, engage, flee from tanks, throw grenades), bullet / blast / run-over damage.
+// Infantry: enemy riflemen / machine gunners / tank crews that bailed out. Low-poly soldiers with knees
+// (stand / crouch / prone, walk / run / crawl, throw, reload, death) and a squad AI:
+//   - idle: sentries watching the road, men sitting, short patrols, facing a noise they heard
+//   - perception: sight (field of view, range, stance of the target), hearing gunfire and explosions
+//   - cover: houses, walls, sandbags, berms, wrecks, trees and terrain folds hiding them from the threat;
+//     low cover -> lie down / fire kneeling, high cover -> hide and step out to fire
+//   - suppression from bullets passing close and blasts: they keep their heads down and shoot worse
+//   - squads bound forward by fire teams, flank a target they lost, throw grenades at men in cover,
+//     dodge grenades, fall back when morale breaks, hunt tanks with anti-tank grenades or hide from them
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { WATER_LEVEL } from './world.js';
+import { WATER_LEVEL, segBox } from './world.js';
 import { WEAPONS, GRENADES, SMALL_CATS, makeWeapon, bakedWeaponMesh, throwVelocity } from './weapons.js';
 
 const wrap = a => Math.atan2(Math.sin(a), Math.cos(a));
+const clamp = THREE.MathUtils.clamp;
+const rand = (a, b) => a + Math.random() * (b - a);
+
+export const STANCE = {
+  stand:  { h: 1.78, eye: 1.6, speed: 1 },
+  crouch: { h: 1.2, eye: 1.05, speed: 0.45 },
+  prone:  { h: 0.55, eye: 0.38, speed: 0.14 },
+};
 
 // ===================================================================== model
 const UNIFORMS = {
@@ -15,7 +30,7 @@ const UNIFORMS = {
 const SKIN = new THREE.Color(0xc39a7a);
 const SMAT = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, metalness: 0.05 });
 
-// merge colored boxes / spheres into one geometry: parts = [[geo, color, x, y, z, sx, sy, sz]]
+// merge colored boxes / spheres into one geometry: parts = [[geo, color, x, y, z, sx, sy, sz, rx]]
 function mergeParts(parts) {
   const geos = [];
   const m = new THREE.Matrix4(), q = new THREE.Quaternion();
@@ -41,21 +56,21 @@ function soldierGeos(kind) {
   if (geoCache[kind]) return geoCache[kind];
   const U = UNIFORMS[kind];
   geoCache[kind] = {
-    // upper body: origin at the hips
-    upper: mergeParts([
+    upper: mergeParts([                                        // origin at the hips
       [BOX, U.cloth, 0, 0.28, 0, 0.4, 0.56, 0.24],
-      [BOX, U.dark, 0, 0.03, 0, 0.42, 0.08, 0.26],                   // belt
-      [BOX, U.dark, 0.1, 0.36, 0.13, 0.12, 0.14, 0.05],              // pouches
+      [BOX, U.dark, 0, 0.03, 0, 0.42, 0.08, 0.26],             // belt
+      [BOX, U.dark, 0.1, 0.36, 0.13, 0.12, 0.14, 0.05],        // pouches
       [BOX, U.dark, -0.1, 0.36, 0.13, 0.12, 0.14, 0.05],
-      [BOX, SKIN, 0, 0.6, 0, 0.1, 0.08, 0.1],                        // neck
-      [SPH, SKIN, 0, 0.72, 0.01, 0.105, 0.125, 0.11],                // head
-      [HEMI, U.helmet, 0, 0.75, 0, 0.14, 0.12, 0.15],                // helmet
-      [BOX, U.helmet, 0, 0.75, 0, 0.3, 0.015, 0.3],                  // brim
+      [BOX, U.dark, 0, 0.3, -0.15, 0.3, 0.3, 0.1],             // pack
+      [BOX, SKIN, 0, 0.6, 0, 0.1, 0.08, 0.1],                  // neck
+      [SPH, SKIN, 0, 0.72, 0.01, 0.105, 0.125, 0.11],          // head
+      [HEMI, U.helmet, 0, 0.75, 0, 0.14, 0.12, 0.15],          // helmet
+      [BOX, U.helmet, 0, 0.75, 0, 0.3, 0.015, 0.3],            // brim
     ]),
-    leg: mergeParts([
-      [BOX, U.cloth, 0, -0.24, 0, 0.15, 0.5, 0.17],
-      [BOX, U.cloth, 0, -0.64, 0, 0.13, 0.36, 0.15],
-      [BOX, U.boots, 0, -0.86, 0.04, 0.14, 0.12, 0.26],
+    thigh: mergeParts([[BOX, U.cloth, 0, -0.23, 0, 0.15, 0.48, 0.17]]),
+    shin: mergeParts([
+      [BOX, U.cloth, 0, -0.2, 0, 0.13, 0.4, 0.15],
+      [BOX, U.boots, 0, -0.41, 0.04, 0.14, 0.12, 0.26],
     ]),
     arm: mergeParts([
       [BOX, U.cloth, 0, -0.16, 0, 0.1, 0.34, 0.11],
@@ -69,8 +84,11 @@ function soldierGeos(kind) {
 function buildSoldier(kind, weaponKey) {
   const G = soldierGeos(kind);
   const root = new THREE.Group();
-  const body = new THREE.Group();                 // pivots at the feet when the soldier falls
+  const body = new THREE.Group();                 // pivots at the feet when the soldier falls / lies down
   root.add(body);
+  const hips = new THREE.Group();
+  hips.position.y = 0.92;
+  body.add(hips);
   const mk = (geo, parent, x, y, z) => {
     const g = new THREE.Group();
     g.position.set(x, y, z);
@@ -80,21 +98,23 @@ function buildSoldier(kind, weaponKey) {
     parent.add(g);
     return g;
   };
-  const legL = mk(G.leg, body, 0.1, 0.92, 0), legR = mk(G.leg, body, -0.1, 0.92, 0);
-  const upper = mk(G.upper, body, 0, 0.92, 0);
+  const thighL = mk(G.thigh, hips, 0.1, 0, 0), thighR = mk(G.thigh, hips, -0.1, 0, 0);
+  const shinL = mk(G.shin, thighL, 0, -0.46, 0), shinR = mk(G.shin, thighR, 0, -0.46, 0);
+  const upper = mk(G.upper, hips, 0, 0, 0);
   const armL = mk(G.arm, upper, 0.25, 0.52, 0), armR = mk(G.arm, upper, -0.25, 0.52, 0);
   const W = WEAPONS[weaponKey];
   const small = SMALL_CATS.includes(W.cat);
   const wm = bakedWeaponMesh(weaponKey);
-  const gun = wm.group;
-  if (small) { gun.position.set(-0.12, 0.38, 0.5); armR.rotation.set(-1.45, 0, 0.12); armL.rotation.set(-1.4, 0, -0.35); }
-  else { gun.position.set(-0.08, 0.36, 0.26); armR.rotation.set(-1.25, 0, 0.1); armL.rotation.set(-1.45, 0, -0.55); }
-  upper.add(gun);
-  return { root, body, upper, legL, legR, armL, armR, gun, muzzle: wm.muzzle };
+  const gunPivot = new THREE.Group();             // turns the gun between "low ready" and aimed
+  gunPivot.position.set(small ? -0.12 : -0.08, small ? 0.38 : 0.36, small ? 0.5 : 0.26);
+  gunPivot.add(wm.group);
+  upper.add(gunPivot);
+  return { root, body, hips, upper, thighL, thighR, shinL, shinR, armL, armR, gun: gunPivot, muzzle: wm.muzzle, small };
 }
 
 // ===================================================================== soldier
-const _v = new THREE.Vector3(), _w = new THREE.Vector3();
+const _v = new THREE.Vector3(), _w = new THREE.Vector3(), _u = new THREE.Vector3();
+const _la = new THREE.Vector3(), _lb = new THREE.Vector3(), _inv = new THREE.Matrix4();
 let SOLDIER_ID = 0;
 
 export class Soldier {
@@ -110,32 +130,53 @@ export class Soldier {
     this.root.position.copy(pos);
     this.pos = this.root.position;
     this.heading = o.heading || 0;
-    this.post = pos.clone();
+    this.post = pos.clone();                   // where it stands guard
+    this.guardDir = o.guardDir ?? this.heading;
     this.squad = o.squad || 0;
-    this.mode = o.mode || 'guard';             // guard | flee
+    this.team2 = 0;                            // fire team inside the squad (bounding)
+    const W = WEAPONS[o.key];
+    this.role = W.cat === 'mg' ? 'mg' : Object.keys(this.grenades).some(k => GRENADES[k].pen) ? 'at' : 'rifle';
+    this.state = o.mode === 'flee' ? 'flee' : 'idle';     // idle | alert | combat | retreat | flee
     this.fleeFrom = o.fleeFrom || null;
     this.fleeT = o.mode === 'flee' ? 4 + Math.random() * 3 : 0;
     this.skill = o.skill ?? (0.6 + Math.random() * 0.6);   // aim error multiplier (lower = better)
     this.hp = 100;
     this.alive = true;
-    this.height = 1.78;
+    this.stance = 'stand';
+    this.height = STANCE.stand.h;
     this.alert = false;
     this.lastSeen = -1e9;
     this.lastPos = new THREE.Vector3();
+    this.heard = null;                         // { pos, t } a noise to look into
     this.los = false;
     this.losT = Math.random() * 0.4;
+    this.thinkT = Math.random() * 0.3;
     this.fireCd = 1 + Math.random();
     this.burst = 0;
     this.reloadT = 0;
     this.throwCd = 3 + Math.random() * 4;
-    this.wander = null;
-    this.wanderT = Math.random() * 5;
-    this.strafe = 0;
-    this.strafeT = 0;
+    this.throwAnim = 0;
+    this.cover = null;                         // { x, z, kind: 'tall'|'mid'|'low', t }
+    this.coverT = 0;
+    this.peek = false;
+    this.peekT = rand(0.5, 1.5);
+    this.peekMiss = 0;
+    this.side = null;                          // step-aside point to fire past tall cover
+    this.suppress = 0;
+    this.morale = 0.8 + Math.random() * 0.4;
+    this.dodge = null;                         // grenade to run from
+    this.moveTo = null;
+    this.moveSpeed = 0;
+    this.detour = 0; this.detourT = 0; this.stuckT = 0;
+    this.idleAct = 'watch'; this.idleT = Math.random() * 6;
+    this.lookYaw = 0;
+    this.patrol = o.patrol || null; this.patrolI = 0;
     this.phase = Math.random() * 6;
     this.speedNow = 0;
     this.deathT = 0;
     this.pitch = 0;
+    this.aimK = 0;                             // 0 low ready .. 1 aiming
+    this.pose = { hipsY: 0.92, thigh: 0, shin: 0, torso: 0, body: 0, bodyZ: 0 };
     scene.add(this.root);
   }
 
@@ -143,8 +184,11 @@ export class Soldier {
     if (!this.alive) return;
     this.hp -= dmg;
     this.hurtT = 0.25;
+    this.morale -= 0.15;
+    this.suppress = Math.min(1, this.suppress + 0.5);
     if (this.hp <= 0) { this.die(owner, dir); return; }
     this.alertReq = true;
+    if (owner && owner.player && this.hitFrom === undefined) this.hitFrom = true;
   }
 
   die(owner, dir) {
@@ -157,10 +201,49 @@ export class Soldier {
 
   dispose() { this.scene.remove(this.root); }
 
-  eye(out = new THREE.Vector3()) { return out.set(this.pos.x, this.pos.y + 1.55, this.pos.z); }
+  eye(out = new THREE.Vector3(), stance = this.stance) { return out.set(this.pos.x, this.pos.y + STANCE[stance].eye, this.pos.z); }
   muzzleWorld(out = new THREE.Vector3()) {
     this.root.updateMatrixWorld(true);
     return this.m.gun.localToWorld(out.set(0, 0.04, this.m.muzzle));
+  }
+  setStance(s) { this.stance = s; this.height = STANCE[s].h; }
+  goto(x, z, speed) {
+    if (!this.moveTo) this.moveTo = new THREE.Vector3();
+    this.moveTo.set(x, 0, z);
+    this.moveSpeed = speed;
+  }
+  stop() { this.moveTo = null; this.moveSpeed = 0; }
+  atGoal(r = 0.7) { return !this.moveTo || Math.hypot(this.moveTo.x - this.pos.x, this.moveTo.z - this.pos.z) < r; }
+
+  // ------------------------------------------------ perception
+  perceive(dt, ctx) {
+    const tgt = ctx.target;
+    if (!tgt) { this.los = false; return Infinity; }
+    const dist = Math.hypot(tgt.pos.x - this.pos.x, tgt.pos.z - this.pos.z);
+    this.losT -= dt;
+    if (this.losT <= 0) {
+      this.losT = 0.3 + Math.random() * 0.25;
+      const tp = _w.copy(tgt.pos); tp.y += tgt.isTank ? 1.6 : (tgt.crouch ? 0.9 : 1.45);
+      const range = tgt.isTank ? 260 : 170;
+      this.los = dist < range && ctx.ai.clearLine(this.eye(_v), tp, tgt.isTank ? tgt.tank : null);
+      // field of view: things behind the soldier are noticed only close by (or once it knows about them)
+      if (this.los && !this.alert) {
+        const off = Math.abs(wrap(Math.atan2(tgt.pos.x - this.pos.x, tgt.pos.z - this.pos.z) - this.heading - this.lookYaw));
+        const spot = (tgt.isTank ? 220 : 120) * (tgt.crouch ? 0.55 : 1) * (this.state === 'idle' ? 0.8 : 1.2) *
+                     (Math.hypot(tgt.vel.x, tgt.vel.z) > 3 ? 1.3 : 1);
+        if ((off > 1.9 && dist > 12) || dist > spot) this.los = false;
+      }
+    }
+    if (this.alertReq || this.los) {
+      if (!this.alert) { this.fireCd = 1.0 + Math.random() * 1.6; ctx.alertSquad(this); }
+      this.alert = true;
+      if (this.los) { this.lastSeen = ctx.now; this.lastPos.copy(tgt.pos); }
+      else if (this.alertReq && ctx.now - this.lastSeen > 5) { this.lastSeen = ctx.now - 4; this.lastPos.copy(tgt.pos).add(_u.set(rand(-6, 6), 0, rand(-6, 6))); }
+      if (this.state === 'idle' || this.state === 'alert') this.state = 'combat';
+    }
+    this.alertReq = false;
+    if (this.alert && ctx.now - this.lastSeen > 30) { this.alert = false; this.state = 'alert'; this.heard = { pos: this.lastPos.clone(), t: ctx.now }; }
+    return dist;
   }
 
   // ------------------------------------------------ AI
@@ -169,105 +252,247 @@ export class Soldier {
     const W = WEAPONS[this.weapon.key];
     const tgt = ctx.target;
     const now = ctx.now;
-    let dist = Infinity;
-    if (tgt) {
-      dist = Math.hypot(tgt.pos.x - this.pos.x, tgt.pos.z - this.pos.z);
-      this.losT -= dt;
-      if (this.losT <= 0) {
-        this.losT = 0.35 + Math.random() * 0.25;
-        const range = tgt.isTank ? 230 : 150;
-        const tp = _w.copy(tgt.pos); tp.y += tgt.isTank ? 1.6 : (tgt.crouch ? 0.9 : 1.4);
-        this.los = dist < range && ctx.world.lineOfSight(this.eye(_v), tp, 4) &&
-                   !ctx.world.raycastObstacles(this.eye(_v), tp);
-      }
-      if (this.alertReq || (this.los && (this.alert || dist < (tgt.isTank ? 200 : 110)))) {
-        if (!this.alert) { this.fireCd = 1.2 + Math.random() * 1.6; ctx.alertSquad(this); }
-        this.alert = true;
-        this.lastSeen = now;
-        this.lastPos.copy(tgt.pos);
-      }
-      this.alertReq = false;
-    } else this.los = false;
-    if (this.alert && now - this.lastSeen > 18) this.alert = false;
+    const dist = this.perceive(dt, ctx);
+    this.suppress = Math.max(0, this.suppress - dt * 0.25);
+    this.morale = Math.min(1.2, this.morale + dt * (this.suppress < 0.2 ? 0.025 : -0.02 * this.suppress));
+    this.coverT += dt;
+    if (this.throwAnim > 0) this.throwAnim -= dt;
 
-    let mvx = 0, mvz = 0, speed = 0;
+    // ---- decisions a few times a second
+    this.thinkT -= dt;
+    if (this.thinkT <= 0) {
+      this.thinkT = 0.25 + Math.random() * 0.2;
+      this.decide(ctx, W, tgt, dist);
+    }
+
+    // ---- facing
     let face = null;
-    if (this.mode === 'flee' && this.fleeT > 0) {
+    if (this.dodge || this.state === 'flee' || (this.moveTo && this.moveSpeed > 3)) face = null;
+    else if ((this.state === 'combat' || this.state === 'retreat') && tgt) face = Math.atan2(this.lastPos.x - this.pos.x, this.lastPos.z - this.pos.z);
+    else if (this.state === 'alert' && this.heard) face = Math.atan2(this.heard.pos.x - this.pos.x, this.heard.pos.z - this.pos.z);
+    else if (this.state === 'idle' && !this.moveTo) face = this.idleAct === 'chat' && this.chatWith ? Math.atan2(this.chatWith.pos.x - this.pos.x, this.chatWith.pos.z - this.pos.z) : this.guardDir;
+    if (face === null && this.moveTo) face = Math.atan2(this.moveTo.x - this.pos.x, this.moveTo.z - this.pos.z) + this.detour;
+    if (face !== null) this.heading += clamp(wrap(face - this.heading), -5 * dt, 5 * dt);
+    // idle sentries scan left and right
+    this.lookYaw = this.state === 'idle' && this.idleAct === 'watch' ? Math.sin(now * 0.4 + this.id) * 0.7 : this.lookYaw * 0.9;
+
+    // ---- shooting
+    this.fireCd -= dt;
+    if (this.reloadT > 0) {
+      this.reloadT -= dt;
+      if (this.reloadT <= 0) this.weapon.mag = W.mag;
+    } else if ((this.state === 'combat' || this.state === 'retreat') && tgt && this.los && !this.dodge && this.throwAnim <= 0) {
+      const toT = Math.atan2(tgt.pos.x - this.pos.x, tgt.pos.z - this.pos.z);
+      const moving = this.speedNow > 0.8;
+      const canWhileMoving = W.auto && this.speedNow < 3.5;
+      const hidden = this.cover && !this.peek && this.atCover();
+      const wantFire = !hidden && (!moving || canWhileMoving) && (!tgt.isTank || this.role === 'mg' || Math.random() < 0.3);
+      if (wantFire && this.fireCd <= 0 && Math.abs(wrap(toT - this.heading)) < 0.3 && dist < W.range * 1.8) {
+        if (this.weapon.mag <= 0) this.reloadT = W.reload * 1.3;
+        else this.shoot(ctx, W, tgt, dist, moving);
+      }
+    }
+    if (this.weapon.mag <= 0 && this.reloadT <= 0) this.reloadT = W.reload * 1.3;
+    if (tgt && this.state !== 'idle') this.pitch = Math.atan2(tgt.pos.y + (tgt.isTank ? 1.2 : 1.0) - (this.pos.y + STANCE[this.stance].eye), Math.max(1, dist));
+    else this.pitch *= 0.9;
+
+    this.move(dt, ctx);
+    this.animate(dt);
+  }
+
+  // the part of the AI that picks what to do (called a few times a second)
+  decide(ctx, W, tgt, dist) {
+    const now = ctx.now;
+    // live grenades close by: run
+    this.dodge = null;
+    for (const g of ctx.guns.grenades) {
+      if (g.owner && g.owner.soldier) continue;
+      const d = Math.hypot(g.pos.x - this.pos.x, g.pos.z - this.pos.z);
+      if (d < g.D.r + 2.5 && (g.D.fuse ? g.t < 3.2 : true)) { this.dodge = g; break; }
+    }
+    if (this.dodge) {
+      const a = Math.atan2(this.pos.x - this.dodge.pos.x, this.pos.z - this.dodge.pos.z) + (this.id % 2 ? 0.3 : -0.3);
+      this.setStance('stand');
+      this.goto(this.pos.x + Math.sin(a) * 12, this.pos.z + Math.cos(a) * 12, 5.6);
+      this.cover = null;
+      return;
+    }
+
+    if (this.state === 'flee') {
       // bailed-out crew: run away from the burning tank first
-      this.fleeT -= dt;
+      this.fleeT -= 0.35;
       const f = this.fleeFrom;
       const a = f ? Math.atan2(this.pos.x - f.x, this.pos.z - f.z) : this.heading;
-      mvx = Math.sin(a); mvz = Math.cos(a); speed = 5.2;
-      face = a;
-      if (this.fleeT <= 0) { this.mode = 'guard'; this.post.copy(this.pos); if (tgt) { this.alert = true; this.lastSeen = now; this.lastPos.copy(tgt.pos); } }
-    } else if (this.alert && tgt) {
-      const toT = Math.atan2(tgt.pos.x - this.pos.x, tgt.pos.z - this.pos.z);
-      face = toT;
-      const at = Object.keys(this.grenades).find(k => GRENADES[k].pen && this.grenades[k] > 0);
-      const he = Object.keys(this.grenades).find(k => !GRENADES[k].pen && this.grenades[k] > 0);
-      this.throwCd -= dt;
-      if (tgt.isTank) {
-        if (at && dist < 45) {
-          // tank hunter: close in and throw the anti-tank grenade
-          if (dist > 13) { mvx = Math.sin(toT); mvz = Math.cos(toT); speed = 5.4; }
-          if (dist < 18 && this.throwCd <= 0 && this.los) this.throwAt(ctx, at, _v.copy(tgt.pos).setY(tgt.pos.y + 1.4));
-        } else if (dist < 16) {
-          const a = toT + Math.PI + (this.id % 2 ? 0.6 : -0.6);
-          mvx = Math.sin(a); mvz = Math.cos(a); speed = 5.2;
-          face = a;
-        }
-      } else {
-        const want = Math.min(W.range * 0.75, 85);
-        if (!this.los) {
-          const lp = this.lastPos;
-          if (Math.hypot(lp.x - this.pos.x, lp.z - this.pos.z) > 3) {
-            const a = Math.atan2(lp.x - this.pos.x, lp.z - this.pos.z);
-            mvx = Math.sin(a); mvz = Math.cos(a); speed = 4.2;
-          }
-        } else if (dist > want) {
-          mvx = Math.sin(toT); mvz = Math.cos(toT); speed = 3.2;
-        } else {
-          this.strafeT -= dt;
-          if (this.strafeT <= 0) { this.strafeT = 1.5 + Math.random() * 2.5; this.strafe = Math.random() < 0.5 ? 0 : (Math.random() < 0.5 ? -1 : 1); }
-          if (this.strafe) { const a = toT + this.strafe * Math.PI / 2; mvx = Math.sin(a); mvz = Math.cos(a); speed = 2.2; }
-        }
-        if (he && this.los && dist > 9 && dist < 30 && this.throwCd <= 0 && Math.random() < dt * 0.25) {
-          this.throwAt(ctx, he, _v.copy(tgt.pos));
-        }
+      this.setStance('stand');
+      this.goto(this.pos.x + Math.sin(a) * 10, this.pos.z + Math.cos(a) * 10, 5.2);
+      if (this.fleeT <= 0) {
+        this.state = tgt ? 'combat' : 'idle';
+        this.post.copy(this.pos);
+        if (tgt) { this.alert = true; this.lastSeen = now; this.lastPos.copy(tgt.pos); }
       }
-      // shooting
-      this.fireCd -= dt;
-      if (this.reloadT > 0) {
-        this.reloadT -= dt;
-        if (this.reloadT <= 0) this.weapon.mag = W.mag;
-      } else if (this.los && this.fireCd <= 0 && Math.abs(wrap(toT - this.heading)) < 0.3 && dist < W.range * 1.8) {
-        if (this.weapon.mag <= 0) this.reloadT = W.reload * 1.3;
-        else this.shoot(ctx, W, tgt, dist, speed > 0);
-      }
-      this.pitch = Math.atan2(tgt.pos.y + (tgt.isTank ? 1.2 : 1.0) - (this.pos.y + 1.4), Math.max(1, dist));
-    } else {
-      // guard: loiter around the post
-      this.pitch *= 0.9;
-      this.wanderT -= dt;
-      if (this.wanderT <= 0) {
-        this.wanderT = 4 + Math.random() * 8;
-        this.wander = Math.random() < 0.55 ? null
-          : new THREE.Vector3(this.post.x + (Math.random() - 0.5) * 14, 0, this.post.z + (Math.random() - 0.5) * 14);
-      }
-      if (this.wander) {
-        const dx = this.wander.x - this.pos.x, dz = this.wander.z - this.pos.z;
-        if (Math.hypot(dx, dz) > 0.8) { const a = Math.atan2(dx, dz); mvx = Math.sin(a); mvz = Math.cos(a); speed = 1.4; face = a; }
-        else this.wander = null;
-      }
+      return;
     }
 
-    // turn & move
-    if (face !== null) {
-      const d = wrap(face - this.heading);
-      this.heading += THREE.MathUtils.clamp(d, -5 * dt, 5 * dt);
+    if (this.state === 'idle') { this.decideIdle(ctx); return; }
+    if (this.state === 'alert') { this.decideAlert(ctx); return; }
+    if (!tgt) { this.state = 'idle'; this.stop(); return; }
+
+    // morale breaks -> fall back, recovers after a while
+    if (this.state === 'combat' && this.morale < 0.25) { this.state = 'retreat'; this.retreatT = rand(8, 14); this.cover = null; }
+    if (this.state === 'retreat') {
+      this.retreatT -= 0.35;
+      if (this.retreatT <= 0 && this.morale > 0.45) { this.state = 'combat'; this.cover = null; }
     }
-    this.move(dt, ctx, mvx * speed, mvz * speed);
-    this.animate(dt);
+
+    if (tgt.isTank) this.decideVsTank(ctx, W, tgt, dist);
+    else this.decideVsFoot(ctx, W, tgt, dist);
+  }
+
+  decideIdle(ctx) {
+    this.setStance(this.idleAct === 'sit' ? 'crouch' : 'stand');
+    this.idleT -= 0.35;
+    if (this.idleT <= 0) {
+      this.idleT = rand(8, 20);
+      const r = Math.random();
+      this.idleAct = this.patrol && r < 0.45 ? 'patrol' : r < 0.55 ? 'walk' : r < 0.75 ? 'sit' : r < 0.85 ? 'chat' : 'watch';
+      this.chatWith = this.idleAct === 'chat' ? ctx.ai.squadMates(this).find(s => s.pos.distanceTo(this.pos) < 12) || null : null;
+      if (this.idleAct === 'walk') {
+        const a = Math.random() * Math.PI * 2, d = rand(3, 8);
+        this.goto(this.post.x + Math.sin(a) * d, this.post.z + Math.cos(a) * d, 1.3);
+      } else if (this.idleAct !== 'patrol') this.goto(this.post.x, this.post.z, 1.3);
+    }
+    if (this.idleAct === 'patrol' && this.patrol && this.atGoal(1.2)) {
+      this.patrolI = (this.patrolI + 1) % this.patrol.length;
+      const p = this.patrol[this.patrolI];
+      this.goto(p.x, p.z, 1.3);
+    }
+    if (this.heard && ctx.now - this.heard.t < 2) { this.state = 'alert'; this.alertT = 0; }
+  }
+
+  // heard something: take cover facing it, then carefully look into it
+  decideAlert(ctx) {
+    const h = this.heard;
+    if (!h) { this.state = 'idle'; return; }
+    this.alertT = (this.alertT || 0) + 0.35;
+    if (this.alertT < 10) {
+      if (!this.cover || this.coverT > 12) this.takeCover(ctx, h.pos, { pref: 30, radius: 18 });
+      if (this.cover) this.gotoCover(2.5);
+      this.setStance(this.atCover() ? this.hideStance() : 'crouch');
+    } else if (this.alertT < 28) {
+      this.cover = null;
+      this.setStance('crouch');
+      if (this.atGoal(3)) this.goto(h.pos.x + rand(-5, 5), h.pos.z + rand(-5, 5), 1.6);
+    } else { this.state = 'idle'; this.heard = null; this.goto(this.post.x, this.post.z, 1.3); }
+  }
+
+  decideVsFoot(ctx, W, tgt, dist) {
+    const now = ctx.now;
+    const retreat = this.state === 'retreat';
+    const sq = ctx.ai.squadOf(this);
+    const unseen = now - this.lastSeen;
+    let pref = retreat ? Math.min(W.range, dist + 40) : clamp(W.range * 0.55, 18, 70);
+    if (sq && sq.advance === this.team2 && !retreat) pref = Math.max(14, dist - 18);
+    // lost the target: flank / search its last position
+    let flank = 0;
+    if (!retreat && unseen > 6) { flank = this.id % 2 ? 1 : -1; pref = Math.max(12, Math.min(pref, dist * 0.7)); }
+    // (re)pick cover when there is none, it was compromised, or the fire team bounds forward
+    const exposed = this.cover && this.atCover() && this.los && !this.peek && this.coverExposedT > 1.2;
+    if (!this.cover || exposed || (this.coverT > 14 && !this.los) || this.peekMiss >= 3 || (flank && this.coverT > 8)) {
+      this.takeCover(ctx, this.lastPos, { pref, radius: retreat ? 40 : 28, flank, retreat });
+      this.peekMiss = 0;
+    }
+    if (this.cover) {
+      this.gotoCover(this.suppress > 0.5 ? 5.4 : this.los ? 4.8 : 3.4);
+      if (this.atCover()) this.peekCycle(ctx, W, dist);
+      else this.setStance(this.moveSpeed > 3 ? 'stand' : 'crouch');
+    } else {
+      // no cover around: lie down in the open (MGs deploy), or rush when far
+      if (dist > pref + 25 && !this.los) { this.setStance('stand'); this.goto(this.lastPos.x, this.lastPos.z, 3.2); }
+      else { this.stop(); this.setStance(this.role === 'mg' || this.suppress > 0.4 ? 'prone' : 'crouch'); }
+    }
+    // grenade at a man hiding near us
+    const he = Object.keys(this.grenades).find(k => !GRENADES[k].pen && this.grenades[k] > 0);
+    const lp = this.lastPos, lpd = Math.hypot(lp.x - this.pos.x, lp.z - this.pos.z);
+    if (he && this.throwCd <= 0 && lpd > 9 && lpd < 30 && (tgt.crouch || unseen > 2) && unseen < 12 && Math.random() < 0.25) {
+      this.throwAt(ctx, he, _v.copy(lp));
+    }
+    this.throwCd -= 0.35;
+  }
+
+  decideVsTank(ctx, W, tgt, dist) {
+    const at = Object.keys(this.grenades).find(k => GRENADES[k].pen && this.grenades[k] > 0);
+    const tp = tgt.pos;
+    this.throwCd -= 0.35;
+    // a tank bearing down: get out of its way
+    if (dist < 13) {
+      const toMe = Math.atan2(this.pos.x - tp.x, this.pos.z - tp.z);
+      const tankMoving = Math.hypot(tgt.vel.x, tgt.vel.z) > 1;
+      if (!(at && this.morale > 0.4) || tankMoving) {
+        const a = toMe + (this.id % 2 ? 1.1 : -1.1);
+        this.setStance('stand');
+        this.goto(this.pos.x + Math.sin(a) * 10, this.pos.z + Math.cos(a) * 10, 5.3);
+        this.cover = null;
+        if (at && dist < 16 && this.los && this.throwCd <= 0) this.throwAt(ctx, at, _v.copy(tp).setY(tp.y + 1.4));
+        return;
+      }
+    }
+    if (at && this.morale > 0.4 && dist < 70 && this.state !== 'retreat') {
+      // tank hunter: close in from cover to cover, preferably from the side, and throw
+      if (!this.cover || this.atCover() && (this.coverT > 3 || dist > 20)) this.takeCover(ctx, tp, { pref: 12, radius: 22, tank: tgt.tank, side: true });
+      if (this.cover) { this.gotoCover(5.2); this.setStance(this.atCover() ? 'crouch' : 'stand'); }
+      else { this.setStance('crouch'); this.goto(tp.x, tp.z, 3.5); }
+      if (dist < 18 && this.los && this.throwCd <= 0) this.throwAt(ctx, at, _v.copy(tp).setY(tp.y + 1.4));
+      return;
+    }
+    // no means against armour: hide from its guns, now and then take a shot at the vision slits
+    if (!this.cover || (this.atCover() && this.los && this.coverExposedT > 1) || this.coverT > 20) {
+      this.takeCover(ctx, tp, { pref: this.state === 'retreat' ? 90 : 45, radius: 35, tank: tgt.tank });
+    }
+    if (this.cover) {
+      this.gotoCover(5.2);
+      if (this.atCover()) this.peekCycle(ctx, W, dist, 0.35);
+      else this.setStance('stand');
+    } else { this.stop(); this.setStance('prone'); }
+  }
+
+  // hide behind cover, now and then pop up / step out to fire
+  peekCycle(ctx, W, dist, eager = 1) {
+    this.peekT -= 0.35;
+    const sq = ctx.ai.squadOf(this);
+    const covering = sq && sq.advance !== null && sq.advance !== this.team2;      // the other team is bounding: fire more
+    if (this.peekT <= 0) {
+      this.peek = !this.peek;
+      if (this.peek) {
+        this.peekT = rand(1.5, 3.2) * (covering ? 1.6 : 1) * eager;
+        this.side = this.cover.kind === 'tall' ? ctx.ai.sidePoint(this, this.lastPos) : null;
+      } else {
+        this.peekT = rand(1.2, 2.8) + this.suppress * 3 + (this.weapon.mag < WEAPONS[this.weapon.key].mag * 0.4 ? 1.5 : 0);
+        this.side = null;
+        if (!this.losWhilePeek) this.peekMiss++;
+        this.losWhilePeek = false;
+        if (this.weapon.mag < WEAPONS[this.weapon.key].mag * 0.5 && this.reloadT <= 0) this.reloadT = WEAPONS[this.weapon.key].reload * 1.3;
+      }
+    }
+    if (this.suppress > 0.75) this.peek = false;
+    if (this.peek && this.los) this.losWhilePeek = true;
+    this.setStance(this.peek ? this.peekStance() : this.hideStance());
+    this.coverExposedT = this.los && !this.peek ? (this.coverExposedT || 0) + 0.35 : 0;
+  }
+
+  hideStance() { const k = this.cover && this.cover.kind; return k === 'low' ? 'prone' : 'crouch'; }
+  peekStance() { const k = this.cover && this.cover.kind; return k === 'low' ? 'crouch' : k === 'mid' ? 'stand' : this.role === 'mg' ? 'crouch' : 'stand'; }
+  atCover() { return this.cover && Math.hypot(this.cover.x - this.pos.x, this.cover.z - this.pos.z) < 1.1; }
+  gotoCover(speed) {
+    const c = this.cover;
+    const p = this.peek && this.side ? this.side : c;
+    this.goto(p.x, p.z, this.atCover() ? 1.2 : speed);
+  }
+  takeCover(ctx, threat, o) {
+    const c = ctx.ai.findCover(this, threat, o);
+    this.cover = c;
+    this.coverT = 0;
+    this.peek = false;
+    this.peekT = rand(0.6, 1.6);
   }
 
   shoot(ctx, W, tgt, dist, moving) {
@@ -275,38 +500,48 @@ export class Soldier {
     const origin = this.eye(new THREE.Vector3());
     const aim = _w.copy(tgt.pos);
     aim.y += tgt.isTank ? 1.3 + Math.random() * 0.6 : (tgt.crouch ? 0.8 : 1.15);
-    // lead a moving target a little
-    aim.addScaledVector(tgt.vel, Math.min(0.4, dist / 600));
+    aim.addScaledVector(tgt.vel, Math.min(0.4, dist / 600));          // lead a moving target a little
     const dir = aim.sub(origin).normalize();
-    const err = ((W.auto ? W.spread * 0.8 : W.aim * 2) + 0.02 + dist * 0.00022) * this.skill * (moving ? 1.8 : 1);
+    const stanceK = this.stance === 'prone' ? 0.6 : this.stance === 'crouch' ? 0.8 : 1;
+    const err = ((W.auto ? W.spread * 0.8 : W.aim * 2) + 0.02 + dist * 0.00022) * this.skill * (moving ? 1.8 : 1) * stanceK * (1 + this.suppress * 1.5);
     dir.x += (Math.random() - 0.5) * 2 * err;
     dir.y += (Math.random() - 0.5) * 2 * err;
     dir.z += (Math.random() - 0.5) * 2 * err;
     dir.normalize();
     ctx.guns.fire(origin, dir, W, { soldier: this }, muzzle);
     this.weapon.mag--;
+    this.aimK = 1;
     if (W.auto) {
-      if (this.burst <= 0) this.burst = 3 + Math.floor(Math.random() * (W.cat === 'mg' ? 8 : 4));
+      if (this.burst <= 0) this.burst = 3 + Math.floor(Math.random() * (W.cat === 'mg' ? (this.stance === 'prone' ? 12 : 8) : 4));
       this.burst--;
-      this.fireCd = this.burst > 0 ? 60 / W.rpm : 0.8 + Math.random() * 1.5;
-    } else this.fireCd = 60 / W.rpm + 0.7 + Math.random() * 1.2;
+      this.fireCd = this.burst > 0 ? 60 / W.rpm : 0.6 + Math.random() * 1.3;
+    } else this.fireCd = 60 / W.rpm + 0.6 + Math.random() * 1.1;
   }
 
   throwAt(ctx, key, target) {
-    const from = this.eye(new THREE.Vector3());
+    const from = this.eye(new THREE.Vector3(), 'stand');
     from.y += 0.2;
     const t = target.clone();
     t.x += (Math.random() - 0.5) * 3 * this.skill;
     t.z += (Math.random() - 0.5) * 3 * this.skill;
     ctx.guns.throwGrenade(from, throwVelocity(from, t, 15), key, { soldier: this });
     this.grenades[key]--;
-    this.throwCd = 6 + Math.random() * 6;
+    this.throwCd = 7 + Math.random() * 7;
     this.fireCd = Math.max(this.fireCd, 1);
+    this.throwAnim = 0.55;
+    this.setStance('stand');
   }
 
-  move(dt, ctx, vx, vz) {
+  move(dt, ctx) {
     const p = this.pos;
     const ox = p.x, oz = p.z;
+    let vx = 0, vz = 0;
+    if (this.moveTo && !this.atGoal(this.moveSpeed > 3 ? 0.9 : 0.35)) {
+      const sp = Math.min(this.moveSpeed, 5.6 * STANCE[this.stance].speed + (this.stance === 'stand' ? 0 : 0.4));
+      let a = Math.atan2(this.moveTo.x - p.x, this.moveTo.z - p.z);
+      if (this.detourT > 0) { this.detourT -= dt; a += this.detour; } else this.detour = 0;
+      vx = Math.sin(a) * sp; vz = Math.cos(a) * sp;
+    }
     p.x += vx * dt; p.z += vz * dt;
     const w = ctx.world;
     if (w.heightAt(p.x, p.z) < WATER_LEVEL - 0.4) { p.x = ox; p.z = oz; }
@@ -314,16 +549,58 @@ export class Soldier {
     w.collideObstacles(p, 0.35);
     p.y = w.heightAt(p.x, p.z);
     this.speedNow = Math.hypot(p.x - ox, p.z - oz) / Math.max(dt, 1e-4);
+    // stuck against something: walk around it for a moment
+    const want = Math.hypot(vx, vz);
+    if (want > 0.5 && this.speedNow < want * 0.3) {
+      this.stuckT += dt;
+      if (this.stuckT > 0.6) { this.stuckT = 0; this.detour = (Math.random() < 0.5 ? -1 : 1) * rand(0.9, 1.5); this.detourT = rand(0.8, 1.5); }
+    } else this.stuckT = Math.max(0, this.stuckT - dt);
   }
 
   animate(dt) {
-    const s = Math.min(1, this.speedNow / 4);
-    this.phase += dt * (2 + this.speedNow * 2.2);
-    const a = Math.sin(this.phase) * 0.7 * s;
-    this.m.legL.rotation.x = a;
-    this.m.legR.rotation.x = -a;
-    this.m.upper.rotation.x = -this.pitch * 0.6;
-    this.m.upper.position.y = 0.92 + Math.abs(Math.cos(this.phase)) * 0.04 * s;
+    const k = 1 - Math.exp(-dt * 8);
+    const s = Math.min(1, this.speedNow / 4.5);
+    const running = this.speedNow > 3;
+    const st = this.stance;
+    this.phase += dt * (2 + this.speedNow * (st === 'prone' ? 4 : 2.2));
+    const sw = Math.sin(this.phase);
+    const P = this.pose;
+    // stance targets
+    let hipsY = 0.92, thigh = 0, shin = 0, torso = 0, body = 0, bodyZ = 0;
+    if (st === 'crouch') { hipsY = 0.55; thigh = -1.15; shin = 1.85; torso = 0.25; }
+    else if (st === 'prone') { hipsY = 0.12; body = Math.PI / 2 * 0.96; bodyZ = -0.95; torso = -0.45; }
+    if (running && st === 'stand') torso = 0.28;
+    P.hipsY += (hipsY - P.hipsY) * k; P.thigh += (thigh - P.thigh) * k; P.shin += (shin - P.shin) * k;
+    P.torso += (torso - P.torso) * k; P.body += (body - P.body) * k; P.bodyZ += (bodyZ - P.bodyZ) * k;
+    const m = this.m;
+    const swing = (st === 'prone' ? 0.25 : st === 'crouch' ? 0.35 : running ? 0.85 : 0.6) * s;
+    m.body.rotation.x = P.body;
+    m.body.position.z = P.bodyZ * Math.min(1, P.body / 1.4);
+    m.hips.position.y = P.hipsY + (st === 'stand' ? Math.abs(Math.cos(this.phase)) * 0.05 * s : 0);
+    m.thighL.rotation.x = P.thigh + sw * swing;
+    m.thighR.rotation.x = P.thigh - sw * swing;
+    m.shinL.rotation.x = P.shin + Math.max(0, -sw) * swing * 1.3;
+    m.shinR.rotation.x = P.shin + Math.max(0, sw) * swing * 1.3;
+    // aim: raise the gun when in combat and facing the target, lower it otherwise
+    const aimT = (this.state === 'combat' || this.state === 'retreat' || this.state === 'alert') && !(running && !this.los) ? 1 : 0;
+    this.aimK += (aimT - this.aimK) * (1 - Math.exp(-dt * 5));
+    const pitch = -this.pitch * 0.6;
+    m.upper.rotation.set(P.torso + pitch * this.aimK, this.lookYaw, 0);
+    // gun: low ready <-> aimed; compensate the torso / body lean so it points at the target
+    const lean = P.torso + P.body + pitch * this.aimK;
+    const gx = (1 - this.aimK) * 0.75 - lean * this.aimK + (this.reloadT > 0 ? 0.5 : 0);
+    m.gun.rotation.set(gx, 0, this.reloadT > 0 ? 0.5 : 0);
+    const small = m.small;
+    const armR0 = small ? -1.45 : -1.25, armL0 = small ? -1.4 : -1.45;
+    const armLift = gx;                               // the arms follow the gun up / down
+    if (this.throwAnim > 0) {
+      const t = 1 - this.throwAnim / 0.55;
+      m.armR.rotation.set(-2.9 + t * 2.6, 0, 0.2);
+      m.armL.rotation.set(-0.8, 0, -0.3);
+    } else {
+      m.armR.rotation.set(armR0 + armLift * 0.9, 0, small ? 0.12 : 0.1);
+      m.armL.rotation.set(armL0 + armLift * 0.9 + (this.reloadT > 0 ? Math.sin(this.phase * 3) * 0.3 : 0), 0, small ? -0.35 : -0.55);
+    }
     this.root.rotation.y = this.heading;
   }
 
@@ -331,13 +608,18 @@ export class Soldier {
     if (this.deathT > 1.2) return;
     this.deathT += dt;
     const k = Math.min(1, this.deathT * 2.4);
+    const m = this.m;
     this.root.rotation.y = this.fallDir + Math.PI;
-    this.m.body.rotation.x = -k * k * Math.PI / 2 * 0.97;
-    this.m.body.position.y = 0.05 * k;
-    this.m.legL.rotation.x = 0.2 * k;
-    this.m.legR.rotation.x = -0.15 * k;
-    this.m.armL.rotation.set(-2.6 * k, 0, 0.3 * k);
-    this.m.armR.rotation.set(-2.9 * k, 0, -0.4 * k);
+    const b0 = this.pose.body;
+    m.body.rotation.x = b0 + (-Math.PI / 2 * 0.97 - b0) * k * k;
+    m.body.position.set(0, 0.05 * k, 0);
+    m.hips.position.y = 0.92;
+    m.thighL.rotation.x = 0.2 * k; m.thighR.rotation.x = -0.15 * k;
+    m.shinL.rotation.x = 0.3 * k; m.shinR.rotation.x = 0.1 * k;
+    m.upper.rotation.set(0, 0, 0);
+    m.armL.rotation.set(-2.6 * k, 0, 0.3 * k);
+    m.armR.rotation.set(-2.9 * k, 0, -0.4 * k);
+    m.gun.rotation.set(1.2 * k, 0, 0.8 * k);
   }
 }
 
@@ -348,9 +630,14 @@ export class Infantry {
     this.world = world;
     this.guns = guns;
     this.soldiers = [];
+    this.squads = new Map();          // id -> { id, members, advance: team | null, boundT, advanceT }
     this.squadN = 0;
+    this.tanks = [];
     this.onDeath = () => {};
     this.kills = 0;
+    this.now = 0;
+    // small arms fire heard / felt by the soldiers
+    guns.onShot = (origin, end, owner, W) => this.shot(origin, end, owner, W);
   }
 
   spawn(x, z, o) {
@@ -360,20 +647,32 @@ export class Infantry {
     this.world.collideObstacles(p, 0.4);
     p.y = this.world.heightAt(p.x, p.z);
     const s = new Soldier(this.scene, p, o);
-    s.onDeath = (sd, owner) => this.onDeath(sd, owner);
+    s.onDeath = (sd, owner) => this.died(sd, owner);
     this.soldiers.push(s);
+    if (s.squad) {
+      if (!this.squads.has(s.squad)) this.squads.set(s.squad, { id: s.squad, members: [], advance: null, boundT: rand(4, 8), advanceT: -1 });
+      const sq = this.squads.get(s.squad);
+      s.team2 = sq.members.length % 2;
+      sq.members.push(s);
+    }
     return s;
   }
 
-  // group of soldiers around (x, z); kits: [{ key, grenades }]
-  spawnSquad(x, z, kits, heading = 0, r = Math.random) {
+  // group of soldiers around (x, z); kits: [{ key, grenades }]. o: { spots: [{x, z, dir}], patrol: [{x, z}], guardDir }
+  spawnSquad(x, z, kits, heading = 0, r = Math.random, o = {}) {
     const squad = ++this.squadN;
     const res = [];
     kits.forEach((k, i) => {
+      const spot = o.spots && o.spots[i % o.spots.length];
       const a = i / kits.length * Math.PI * 2 + r();
       const d = i ? 2 + r() * 4 : 0;
-      const s = this.spawn(x + Math.sin(a) * d, z + Math.cos(a) * d, { ...k, squad, heading: heading + (r() - 0.5) * 1.5 });
-      if (s) res.push(s);
+      const px = spot ? spot.x : x + Math.sin(a) * d, pz = spot ? spot.z : z + Math.cos(a) * d;
+      const s = this.spawn(px, pz, { ...k, squad, heading: heading + (r() - 0.5) * 1.5, guardDir: spot?.dir ?? o.guardDir ?? heading,
+        patrol: o.patrol && i % 3 === 1 ? o.patrol : null });
+      if (s) {
+        if (!spot && r() < 0.3) s.idleAct = 'sit';
+        res.push(s);
+      }
     });
     return res;
   }
@@ -393,9 +692,44 @@ export class Infantry {
     return res;
   }
 
+  squadOf(s) { return s.squad ? this.squads.get(s.squad) : null; }
+  squadMates(s) { const sq = this.squadOf(s); return sq ? sq.members.filter(m => m !== s && m.alive) : []; }
+
   alertSquad(src) {
     for (const s of this.soldiers) {
       if (s !== src && s.alive && s.squad === src.squad && !s.alert && s.pos.distanceTo(src.pos) < 90) s.alertReq = true;
+    }
+  }
+
+  died(s, owner) {
+    for (const o of this.soldiers) {
+      if (!o.alive || o === s) continue;
+      const d = o.pos.distanceTo(s.pos);
+      if (d < 40) { o.morale -= o.squad === s.squad ? 0.25 : 0.1; o.alertReq = true; }
+    }
+    this.onDeath(s, owner);
+  }
+
+  // a noise at `pos` heard within `r` metres
+  noise(pos, r) {
+    for (const s of this.soldiers) {
+      if (!s.alive || s.alert) continue;
+      if (s.pos.distanceTo(pos) < r) s.heard = { pos: pos.clone().add(_u.set(rand(-8, 8), 0, rand(-8, 8))), t: this.now };
+    }
+  }
+
+  // every round fired: soldiers near the bullet's path are suppressed, the shot is heard
+  shot(origin, end, owner, W) {
+    if (owner && owner.soldier) return;
+    const len = origin.distanceTo(end);
+    if (len < 0.1) return;
+    for (const s of this.soldiers) {
+      if (!s.alive) continue;
+      const c = _v.set(s.pos.x, s.pos.y + 1.0, s.pos.z);
+      const t = clamp(_w.copy(c).sub(origin).dot(_u.copy(end).sub(origin)) / (len * len), 0, 1);
+      const d = _w.copy(origin).lerp(end, t).distanceTo(c);
+      if (d < 3) { s.suppress = Math.min(1, s.suppress + (3 - d) / 3 * (W.cat === 'mg' ? 0.3 : 0.2)); s.alertReq = true; }
+      if (!s.alert && s.pos.distanceTo(origin) < (SMALL_CATS.includes(W.cat) ? 90 : 150)) s.heard = { pos: origin.clone(), t: this.now };
     }
   }
 
@@ -403,16 +737,151 @@ export class Infantry {
   explosion(pos, r, dmg, owner) {
     for (const s of this.soldiers) {
       if (!s.alive) continue;
-      const d = _v.set(s.pos.x, s.pos.y + 0.9, s.pos.z).distanceTo(pos);
-      if (d < r) s.hit(dmg * (1 - d / r) + 10, owner, _w.copy(s.pos).sub(pos).setY(0).normalize());
-      else if (d < r * 3) s.alertReq = true;
+      const lying = s.stance === 'prone' ? 0.55 : s.stance === 'crouch' ? 0.8 : 1;
+      const d = _v.set(s.pos.x, s.pos.y + 0.9 * lying, s.pos.z).distanceTo(pos);
+      if (d < r) s.hit((dmg * (1 - d / r) + 10) * lying, owner, _w.copy(s.pos).sub(pos).setY(0).normalize());
+      else if (d < r * 3) { s.alertReq = true; s.suppress = Math.min(1, s.suppress + 0.6 * (1 - d / (r * 3))); }
+      if (s.alive && !s.alert && d < 160) s.heard = { pos: pos.clone(), t: this.now };
     }
   }
 
+  // ------------------------------------------------ cover & line of sight
+  // a clear line between two points (terrain, obstacles, trees; `ignore`: tank not to count)
+  clearLine(a, b, ignore = null) {
+    if (!this.world.lineOfSight(a, b, 4)) return false;
+    if (this.world.raycastObstacles(a, b)) return false;
+    if (this.world.raycastTrees(a, b)) return false;
+    for (const t of this.tanks) {
+      if (t === ignore) continue;
+      const tp = t.root.position;
+      const mx = (a.x + b.x) / 2 - tp.x, mz = (a.z + b.z) / 2 - tp.z;
+      const half = Math.hypot(b.x - a.x, b.z - a.z) / 2 + 5;
+      if (mx * mx + mz * mz > half * half) continue;
+      _inv.copy(t.root.matrixWorld).invert();
+      const la = _la.copy(a).applyMatrix4(_inv), lb = _lb.copy(b).applyMatrix4(_inv);
+      const bx = t.vis.hullBox;
+      if (segBox(la.x, la.y, la.z, lb.x, lb.y, lb.z, bx.min.x, bx.min.y, bx.min.z, bx.max.x, bx.max.y, bx.max.z) !== null) return false;
+    }
+    return true;
+  }
+
+  // best spot near soldier s hidden from `threat`. o: { pref (distance to the threat), radius, flank (-1/1),
+  // retreat, tank (threat tank), side (approach a tank from its side) }. Returns { x, z, kind } or null
+  findCover(s, threat, o = {}) {
+    const P = s.pos, R = o.radius || 28, W = this.world;
+    const cands = [];
+    const push = (x, z, q, kind) => cands.push({ x, z, q, kind });
+    // obstacles: houses, walls, sandbags, berms, crane posts...
+    for (const ob of W.obstacles) {
+      const dx = ob.x - P.x, dz = ob.z - P.z;
+      if (dx * dx + dz * dz > (R + ob.rad) ** 2) continue;
+      const gy = W.heightAt(ob.x, ob.z);
+      if (ob.y1 !== undefined && ob.y1 - gy < 0.55) continue;
+      let tx = ob.x - threat.x, tz = ob.z - threat.z;
+      const tl = Math.hypot(tx, tz) || 1; tx /= tl; tz /= tl;
+      for (const off of [0, 0.8, -0.8]) {
+        const c = Math.cos(off), sn = Math.sin(off);
+        const ux = tx * c - tz * sn, uz = tx * sn + tz * c;
+        const ext = Math.abs(ux * ob.cos - uz * ob.sin) * ob.hx + Math.abs(ux * ob.sin + uz * ob.cos) * ob.hz;
+        push(ob.x + ux * (ext + 0.55), ob.z + uz * (ext + 0.55), off ? 0.9 : 1, 'ob');
+      }
+    }
+    // trees
+    W.forTreesNear(P.x, P.z, t => {
+      if (t.broken && t.stumpH < 0.9) return;
+      if (Math.hypot(t.x - P.x, t.z - P.z) > R) return;
+      let tx = t.x - threat.x, tz = t.z - threat.z;
+      const tl = Math.hypot(tx, tz) || 1;
+      push(t.x + tx / tl * (t.r + 0.45), t.z + tz / tl * (t.r + 0.45), 0.55, 'tree');
+    });
+    // knocked-out / abandoned tanks
+    for (const t of this.tanks) {
+      if (t === o.tank || (!t.wrecked && (t.crew || t.playerInside || Math.abs(t.speed) > 0.5))) continue;
+      const tp = t.root.position;
+      if (Math.hypot(tp.x - P.x, tp.z - P.z) > R + 4) continue;
+      let tx = tp.x - threat.x, tz = tp.z - threat.z;
+      const tl = Math.hypot(tx, tz) || 1;
+      const b = t.vis.hullBox, ext = Math.max(b.max.x, b.max.z) * 0.75;
+      push(tp.x + tx / tl * (ext + 0.6), tp.z + tz / tl * (ext + 0.6), 0.95, 'ob');
+    }
+    // folds of the ground
+    for (let i = 0; i < 8; i++) {
+      const a = i / 8 * Math.PI * 2 + s.id;
+      for (const r of [5, 11, 18]) push(P.x + Math.sin(a) * r, P.z + Math.cos(a) * r, 0.75, 'terrain');
+    }
+    // score without line tests first
+    const pref = o.pref ?? 35;
+    const tAng = Math.atan2(P.x - threat.x, P.z - threat.z);
+    for (const c of cands) {
+      const d = Math.hypot(c.x - P.x, c.z - P.z);
+      const dT = Math.hypot(c.x - threat.x, c.z - threat.z);
+      c.d = d; c.dT = dT;
+      c.score = c.q * 2 - d * 0.05 - Math.abs(dT - pref) * 0.025;
+      if (o.retreat && dT < Math.hypot(P.x - threat.x, P.z - threat.z)) c.score -= 2;
+      if (o.flank) {
+        const ang = wrap(Math.atan2(c.x - threat.x, c.z - threat.z) - tAng);
+        c.score += clamp(ang * o.flank, -0.5, 1) * 1.2;
+      }
+      if (o.side && o.tank) {
+        const rel = Math.abs(wrap(Math.atan2(c.x - threat.x, c.z - threat.z) - o.tank.heading));
+        c.score += Math.sin(rel) * 1.2 - (rel < 0.8 ? 1 : 0);          // beside / behind the tank, not in front
+      }
+      if (d > R || dT < 6 || W.heightAt(c.x, c.z) < WATER_LEVEL + 0.2) c.score = -1e9;
+      for (const m of this.soldiers) if (m !== s && m.alive && m.cover && Math.hypot(m.cover.x - c.x, m.cover.z - c.z) < 1.4) c.score -= 1.5;
+    }
+    cands.sort((a, b) => b.score - a.score);
+    // line tests on the best few: hidden at crouch (mid / tall) or only lying down (low)
+    const eye = _u.copy(threat); eye.y += o.tank ? 2.2 : 1.5;
+    const tgtTank = o.tank || null;
+    for (let i = 0, tests = 0; i < cands.length && tests < 10; i++) {
+      const c = cands[i];
+      if (c.score < -1e8) break;
+      tests++;
+      const gy = W.heightAt(c.x, c.z);
+      const at = h => new THREE.Vector3(c.x, gy + h, c.z);
+      let kind = null;
+      if (!this.clearLine(eye, at(1.0), tgtTank)) kind = this.clearLine(eye, at(1.55), tgtTank) ? 'mid' : 'tall';
+      else if (!this.clearLine(eye, at(0.35), tgtTank)) kind = 'low';
+      if (kind) return { x: c.x, z: c.z, kind, src: c.kind };
+    }
+    return null;
+  }
+
+  // a point beside tall cover from which the threat can be seen
+  sidePoint(s, threat) {
+    const c = s.cover;
+    const a = Math.atan2(threat.x - c.x, threat.z - c.z);
+    const gy = this.world.heightAt(c.x, c.z);
+    const tp = new THREE.Vector3(threat.x, threat.y + 1.2, threat.z);
+    for (const sgn of [s.id % 2 ? 1 : -1, s.id % 2 ? -1 : 1]) {
+      const x = c.x + Math.cos(a) * 1.0 * sgn, z = c.z - Math.sin(a) * 1.0 * sgn;
+      if (this.clearLine(new THREE.Vector3(x, gy + 1.5, z), tp)) return { x, z };
+    }
+    return null;
+  }
+
   update(dt, ctx) {
+    this.now = ctx.now;
+    this.tanks = ctx.tanks;
     ctx.world = this.world;
     ctx.guns = this.guns;
+    ctx.ai = this;
     ctx.alertSquad = s => this.alertSquad(s);
+    // squads bound forward by fire teams while engaged with a man on foot
+    for (const sq of this.squads.values()) {
+      sq.members = sq.members.filter(m => m.alive);
+      if (!sq.members.length) { this.squads.delete(sq.id); continue; }
+      const engaged = sq.members.filter(m => m.state === 'combat');
+      if (engaged.length >= 3 && ctx.target && !ctx.target.isTank) {
+        sq.boundT -= dt;
+        if (sq.boundT <= 0) {
+          sq.boundT = rand(6, 10);
+          sq.advance = sq.advance === 0 ? 1 : 0;
+          sq.advanceT = ctx.now;
+          for (const m of engaged) if (m.team2 === sq.advance) m.cover = null;
+        }
+      } else sq.advance = null;
+    }
     for (const s of this.soldiers) s.think(dt, ctx);
     // tanks: push soldiers aside, run over those who don't get away
     for (const t of ctx.tanks) {

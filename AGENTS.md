@@ -4,18 +4,28 @@
 
 **DBH-WW1** is a 3D first-person game built with 3js
 The game features:
+- Main menu (page opened without a mode): main game (endless road, random or given seed), duel (own tank vs 1-5 chosen
+  enemy tanks on an enclosed field), tank range (ramps, ditches, ponds, target hulks, repair station, village), loading
+  a saved game. Saving: pause menu or F5 (road mode only, localStorage)
 - An endless road ("drive beyond horizons") through procedurally streamed terrain, with villages, towns,
-  gas stations and tank repair stations along it; every game gets a random world seed (`?seed=N` replays one)
-- First-person on foot; in tanks (Pz.II, T-26, Mark V, T-44, IS-2, T-55, Chieftain AVRE, Leopard 2, Abrams) third-person /
-  gunner-sight, or first person inside the crew compartment with commander / gunner / driver stations
+  gas stations and tank repair stations along it, rivers crossing it (bridges: timber trestle / steel / stone; some
+  shallow ones are fords); every game gets a random world seed (`?seed=N` replays one)
+- First-person on foot; in tanks (Renault FT, Mark V, Vickers 6-ton (twin turrets), T-26, Type 89, Pz.II, BT-7,
+  Char B1 bis, T-44, IS-2, T-55, Chieftain AVRE, Leopard 2, Abrams) third-person / gunner-sight, or first person inside
+  the crew compartment with commander / gunner / driver stations; every tank has its own interior (paint by nation /
+  era, radios, racks, fuel cells, gearboxes, ball MGs, displays...)
 - Tank types are ordered by combat value (`TANK_TIERS`): the spawn has two Pz.II / T-26, further down the road the enemy
   (and the spare parts at repair stations) get more advanced
 - Enemy infantry (roadside posts, garrisons, escorts, tank crews bailing out of burning tanks) with small arms and grenades
-- Small arms: 10 pistols, 10 revolvers, 10 compact SMGs, 10 rifles, 10 automatics, 10 machine guns + grenades (incl. anti-tank);
+  and a squad AI: cover (houses, walls, sandbags, berms, wrecks, trees, terrain), peeking / hiding, stances (stand,
+  crouch, prone), suppression, bounding by fire teams, flanking, grenades, dodging grenades, falling back, tank hunting
+- Small arms: 10 pistols, 10 revolvers, 10 compact SMGs, 10 rifles, 10 automatics, 13 machine guns + grenades (incl. anti-tank);
+  every weapon has its own model; first-person view model with hands, bob / sway / sprint pose;
   one small + one big weapon carried, cartridges by calibre; weapons / ammo can be stowed in and taken out of tanks
 - Every tank has a removable machine gun on a pintle (fed from the cartridges in the tank's stowage)
 - Fuel is carried only in the external fuel tanks (it travels with them); fuel cans found along the road refill them
-- Sandbags heaped on a tank add armour (front / side) and weight, are visible and can be taken off / knocked off by hits
+- Sandbags heaped on a tank add armour (front / side) and weight, are visible and can be taken off / knocked off by hits;
+  the bags of the infantry posts' walls can be picked up too (the wall - cover - shrinks)
 - Knocked-out vehicles along the road can be looted (stowage, parts; burnt ones leave loot on the ground)
 - Procedural ("vector") models for all tanks; every replaceable part is its own object
 - Frankenstein tanks: engine, gun, external fuel tanks and turret drive are swapped by hand in the field, the turret
@@ -39,27 +49,41 @@ Server is required for ES modules (file:// won't work).
 
 ## Web project structure
 ```
-index.html              # page, HUD markup/CSS, import map (three from unpkg CDN)
-web/js/main.js          # orchestrator: input, camera modes (walk / 3rd person / gunner sight), interactions,
-                        #   repair menu, service zones, HUD, minimap, game loop, game over
+index.html              # page, HUD markup/CSS, main menu / pause / victory overlays, import map (three from unpkg CDN)
+web/js/main.js          # orchestrator: config (mode / seed / load), input, camera modes (walk / 3rd person / gunner sight),
+                        #   interactions, repair menu, service zones, HUD panels, game loop, game over / victory
+web/js/menu.js          # main menu (reloads the page with ?mode=... / ?load=...)
+web/js/modes.js         # game modes: world options per mode, duel / range setup, arena bounds, duel status
+web/js/save.js          # saved games: snapshot / restore (restoreBefore runs before the world is generated), localStorage
+web/js/hud.js           # tank markers over the view, minimap
 web/js/world.js         # endless world: road centreline roadX(z)/roadH(z), chunked terrain streamed around
-                        #   the player, lakes, forest, obstacle boxes (OBB push-out + shell raycast)
+                        #   the player, lakes, rivers + bridges, forest, obstacle boxes (OBB push-out + shell raycast),
+                        #   arenas (opts.arena: 'duel' | 'range', features, bounds)
+web/js/rivers.js        # river plans (between settlements), channel carving, bridge models / decks / railings
 web/js/settlements.js   # roadside villages / towns / gas stations / repair stations (+ items, service zones)
-web/js/parts.js         # part catalog: HULLS / TURRETS / GUNS / ENGINES / FUELS / DRIVES, seats & interior layouts,
-                        #   computeSpec(hull, parts) -> tank.def (speed from power/weight, gun stats, modules...)
-web/js/models.js        # procedural models: hulls, turrets, guns, engines, fuel sets, drives, crew compartments;
-                        #   static meshes are merged (bake) into a few vertex-coloured meshes per rigid group
+web/js/tankdefs/        # ONE FILE PER TANK TYPE: gameplay data (hull / turret / gun / engine / fuel / drive, seats,
+                        #   interior layout + props) and its procedural models; index.js = registry (TANK_DEFS)
+web/js/modelkit.js      # shared model toolkit: materials per palette, bake (merge), profiles / prisms, running gear,
+                        #   track loops, engine deck, cupolas, breech, generic engines (ENGINE_TYPES) and fuel sets
+web/js/parts.js         # part catalog assembled from tankdefs: HULLS / TURRETS / GUNS / ENGINES / FUELS / DRIVES / TANK_MG,
+                        #   computeSpec(hull, parts) -> tank.def (speed from power/weight, gun stats, modules...), TANK_TIERS
+web/js/models.js        # builds the parts of a tank type from its definition (hull, turret (+ second turret), gun,
+                        #   engine, fuel, drive)
+web/js/interiors.js     # crew compartments: shell from interior data, paint themes, typed props (PROPS builders)
 web/js/tanks.js         # Tank class: composition (setPart / removeTurret / installTurret), physics, gun laying with
-                        #   ballistics, systems damage, engine bay, interior toggle, hit marks (decals)
+                        #   ballistics, twin turrets, systems damage, engine bay, interior toggle, hit marks (decals)
 web/js/workshop.js      # repair-station overhead crane: turret stands 1/2, control panel options, lift animation
-web/js/weapons.js       # small arms catalog (WEAPONS / GRENADES / CALIBERS), procedural weapon models, Guns: hitscan
-                        #   bullets with tracers vs tanks / infantry / player / world, thrown grenades
-web/js/infantry.js      # Soldier (low-poly model, AI: guard / engage / flee from tanks / grenades) + Infantry director
+web/js/weapons.js       # small arms catalog (WEAPONS / GRENADES / CALIBERS), weapon meshes (cached / baked), Guns: hitscan
+                        #   bullets with tracers vs tanks / infantry / player / world, thrown grenades, onShot hook
+web/js/weaponmodels.js  # one procedural model builder per weapon + grenade models
+web/js/viewmodel.js     # first-person weapon: hands, hip / aim pose, bob, look sway, sprint pose, landing, recoil, reload
+web/js/infantry.js      # Soldier (low-poly model with knees, stances, AI) + Infantry director (squads, cover search,
+                        #   line of sight, hearing / suppression, explosions, run-over)
 web/js/loot.js          # difficulty along the road, tank type / weapon / loot picks by difficulty
 web/js/combat.js        # shells, hit tests, armour penetration -> module/crew damage, fires, particle effects
-web/js/ai.js            # EnemyDirector: encounters along the road (patrols / ambushes in caponiers, infantry posts,
-                        #   knocked-out vehicles with loot) + tank AI (main gun, pintle MG against men on foot)
-web/js/items.js         # inventory, world pickups, armour plate carried in hands
+web/js/ai.js            # EnemyDirector: encounters along the road (patrols / ambushes in caponiers, infantry posts with
+                        #   sandbag walls, knocked-out vehicles with loot) + tank AI (patrol / ambush / hunt (duel))
+web/js/items.js         # inventory, world pickups (laid in place with data.place), armour plate carried in hands
 web/js/audio.js         # synthesized WebAudio sfx
 web/js/noise.js         # perlin/fbm, hash, seeded rng
 ```
@@ -78,11 +102,14 @@ web/js/noise.js         # perlin/fbm, hash, seeded rng
   the crane menu (digits 1-4).
 - In tank: W/S throttle, A/D steer, SPACE brake, mouse aims (turret follows), LMB fire, RMB gunner sight, X main gun / MG
   (hold LMB for bursts),
-  F fire extinguisher, R repair kit menu (digits choose the system), V third person / inside view, ESC pause.
+  F fire extinguisher, R repair kit menu (digits choose the system), V third person / inside view, ESC pause
+  (pause menu: resume / save / main menu), F5 quick save (road mode).
   Inside: Q stand up / sit at the nearest station, 1/2/3 commander / gunner / driver. Commander = full control,
   gunner = gun only, driver = driving only; standing up = WASD moves around the compartment.
 
 ## Web debugging
+Game: `?mode=road|duel|range`, `&tank=KEY` (duel / range), `&enemies=K1,K2,...` (duel, `random` allowed), `?load=SAVE_ID`.
+Without `mode` / `load` the main menu is shown; `?seed=N` or `?start=Z` alone start the road directly.
 URL params: `?nowater=1&noclouds=1&notrees=1&notanks=1&noenemies=1&noinfantry=1&noshadows=1&nofog=1&waterred=1&watery=N&noaa=1&logdepth=1`
 `?seed=N` world seed (random without it; shown in the pause menu), `?start=Z` start further down the road, `?god=1`
 invulnerable player, `?view=N` chunk radius, `?shot=1` preserveDrawingBuffer (canvas screenshots).
@@ -90,6 +117,29 @@ invulnerable player, `?view=N` chunk radius, `?shot=1` preserveDrawingBuffer (ca
 rendering (handy for headless tests; `game.state.noLock = true` lets small arms fire without pointer lock).
 
 ## Web notes
+- Tank types live in `web/js/tankdefs/<key>.js` (data + models); add a tank = add a file and list it in
+  `tankdefs/index.js`. `models.hull()` returns `hullResult(...)` (root, wheels, ring, bay, box, fuelAt...),
+  `models.turret()` returns { group, gunPos, sightY, mgPos, box, second? }, `models.gun()` { group, muzzleLen },
+  `models.engine(g, P, E)` returns its height, `models.fuel(g, P)` its groundY, `models.turretInterior` the turret
+  compartment (poly | dome, h, cupola, props). Palettes register into modelkit `PALETTES` (riveted: rivet texture).
+- Interiors: `hull.interior` { theme, x, floor, roof, z, slits, walk, ammo, controls: levers|wheel|tbar|yoke,
+  seatStyle, props: [{ type, ... }] }; prop types are the PROPS builders in interiors.js (seat, driver, radio, fuelcell,
+  rack (vertical|horizontal|bins|drums|charges), ballmg, sidemg, periscope, gearbox, shaft, panel, display, basket,
+  ready, coax, blastdoor, ...). Props with `main: true` racks replace the default ammo rack.
+- Twin turrets (Vickers 6-ton): `turret().second` { group, pos (offset from the ring in hull axes), arc, speed, box };
+  it keeps its place on the hull while the main turret traverses (Tank.placeSecondTurret), turns to the MG target
+  (secondYaw) and carries the machine gun; seats with `in: 'second'` sit in it (Tank.seatObject(seat)).
+- Rivers: `world.riverPlan(k)` for the gap after settlement k (null or plan), carved in `world.height`; bridges are
+  built / disposed by distance (`world.bridges`), `world.bridgeAt(x, z)` gives the deck height and `heightAt` uses it
+  (tanks / soldiers / shells walk on the deck); the road ribbon dips into fords.
+- Arenas: `new World(scene, seed, worldOptions(mode))` - opts { arena, road, settlements, rivers, bounds, plans
+  (fixed settlements), features (hill / table / ditch / bumps / pond), clear (tree-free zones), treeDensity }.
+- Infantry AI (infantry.js): states idle / alert / combat / retreat / flee; `Infantry.findCover(soldier, threat, o)`
+  scores obstacles / trees / wrecks / terrain spots and keeps those hidden from the threat (kind: tall / mid / low ->
+  hide / peek stances); `Guns.onShot` -> `Infantry.shot` (suppression, hearing), `Infantry.noise(pos, r)` (tank gun,
+  engine), squads bound by fire teams (`squad.advance`). Enemy fire doesn't hit enemy soldiers.
+- Saves (save.js): tanks / soldiers / pickups within 1.5 km, post walls, crane stands, ruins, broken trees, spawned
+  encounter stretches, garrisons, taken pickups; settlements and encounters regenerate from the seed.
 - World is endless: road runs along +Z, `world.roadX(z)` is the centreline. Terrain is flattened to `roadH(z)`
   near the road and in settlements; far from the road it rises into mountains.
 - Chunks are 128 m / 32 cells (33*33 verts, Uint16 indices). Each chunk stores its height grid with a 1-cell
@@ -124,7 +174,7 @@ rendering (handy for headless tests; `game.state.noLock = true` lets small arms 
   arms by era (WW1 / WW2 / post-war). Settlement loot, wrecks, soldier kits and repair-station parts all use it.
 - Fuel: `tank.fuel` is a getter onto `parts.fuel.fuel` (litres); no fuel part or a destroyed one = no fuel. Engines burn
   `fuelUse` l/s at full throttle (player's tank only). Fuel cans: `items.hands === 'canister'`, `items.handCan.fuel`.
-- Machine guns: `tank.mg` is a weapon object ({ key, mag }) on `tank.mgPivot` (turret `mgPos` from models.js, `hull.mgAt`
+- Machine guns: `tank.mg` is a weapon object ({ key, mag }) on `tank.mgPivot` (turret `mgPos` from the tank definition, `hull.mgAt`
   when the turret is off); it aims at `tank.mgTarget || tank.aimPoint`, `tank.fireMG()` takes rounds from
   `tank.cargo.ammo[calibre]`. `tank.cargo = { weapons, ammo, grenades }` is the small-arms stowage.
 - Sandbags: `tank.addSandbag()` / `removeSandbag(face)`, slots are found by raycasting the hull (front first, then fenders);
