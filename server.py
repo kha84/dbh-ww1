@@ -4,12 +4,17 @@
 The two players exchange WebRTC session descriptions through it (a short room code instead of long
 invitation / answer codes); the game itself then runs peer to peer.
 
-    python3 server.py [port]          # default 8000, listens on all interfaces
+    npm run build                     # the game is built by Vite into dist/
+    python3 server.py [port]          # default 8000, listens on all interfaces, serves dist/
     open http://<this machine>:8000/index.html on both computers
+
+(`npm run dev` is the Vite dev server; it answers the same mailbox API itself.)
 
 API: GET /api/ping -> "dbh";  POST /api/room/<code>/<slot> (body = text);  GET /api/room/<code>/<slot>
 Rooms are forgotten after an hour.
 """
+import functools
+import os
 import re
 import sys
 import threading
@@ -73,5 +78,8 @@ class Handler(SimpleHTTPRequestHandler):
 
 if __name__ == '__main__':
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8000
+    root = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dist')
+    if not os.path.isfile(os.path.join(root, 'index.html')):
+        sys.exit('dist/ not found: build the game first (npm install && npm run build)')
     print(f'DBH-WW1: http://localhost:{port}/index.html  (network play: the same address from the other computer)')
-    ThreadingHTTPServer(('', port), Handler).serve_forever()
+    ThreadingHTTPServer(('', port), functools.partial(Handler, directory=root)).serve_forever()

@@ -268,6 +268,7 @@ export class EnemyDirector {
     this.caponiers = [];
     this.walls = [];                // sandbag walls of the infantry posts (their bags are pickups)
     this.items = null;              // set by the game
+    /** @type {(...a: any[]) => void} */
     this.onLoot = () => {};         // (id, type, x, z, data): loot lying on the ground
     this.disabled = dbg.get('notanks') === '1' || dbg.get('noenemies') === '1';
     this.noInfantry = dbg.get('noinfantry') === '1' || dbg.get('noenemies') === '1';

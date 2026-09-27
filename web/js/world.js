@@ -53,11 +53,24 @@ const SETTLE_SIZE = {
   town:    { halfLen: 190, halfW: 85 },
 };
 
+/**
+ * @typedef {object} WorldOptions
+ * @property {boolean} [rivers]      rivers + bridges (on by default)
+ * @property {boolean} [settlements] roadside settlements (on by default)
+ * @property {boolean} [road]        the road (on by default)
+ * @property {string} [arena]      'duel' | 'range' an enclosed field instead of the endless world
+ * @property {{ x0: number, x1: number, z0: number, z1: number }} [bounds]
+ * @property {object[]} [plans]      fixed settlements { k, type, z }
+ * @property {object[]} [features]   analytic terrain features (hill / table / ditch / bumps / pond)
+ * @property {{ x: number, z: number, r: number }[]} [clear] tree-free zones
+ * @property {number} [treeDensity]
+ */
 export class World {
-  // opts: { rivers, settlements, road } (all on by default)
+  /** @param {WorldOptions} [opts] */
   constructor(scene, seed = 1337, opts = {}) {
     this.scene = scene;
     this.seed = seed;
+    /** @type {WorldOptions} */
     this.opts = { rivers: true, settlements: true, road: true, ...opts };
     this.WATER_LEVEL = WATER_LEVEL;
     this.VIEW = parseInt(dbg.get('view') || '4', 10);   // chunk radius
@@ -275,7 +288,7 @@ export class World {
 
   // ------------------------------------------------------------ materials
   makeMaterials() {
-    const grassTex = new THREE.TextureLoader().load('assets/grass.jpg');
+    const grassTex = new THREE.TextureLoader().load(new URL('../../assets/grass.jpg', import.meta.url).href);
     grassTex.wrapS = grassTex.wrapT = THREE.RepeatWrapping;
     grassTex.colorSpace = THREE.SRGBColorSpace;
     this.terrainMat = new THREE.MeshStandardMaterial({

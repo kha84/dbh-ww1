@@ -137,6 +137,9 @@ export class Soldier {
   constructor(scene, pos, o) {
     this.id = ++SOLDIER_ID;
     this.scene = scene;
+    /** @type {((s: Soldier, owner: any) => void) | null} */
+    this.onDeath = null;
+    this.weaponKeyShown = null;                  // network play (guest): the weapon model shown
     this.kind = o.kind || 'enemy';
     this.team = 'enemy';
     this.weapon = makeWeapon(o.key);
@@ -734,7 +737,9 @@ export class Infantry {
     this.squads = new Map();          // id -> { id, members, advance: team | null, boundT, advanceT }
     this.squadN = 0;
     this.tanks = [];
+    /** @type {(...a: any[]) => void} */
     this.onDeath = () => {};
+    /** @type {(...a: any[]) => void} */
     this.onBoard = () => {};          // (soldier, tank): a soldier climbed into a free tank - it gets a crew
     this.kills = 0;
     this.now = 0;

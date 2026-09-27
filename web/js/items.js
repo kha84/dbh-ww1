@@ -174,6 +174,7 @@ export class Items {
     this.dropN = 0;
     this.dropPrefix = 'drop:';     // ids of dropped things (network guest: 'drop:g')
     this.t = 0;
+    /** @type {(...a: any[]) => void} */
     this.onTaken = () => {};       // (pickup) after something was picked up
   }
 

@@ -203,13 +203,20 @@ export class Guns {
     this.exposed = null;             // { pos } eye of the player riding exposed (troop seat of an open carrier)
     this.remoteFoot = null;          // { pos, active, crouch } the other player on foot (network play)
     this.remoteExposed = null;       // { pos } its eye when it rides exposed
+    /** @type {(...a: any[]) => void} */
     this.onRemoteHit = () => {};     // (dmg, owner) a bullet struck the other player
     this.listener = new THREE.Vector3();
+    /** @type {(...a: any[]) => void} */
     this.onPlayerHit = () => {};
+    /** @type {(...a: any[]) => void} */
     this.onExplosion = () => {};     // (pos, radius, dmg, owner)
+    /** @type {(...a: any[]) => void} */
     this.onGrenadeTank = () => {};   // anti-tank grenade struck a tank: (tank, point, dir, def, owner)
+    /** @type {(...a: any[]) => void} */
     this.onShot = () => {};          // every round fired: (origin, hitPoint, owner, W) - infantry hears / is suppressed
+    /** @type {(...a: any[]) => void} */
     this.onFired = () => {};         // (origin, dir, W, owner, muzzle, tracer): network play passes the shot on
+    /** @type {(...a: any[]) => void} */
     this.onThrown = () => {};        // (pos, vel, key, owner)
     this.visual = false;             // network guest: bullets only make effects (the host works out the hits)
     this.tracers = [];

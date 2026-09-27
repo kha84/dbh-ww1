@@ -70,6 +70,7 @@ function themeMats(name) {
 }
 
 // ===================================================================== geometry helpers
+/** @param {THREE.BufferGeometry} [geo] */
 function ibox(parent, mat, x, y, z, sx, sy, sz, rx = 0, ry = 0, rz = 0, geo = U.box) {
   const m = new THREE.Mesh(geo, mat);
   m.position.set(x, y, z); m.scale.set(sx, sy, sz); m.rotation.set(rx, ry, rz);
@@ -87,7 +88,7 @@ const itorus = (p, mat, x, y, z, r, t, rx = 0, ry = 0, rz = 0) => {
 // a group placed at `at` turned by ry (props are built in their own frame: +Z = facing, +X = left)
 function frame(parent, at, ry = 0) {
   const g = new THREE.Group();
-  g.position.set(...at);
+  g.position.fromArray(at);
   g.rotation.y = ry;
   parent.add(g);
   return g;
@@ -95,7 +96,7 @@ function frame(parent, at, ry = 0) {
 // thin cylinder between two points (pipes, cables, rods)
 const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _up = new THREE.Vector3(0, 1, 0);
 function rod(parent, mat, p0, p1, r) {
-  _a.set(...p0); _b.set(...p1);
+  _a.fromArray(p0); _b.fromArray(p1);
   const len = _a.distanceTo(_b);
   const m = new THREE.Mesh(U.cyl8, mat);
   m.position.copy(_a).add(_b).multiplyScalar(0.5);

@@ -12,6 +12,7 @@ const PI = Math.PI;
 export const MODE_NAMES = { road: 'Дорога', duel: 'Дуэль', range: 'Танкодром' };
 
 // World constructor options per mode
+/** @returns {import('./world.js').WorldOptions} */
 export function worldOptions(mode) {
   if (mode === 'duel') {
     return {

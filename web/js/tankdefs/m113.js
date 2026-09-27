@@ -5,7 +5,7 @@ import { PI, U, mats, add, hullProfile, sizedBox, runningGear, engineDeck, ENGIN
 
 // eleven men on two benches (six seats here); the rear pair stands in the cargo hatch and can fire
 const TROOPS = [];
-for (const [z, hatch] of [[-1.95, true], [-1.3, true], [-0.65, false]]) {
+for (const [z, hatch] of /** @type {[number, boolean][]} */ ([[-1.95, true], [-1.3, true], [-0.65, false]])) {
   for (const sx of [1, -1]) {
     TROOPS.push(hatch
       ? { pos: [sx * 0.78, 0.85, z], eye: [sx * 0.38, 2.28, z + 0.15], ry: -sx * PI / 2, fire: true }

@@ -86,8 +86,11 @@ export class Link {
     this.rel = null;                 // reliable, ordered: events, full states
     this.fast = null;                // unreliable: poses, snapshots
     this.open = false;
+    /** @type {(...a: any[]) => void} */
     this.onopen = () => {};
+    /** @type {(...a: any[]) => void} */
     this.onclose = () => {};
+    /** @type {(...a: any[]) => void} */
     this.onmsg = () => {};
     this.pc.onconnectionstatechange = () => {
       const st = this.pc.connectionState;

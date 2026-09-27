@@ -246,6 +246,12 @@ export class Tank {
   constructor(scene, key, pos, heading, opts = {}) {
     this.id = ++TANK_ID;
     this.scene = scene;
+    this.derelict = false;                       // a target hulk / roadside wreck (idle soldiers don't take it)
+    this.caponier = null;                        // the pit of an ambush tank (Tank.sinkAt)
+    this.remote = false;                         // network play: driven on the other machine
+    this.craneLock = false;                      // the repair-station crane is working on it
+    /** @type {THREE.Vector3 | null} */
+    this.mgTarget = null;                        // what the machine guns aim at (else aimPoint)
     this.key = key;
     this.hull = buildHull(key);
     this.root = this.hull.root;

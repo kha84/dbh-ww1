@@ -131,9 +131,13 @@ export class Combat {
     this.tanks = [];                 // set by the game each frame
     this.foot = null;                // { pos, active } on-foot player target
     this.listener = new THREE.Vector3();
+    /** @type {(...a: any[]) => void} */
     this.onEvent = () => {};
+    /** @type {(...a: any[]) => void} */
     this.onFired = () => {};         // (shell spec, tank): a real shell left the gun (network play sends it over)
+    /** @type {(...a: any[]) => void} */
     this.onPlayerDamage = () => {};
+    /** @type {(...a: any[]) => void} */
     this.onExplosion = () => {};     // (pos, radius, dmg, owner): infantry takes blast damage
     this.god = false;
     this.now = 0;                    // game time (set by the game each frame)
@@ -323,14 +327,14 @@ export class Combat {
     const lp = hitPoint.clone().applyMatrix4(inv);
     const ld = dir.clone().transformDirection(inv);
     const b = vol.box;
-    const faces = [
+    const faces = /** @type {[number, string, THREE.Vector3][]} */ ([
       [Math.abs(lp.x - b.min.x), 'side', new THREE.Vector3(-1, 0, 0)],
       [Math.abs(lp.x - b.max.x), 'side', new THREE.Vector3(1, 0, 0)],
       [Math.abs(lp.z - b.min.z), 'rear', new THREE.Vector3(0, 0, -1)],
       [Math.abs(lp.z - b.max.z), 'front', new THREE.Vector3(0, 0, 1)],
       [Math.abs(lp.y - b.max.y), 'top', new THREE.Vector3(0, 1, 0)],
       [Math.abs(lp.y - b.min.y), 'rear', new THREE.Vector3(0, -1, 0)],
-    ].sort((a, c) => a[0] - c[0]);
+    ]).sort((a, c) => a[0] - c[0]);
     const [, face, normal] = faces[0];
     res.face = face;
     const cos = Math.abs(ld.dot(normal));
