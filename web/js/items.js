@@ -172,6 +172,7 @@ export class Items {
     this.drawn = null;
     this.grenadeKey = null;
     this.dropN = 0;
+    this.dropPrefix = 'drop:';     // ids of dropped things (network guest: 'drop:g')
     this.t = 0;
     this.onTaken = () => {};       // (pickup) after something was picked up
   }
@@ -205,7 +206,7 @@ export class Items {
   }
 
   drop(type, x, z, part = null) {
-    this.add(`drop:${this.dropN++}`, type, x, z, part);
+    this.add(`${this.dropPrefix}${this.dropN++}`, type, x, z, part);
   }
 
   label(p) {

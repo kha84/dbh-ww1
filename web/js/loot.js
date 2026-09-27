@@ -1,5 +1,5 @@
 // What is met where: difficulty grows along the road; tank types, weapons and loot are picked by it
-import { TANK_TIERS } from './parts.js';
+import { TANK_TIERS, APC_TIERS } from './parts.js';
 import { WEAPONS, GRENADES, CALIBERS, SMALL_CATS } from './weapons.js';
 
 export const HARD_Z = 9000;           // metres of road until the most advanced machines are common
@@ -13,6 +13,13 @@ export function pickTankKey(r, d) {
   const c = d * (n - 1);
   const i = Math.round(c + (r() - 0.5) * 3);
   return TANK_TIERS[Math.max(0, Math.min(n - 1, i))];
+}
+
+// personnel carrier for difficulty d (the one of the matching era, sometimes the one before / after)
+export function pickApcKey(r, d) {
+  const n = APC_TIERS.length;
+  const i = Math.round(d * (n - 1) + (r() - 0.5) * 1.6);
+  return APC_TIERS[Math.max(0, Math.min(n - 1, i))];
 }
 
 // era weights by difficulty: WW1 guns early, post-war ones far down the road
@@ -31,11 +38,11 @@ function pickByEra(r, keys, eraOf, d) {
 const KEYS = Object.keys(WEAPONS);
 // cats: array of allowed categories
 export function pickWeaponKey(r, d, cats) {
-  const keys = KEYS.filter(k => cats.includes(WEAPONS[k].cat));
+  const keys = KEYS.filter(k => cats.includes(WEAPONS[k].cat) && !WEAPONS[k].mount);
   return pickByEra(r, keys, k => WEAPONS[k].era, d);
 }
 export function pickGrenadeKey(r, d, at = false) {
-  const keys = Object.keys(GRENADES).filter(k => !!GRENADES[k].pen === at);
+  const keys = Object.keys(GRENADES).filter(k => !!GRENADES[k].pen === at && !GRENADES[k].craft);
   return pickByEra(r, keys, k => GRENADES[k].era, d);
 }
 
@@ -48,8 +55,8 @@ export function soldierKit(r, d, crew = false) {
     key = pickWeaponKey(r, d, x < 0.5 ? ['rifle'] : x < 0.82 ? ['auto'] : x < 0.92 ? ['mg'] : ['pistol', 'smg', 'revolver']);
   }
   const grenades = {};
-  if (r() < 0.35 + d * 0.2) grenades[pickGrenadeKey(r, d)] = 1 + (r() < 0.3 ? 1 : 0);
-  if (!crew && r() < 0.08 + d * 0.15) grenades[pickGrenadeKey(r, d, true)] = 1;
+  if (r() < 0.4 + d * 0.2) grenades[pickGrenadeKey(r, d)] = 1 + (r() < 0.45 ? 1 : 0) + (r() < 0.1 ? 1 : 0);
+  if (!crew && r() < 0.1 + d * 0.15) grenades[pickGrenadeKey(r, d, true)] = 1;
   return { key, grenades };
 }
 

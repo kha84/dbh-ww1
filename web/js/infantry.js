@@ -10,7 +10,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { WATER_LEVEL, segBox } from './world.js';
-import { WEAPONS, GRENADES, SMALL_CATS, makeWeapon, bakedWeaponMesh, throwVelocity } from './weapons.js';
+import { WEAPONS, GRENADES, SMALL_CATS, BUNDLE_OF, makeWeapon, bakedWeaponMesh, throwVelocity } from './weapons.js';
 
 const wrap = a => Math.atan2(Math.sin(a), Math.cos(a));
 const clamp = THREE.MathUtils.clamp;
@@ -26,6 +26,7 @@ export const STANCE = {
 const UNIFORMS = {
   enemy: { cloth: 0x59604a, dark: 0x3f4535, helmet: 0x464d3a, boots: 0x2a241c },
   crew:  { cloth: 0x2e3033, dark: 0x222325, helmet: 0x18191a, boots: 0x18181a },
+  ally:  { cloth: 0x7a6a48, dark: 0x4f4430, helmet: 0x3d4a2f, boots: 0x2e241a },      // the other player (network)
 };
 const SKIN = new THREE.Color(0xc39a7a);
 const SMAT = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, metalness: 0.05 });
@@ -112,6 +113,21 @@ function buildSoldier(kind, weaponKey) {
   return { root, body, hips, upper, thighL, thighR, shinL, shinR, armL, armR, gun: gunPivot, muzzle: wm.muzzle, small };
 }
 
+// ===================================================================== targets
+// network play: two players - every soldier / tank crew goes for the nearest one (and sticks to it for a while)
+export function pickTarget(who, targets, now) {
+  if (!targets || !targets.length) return null;
+  if (targets.length === 1) return targets[0];
+  const p = who.pos || who.tank.root.position;
+  const d = t => Math.hypot(t.pos.x - p.x, t.pos.z - p.z);
+  let best = targets[0];
+  for (const t of targets) if (d(t) < d(best)) best = t;
+  const cur = targets.find(t => t.id === who.tgtId);
+  if (cur && cur !== best && now - (who.tgtT || 0) < 5 && d(cur) < d(best) * 1.5) return cur;
+  if (!cur || cur !== best) { who.tgtId = best.id; who.tgtT = now; }
+  return best;
+}
+
 // ===================================================================== soldier
 const _v = new THREE.Vector3(), _w = new THREE.Vector3(), _u = new THREE.Vector3();
 const _la = new THREE.Vector3(), _lb = new THREE.Vector3(), _inv = new THREE.Matrix4();
@@ -135,7 +151,7 @@ export class Soldier {
     this.squad = o.squad || 0;
     this.team2 = 0;                            // fire team inside the squad (bounding)
     const W = WEAPONS[o.key];
-    this.role = W.cat === 'mg' ? 'mg' : Object.keys(this.grenades).some(k => GRENADES[k].pen) ? 'at' : 'rifle';
+    this.role = W.cat === 'mg' ? 'mg' : this.antiTank() ? 'at' : 'rifle';
     this.state = o.mode === 'flee' ? 'flee' : 'idle';     // idle | alert | combat | retreat | flee
     this.fleeFrom = o.fleeFrom || null;
     this.fleeT = o.mode === 'flee' ? 4 + Math.random() * 3 : 0;
@@ -216,8 +232,7 @@ export class Soldier {
   atGoal(r = 0.7) { return !this.moveTo || Math.hypot(this.moveTo.x - this.pos.x, this.moveTo.z - this.pos.z) < r; }
 
   // ------------------------------------------------ perception
-  perceive(dt, ctx) {
-    const tgt = ctx.target;
+  perceive(dt, ctx, tgt) {
     if (!tgt) { this.los = false; return Infinity; }
     const dist = Math.hypot(tgt.pos.x - this.pos.x, tgt.pos.z - this.pos.z);
     this.losT -= dt;
@@ -250,9 +265,9 @@ export class Soldier {
   think(dt, ctx) {
     if (!this.alive) { this.animateDeath(dt); return; }
     const W = WEAPONS[this.weapon.key];
-    const tgt = ctx.target;
+    const tgt = pickTarget(this, ctx.targets, ctx.now);
     const now = ctx.now;
-    const dist = this.perceive(dt, ctx);
+    const dist = this.perceive(dt, ctx, tgt);
     this.suppress = Math.max(0, this.suppress - dt * 0.25);
     this.morale = Math.min(1.2, this.morale + dt * (this.suppress < 0.2 ? 0.025 : -0.02 * this.suppress));
     this.coverT += dt;
@@ -286,7 +301,7 @@ export class Soldier {
       const moving = this.speedNow > 0.8;
       const canWhileMoving = W.auto && this.speedNow < 3.5;
       const hidden = this.cover && !this.peek && this.atCover();
-      const wantFire = !hidden && (!moving || canWhileMoving) && (!tgt.isTank || this.role === 'mg' || Math.random() < 0.3);
+      const wantFire = !hidden && (!moving || canWhileMoving) && (!tgt.isTank || this.role === 'mg' || Math.random() < 0.3) && !(tgt.isTank && this.stalk);
       if (wantFire && this.fireCd <= 0 && Math.abs(wrap(toT - this.heading)) < 0.3 && dist < W.range * 1.8) {
         if (this.weapon.mag <= 0) this.reloadT = W.reload * 1.3;
         else this.shoot(ctx, W, tgt, dist, moving);
@@ -318,6 +333,20 @@ export class Soldier {
       return;
     }
 
+    // on the way to climb into a free tank (see Infantry.boarding)
+    if (this.board) {
+      const t = this.board;
+      if (!ctx.ai.joinable(t, this) || (this.state === 'combat' && tgt && dist < 12 && !tgt.isTank)) { this.board = null; }
+      else {
+        const hatch = ctx.ai.hatchPoint(t, this, _v);
+        this.setStance('stand');
+        this.cover = null;
+        this.goto(hatch.x, hatch.z, this.alert ? 5.2 : 3.2);
+        if (Math.hypot(hatch.x - this.pos.x, hatch.z - this.pos.z) < 1.3) ctx.ai.climbIn(this, t);
+        return;
+      }
+    }
+
     if (this.state === 'flee') {
       // bailed-out crew: run away from the burning tank first
       this.fleeT -= 0.35;
@@ -345,7 +374,7 @@ export class Soldier {
     }
 
     if (tgt.isTank) this.decideVsTank(ctx, W, tgt, dist);
-    else this.decideVsFoot(ctx, W, tgt, dist);
+    else { this.stalk = false; this.decideVsFoot(ctx, W, tgt, dist); }
   }
 
   decideIdle(ctx) {
@@ -419,38 +448,109 @@ export class Soldier {
     this.throwCd -= 0.35;
   }
 
+  // anti-tank means: an anti-tank grenade, or enough hand grenades to tie a bundle
+  antiTank() {
+    const g = this.grenades;
+    if (Object.keys(g).some(k => GRENADES[k].pen && g[k] > 0)) return true;
+    return Object.keys(g).some(k => !GRENADES[k].pen && g[k] >= BUNDLE_OF);
+  }
+  // the grenade to throw at a tank (ties a bundle of hand grenades when there is no anti-tank one)
+  atGrenade(craft = false) {
+    const g = this.grenades;
+    const at = Object.keys(g).filter(k => GRENADES[k].pen && g[k] > 0).sort((a, b) => GRENADES[b].pen - GRENADES[a].pen)[0];
+    if (at || !craft) return at || null;
+    const he = Object.keys(g).find(k => !GRENADES[k].pen && g[k] >= BUNDLE_OF);
+    if (!he) return null;
+    g[he] -= BUNDLE_OF;
+    g.bundle = (g.bundle || 0) + 1;
+    this.fireCd = Math.max(this.fireCd, 2.5);            // busy tying it
+    return 'bundle';
+  }
+  // does the tank look this way (its gun / turret points at the soldier)? - its crew would see him coming
+  watchedBy(tank) {
+    if (!tank) return false;
+    const tp = tank.root.position;
+    const to = Math.atan2(this.pos.x - tp.x, this.pos.z - tp.z);
+    const face = tank.heading + (tank.turretYaw || 0);
+    const d = Math.hypot(this.pos.x - tp.x, this.pos.z - tp.z);
+    return Math.abs(wrap(to - face)) < (d < 25 ? 0.75 : 0.45);
+  }
+  // where to throw at a tank: onto the engine deck behind the turret (thin roof armour)
+  deckPoint(tank, out) {
+    const b = tank.vis.hullBox;
+    tank.root.updateMatrixWorld(true);
+    return tank.root.localToWorld(out.set((b.min.x + b.max.x) / 2, b.max.y + 0.15, b.min.z + (b.max.z - b.min.z) * 0.28));
+  }
+
   decideVsTank(ctx, W, tgt, dist) {
-    const at = Object.keys(this.grenades).find(k => GRENADES[k].pen && this.grenades[k] > 0);
+    const tank = tgt.tank;
+    const hunter = this.antiTank() && this.morale > 0.35 && this.state !== 'retreat';
     const tp = tgt.pos;
     this.throwCd -= 0.35;
-    // a tank bearing down: get out of its way
-    if (dist < 13) {
-      const toMe = Math.atan2(this.pos.x - tp.x, this.pos.z - tp.z);
-      const tankMoving = Math.hypot(tgt.vel.x, tgt.vel.z) > 1;
-      if (!(at && this.morale > 0.4) || tankMoving) {
-        const a = toMe + (this.id % 2 ? 1.1 : -1.1);
-        this.setStance('stand');
-        this.goto(this.pos.x + Math.sin(a) * 10, this.pos.z + Math.cos(a) * 10, 5.3);
-        this.cover = null;
-        if (at && dist < 16 && this.los && this.throwCd <= 0) this.throwAt(ctx, at, _v.copy(tp).setY(tp.y + 1.4));
-        return;
-      }
-    }
-    if (at && this.morale > 0.4 && dist < 70 && this.state !== 'retreat') {
-      // tank hunter: close in from cover to cover, preferably from the side, and throw
-      if (!this.cover || this.atCover() && (this.coverT > 3 || dist > 20)) this.takeCover(ctx, tp, { pref: 12, radius: 22, tank: tgt.tank, side: true });
-      if (this.cover) { this.gotoCover(5.2); this.setStance(this.atCover() ? 'crouch' : 'stand'); }
-      else { this.setStance('crouch'); this.goto(tp.x, tp.z, 3.5); }
-      if (dist < 18 && this.los && this.throwCd <= 0) this.throwAt(ctx, at, _v.copy(tp).setY(tp.y + 1.4));
+    const speed = Math.hypot(tgt.vel.x, tgt.vel.z);
+    // the tank drives straight at us (or is about to run us over)
+    const toMe = Math.atan2(this.pos.x - tp.x, this.pos.z - tp.z);
+    const bearing = speed > 1 ? Math.abs(wrap(toMe - Math.atan2(tgt.vel.x, tgt.vel.z))) : 9;
+    if (dist < 13 && (!hunter || (speed > 1.5 && bearing < 0.5))) {
+      const a = toMe + (this.id % 2 ? 1.2 : -1.2);
+      this.setStance('stand');
+      this.goto(this.pos.x + Math.sin(a) * 10, this.pos.z + Math.cos(a) * 10, 5.4);
+      this.cover = null;
+      const at = hunter && this.atGrenade(true);
+      if (at && dist < 16 && this.los && this.throwCd <= 0) this.throwAt(ctx, at, this.deckPoint(tank, _v), true);
       return;
     }
-    // no means against armour: hide from its guns, now and then take a shot at the vision slits
+    if (hunter && dist < 90) {
+      // tank hunter: stalks the tank from cover to cover, preferably from its side / rear, keeps his head down while
+      // the gun looks his way (lies down in the open), dashes on when it looks away, then throws onto the engine deck
+      const watched = this.watchedBy(tank) && this.los;
+      const inCover = this.atCover();
+      this.stalk = true;
+      const near = dist < 17;
+      const coming = speed > 1 && bearing < 0.7;                // it comes this way: wait for it in hiding
+      if (!near && (!this.cover || (inCover && !watched && !coming && (this.coverT > 2.5 || dist > 22)))) {
+        this.takeCover(ctx, tp, { pref: Math.max(9, Math.min(dist - 12, 14)), radius: 24, tank, side: true });
+      }
+      if (near) {
+        // close enough: wait for the moment it looks away (or is too close to miss), then throw
+        const at = this.atGrenade(true);
+        if (at && this.los && this.throwCd <= 0 && (!watched || dist < 9 || Math.random() < 0.15)) {
+          this.throwAt(ctx, at, this.deckPoint(tank, _v), true);
+          // and run for it
+          this.cover = null;
+          this.takeCover(ctx, tp, { pref: 22, radius: 25, tank, retreat: true });
+        } else if (!this.los && !coming) this.goto(tp.x, tp.z, watched ? 1.2 : 4.2);
+        else if (this.cover) this.gotoCover(4.5);
+        this.setStance(watched ? 'crouch' : this.moveSpeed > 3 ? 'stand' : 'crouch');
+        return;
+      }
+      if (this.cover) {
+        if (watched && !inCover) {
+          // spotted in the open: drop and crawl to the cover
+          this.setStance('prone');
+          this.gotoCover(1.2);
+        } else if (inCover) {
+          this.setStance(this.hideStance());
+          this.stop();
+        } else {
+          this.setStance(dist < 40 ? 'crouch' : 'stand');
+          this.gotoCover(dist < 40 ? 3.6 : 5.2);
+        }
+      } else if (watched) { this.setStance('prone'); this.goto(tp.x, tp.z, 1.0); }     // crawl on
+      else { this.setStance('crouch'); this.goto(tp.x, tp.z, 3.5); }
+      return;
+    }
+    this.stalk = false;
+    // no means against armour: hide from its guns; while a comrade stalks the tank, keep its crew busy with fire at
+    // the vision slits
+    const sq = ctx.ai.squadOf(this);
+    const covering = sq && sq.members.some(m => m !== this && m.alive && m.stalk);
     if (!this.cover || (this.atCover() && this.los && this.coverExposedT > 1) || this.coverT > 20) {
-      this.takeCover(ctx, tp, { pref: this.state === 'retreat' ? 90 : 45, radius: 35, tank: tgt.tank });
+      this.takeCover(ctx, tp, { pref: this.state === 'retreat' ? 90 : 45, radius: 35, tank });
     }
     if (this.cover) {
       this.gotoCover(5.2);
-      if (this.atCover()) this.peekCycle(ctx, W, dist, 0.35);
+      if (this.atCover()) this.peekCycle(ctx, W, dist, covering ? 1.2 : 0.35);
       else this.setStance('stand');
     } else { this.stop(); this.setStance('prone'); }
   }
@@ -518,12 +618,13 @@ export class Soldier {
     } else this.fireCd = 60 / W.rpm + 0.6 + Math.random() * 1.1;
   }
 
-  throwAt(ctx, key, target) {
+  throwAt(ctx, key, target, atTank = false) {
     const from = this.eye(new THREE.Vector3(), 'stand');
     from.y += 0.2;
     const t = target.clone();
-    t.x += (Math.random() - 0.5) * 3 * this.skill;
-    t.z += (Math.random() - 0.5) * 3 * this.skill;
+    const spread = (atTank ? 1.2 : 3) * this.skill;
+    t.x += (Math.random() - 0.5) * spread;
+    t.z += (Math.random() - 0.5) * spread;
     ctx.guns.throwGrenade(from, throwVelocity(from, t, 15), key, { soldier: this });
     this.grenades[key]--;
     this.throwCd = 7 + Math.random() * 7;
@@ -634,6 +735,7 @@ export class Infantry {
     this.squadN = 0;
     this.tanks = [];
     this.onDeath = () => {};
+    this.onBoard = () => {};          // (soldier, tank): a soldier climbed into a free tank - it gets a crew
     this.kills = 0;
     this.now = 0;
     // small arms fire heard / felt by the soldiers
@@ -686,7 +788,7 @@ export class Infantry {
     kits.forEach((k, i) => {
       const side = i % 2 ? 1 : -1;
       const off = new THREE.Vector3(side * (b.max.x + 0.8), 0, (i - 1) * 1.2).applyAxisAngle(new THREE.Vector3(0, 1, 0), tank.heading);
-      const s = this.spawn(p.x + off.x, p.z + off.z, { ...k, kind: 'crew', squad, mode: 'flee', fleeFrom: p.clone(), heading: tank.heading });
+      const s = this.spawn(p.x + off.x, p.z + off.z, { ...k, kind: k.kind || 'crew', squad, mode: 'flee', fleeFrom: p.clone(), heading: tank.heading });
       if (s) res.push(s);
     });
     return res;
@@ -872,7 +974,8 @@ export class Infantry {
       sq.members = sq.members.filter(m => m.alive);
       if (!sq.members.length) { this.squads.delete(sq.id); continue; }
       const engaged = sq.members.filter(m => m.state === 'combat');
-      if (engaged.length >= 3 && ctx.target && !ctx.target.isTank) {
+      const st = engaged.length ? pickTarget(engaged[0], ctx.targets, ctx.now) : null;
+      if (engaged.length >= 3 && st && !st.isTank) {
         sq.boundT -= dt;
         if (sq.boundT <= 0) {
           sq.boundT = rand(6, 10);
@@ -882,7 +985,11 @@ export class Infantry {
         }
       } else sq.advance = null;
     }
+    this.boardT = (this.boardT ?? 1) - dt;
+    if (this.boardT <= 0) { this.boardT = 1; this.boarding(ctx); }
     for (const s of this.soldiers) s.think(dt, ctx);
+    // soldiers who climbed into a tank are its crew now
+    if (this.soldiers.some(s => s.gone)) this.soldiers = this.soldiers.filter(s => !s.gone);
     // tanks: push soldiers aside, run over those who don't get away
     for (const t of ctx.tanks) {
       const tp = t.root.position;
@@ -907,10 +1014,66 @@ export class Infantry {
     }
   }
 
+  // ------------------------------------------------ taking over free tanks
+  // a tank the soldiers can crew and fight in: whole, empty, able to shoot (main gun or machine gun)
+  crewable(t) {
+    if (!t || t.wrecked || t.crew || t.playerInside || t.remoteInside || t.fire || t.craneLock || t.noBoard) return false;
+    if (t.hp.engine <= 0 && t.hp.transmission <= 0) return false;
+    return (t.parts.gun && t.hp.gun > 0 && t.ammo > 0) || (t.mg && t.mgAmmo > 0);
+  }
+  // crewable, or already manned by his comrades who have room for one more
+  joinable(t, s) {
+    if (this.crewable(t)) return true;
+    return !!t && t.crew && !t.wrecked && !t.playerInside && t.crewSquad === s.squad && (t.crewKits || []).length < 3;
+  }
+  // where a man climbs in: beside the hull, on his side of it
+  hatchPoint(t, s, out) {
+    const b = t.vis.hullBox, tp = t.root.position;
+    const c = Math.cos(t.heading), sn = Math.sin(t.heading);
+    const lx = (s.pos.x - tp.x) * c - (s.pos.z - tp.z) * sn;
+    const side = lx >= 0 ? 1 : -1;
+    const x = side > 0 ? b.max.x + 0.5 : b.min.x - 0.5, z = (b.min.z + b.max.z) / 2;
+    return out.set(tp.x + x * c + z * sn, tp.y, tp.z - x * sn + z * c);
+  }
+  // squads near a free tank send men to crew it (alerted soldiers take any usable tank around, idle ones only
+  // those standing close - e.g. a tank the player left behind)
+  boarding(ctx) {
+    const free = ctx.tanks.filter(t => this.crewable(t));
+    for (const t of free) {
+      const tp = t.root.position;
+      const want = Math.min(3, (t.def.crew || []).length || 2);
+      let going = this.soldiers.filter(s => s.alive && s.board === t).length;
+      if (going >= want) continue;
+      const cands = this.soldiers.filter(s => {
+        if (!s.alive || s.board || s.state === 'flee' || s.state === 'retreat' || s.dodge) return false;
+        const d = Math.hypot(s.pos.x - tp.x, s.pos.z - tp.z);
+        return s.state === 'idle' ? d < 35 && !t.derelict : d < 65;
+      }).sort((a, b) => a.pos.distanceTo(tp) - b.pos.distanceTo(tp));
+      for (const s of cands) {
+        if (going >= want) break;
+        // keep the squad's MG on the ground unless it is all that is left
+        if (s.role === 'mg' && cands.length > want) continue;
+        s.board = t;
+        going++;
+      }
+    }
+  }
+  climbIn(s, t) {
+    s.board = null;
+    s.gone = true;
+    s.dispose();
+    const first = !t.crew;
+    t.crewKits = first ? [] : t.crewKits || [];
+    t.crewKits.push({ key: s.weapon.key, grenades: { ...s.grenades } });
+    t.crewSquad = s.squad;
+    this.onBoard(s, t, first);
+  }
+
   // forget soldiers far from the player; bodies disappear after a while
-  prune(anchor, dist = 700) {
+  prune(anchor, dist = 700, anchor2 = null) {
     this.soldiers = this.soldiers.filter(s => {
-      const far = Math.hypot(s.pos.x - anchor.x, s.pos.z - anchor.z) > dist;
+      const far = Math.hypot(s.pos.x - anchor.x, s.pos.z - anchor.z) > dist &&
+                  (!anchor2 || Math.hypot(s.pos.x - anchor2.x, s.pos.z - anchor2.z) > dist);
       const old = !s.alive && s.deathT > 1.2 && (s.goneT = (s.goneT || 0) + 1) > 60;
       if (far || old) { s.dispose(); return false; }
       return true;

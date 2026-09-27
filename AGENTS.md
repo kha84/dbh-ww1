@@ -5,8 +5,9 @@
 **DBH-WW1** is a 3D first-person game built with 3js
 The game features:
 - Main menu (page opened without a mode): main game (endless road, random or given seed), duel (own tank vs 1-5 chosen
-  enemy tanks on an enclosed field), tank range (ramps, ditches, ponds, target hulks, repair station, village), loading
-  a saved game. Saving: pause menu or F5 (road mode only, localStorage)
+  enemy tanks on an enclosed field), tank range (ramps, ditches, ponds, target hulks, repair station, village), network
+  game (two players, host / join by code), loading a saved game. Saving: pause menu or F5 (road mode only, localStorage)
+- Network play for two players (net.js, WebRTC): co-op on the road / in a duel / on the range; the host runs the world
 - An endless road ("drive beyond horizons") through procedurally streamed terrain, with villages, towns,
   gas stations and tank repair stations along it, rivers crossing it (bridges: timber trestle / steel / stone; some
   shallow ones are fords); every game gets a random world seed (`?seed=N` replays one)
@@ -15,12 +16,17 @@ The game features:
   Abrams) third-person / gunner-sight, or first person inside
   the crew compartment with commander / gunner / driver stations; every tank has its own interior (paint by nation /
   era, radios, racks, fuel cells, gearboxes, ball MGs, displays...)
+- Armoured personnel carriers (Mark IX, Sd.Kfz. 251, BTR-152, M113, BTR-80): a machine gun instead of a main gun,
+  troop seats; the enemy's ride with the tank patrols (and alone) full of infantry that dismounts when the enemy is met;
+  the player drives one (E from the front) or rides in the back (E from behind) and fires his own weapon from there
 - Tank types are ordered by the year they appeared (`TANK_TIERS`, same year: weaker first): the road starts with two of
   the weakest tank of all (`STARTER_TANK`, by `tankRating`), further down the road the enemy (and the spare parts at
   repair stations) follow the historical order
 - Enemy infantry (roadside posts, garrisons, escorts, tank crews bailing out of burning tanks) with small arms and grenades
   and a squad AI: cover (houses, walls, sandbags, berms, wrecks, trees, terrain), peeking / hiding, stances (stand,
   crouch, prone), suppression, bounding by fire teams, flanking, grenades, dodging grenades, falling back, tank hunting
+  (stalking from cover to cover while the tank looks away, crawling when watched, bundles of hand grenades / AT grenades
+  thrown onto the engine deck), taking over free tanks (the player's own too, if left behind) and fighting in them
 - Small arms: 10 pistols, 10 revolvers, 10 compact SMGs, 10 rifles, 10 automatics, 13 machine guns + grenades (incl. anti-tank);
   every weapon has its own model; first-person view model with hands, bob / sway / sprint pose;
   one small + one big weapon carried, cartridges by calibre; weapons / ammo can be stowed in and taken out of tanks
@@ -47,7 +53,8 @@ The game features:
 
 ## Run the web game
 ```bash
-python3 -m http.server 8000
+python3 server.py 8000          # static files + the room mailbox of the network game
+# or: python3 -m http.server 8000 (network play then works with invitation / answer codes)
 # open http://localhost:8000/index.html
 ```
 Server is required for ES modules (file:// won't work).
@@ -59,6 +66,8 @@ web/js/main.js          # orchestrator: config (mode / seed / load), input, came
                         #   interactions, repair menu, service zones, HUD panels, game loop, game over / victory
 web/js/menu.js          # main menu (reloads the page with ?mode=... / ?load=...)
 web/js/modes.js         # game modes: world options per mode, duel / range setup, arena bounds, duel status
+web/js/net.js           # network play: WebRTC link (room code via server.py or copy-paste codes), host-authoritative
+                        #   world, tank ownership, snapshots / full states / events, puppets and the other player's figure
 web/js/save.js          # saved games: snapshot / restore (restoreBefore runs before the world is generated), localStorage
 web/js/hud.js           # tank markers over the view, minimap
 web/js/world.js         # endless world: road centreline roadX(z)/roadH(z), chunked terrain streamed around
@@ -66,6 +75,8 @@ web/js/world.js         # endless world: road centreline roadX(z)/roadH(z), chun
                         #   arenas (opts.arena: 'duel' | 'range', features, bounds)
 web/js/rivers.js        # river plans (between settlements), channel carving, bridge models / decks / railings
 web/js/settlements.js   # roadside villages / towns / gas stations / repair stations (+ items, service zones)
+web/js/tankdefs/apckit.js  # shared pieces of the personnel carriers (wheels that steer, open troop boxes, benches,
+                        #   troop seats, MG shield)
 web/js/tankdefs/        # ONE FILE PER TANK TYPE: gameplay data (hull / turret / gun / engine / fuel / drive, seats,
                         #   interior layout + props) and its procedural models; index.js = registry (TANK_DEFS)
 web/js/paint.js         # paint: colour names, spray can colours, recolouring baked models (paintObject), patch material
@@ -107,6 +118,9 @@ web/js/noise.js         # perlin/fbm, hash, seeded rng
   part (the MG pintle: takes the MG into the big-weapon slot / mounts a carried MG; the fuel tanks show the fuel left),
   Q (or F) opens / closes the engine bay (the engine won't run while it is open). F at the crane panel opens
   the crane menu (digits 1-4).
+- Personnel carrier: E next to its front half - drive it, next to its rear half - climb into the troop compartment;
+  there 1/2/3 pick the own weapon, LMB fires over the side / from the hatch / through the loophole (seats with `fire`),
+  R reloads, Q stands up (then Q at a seat / 1/2/3 for commander / gunner / driver).
 - In tank: W/S throttle, A/D steer, SPACE brake, mouse aims (turret follows), LMB fire, RMB gunner sight, X main gun / MG
   (hold LMB for bursts),
   F fire extinguisher, R repair kit menu (digits choose the system), V third person / inside view, ESC pause
@@ -115,7 +129,8 @@ web/js/noise.js         # perlin/fbm, hash, seeded rng
   gunner = gun only, driver = driving only; standing up = WASD moves around the compartment.
 
 ## Web debugging
-Game: `?mode=road|duel|range`, `&tank=KEY` (duel / range), `&enemies=K1,K2,...` (duel, `random` allowed), `?load=SAVE_ID`.
+Game: `?mode=road|duel|range`, `&tank=KEY` (duel / range, APC keys too), `&net=host|guest` (network play; the guest
+takes what it joins from sessionStorage `dbh-ww1-net`, written by the menu), `&enemies=K1,K2,...` (duel, `random` allowed), `?load=SAVE_ID`.
 Without `mode` / `load` the main menu is shown; `?seed=N` or `?start=Z` alone start the road directly.
 URL params: `?nowater=1&noclouds=1&notrees=1&notanks=1&noenemies=1&noinfantry=1&noshadows=1&nofog=1&waterred=1&watery=N&noaa=1&logdepth=1`
 `?seed=N` world seed (random without it; shown in the pause menu), `?start=Z` start further down the road, `?god=1`
@@ -200,3 +215,19 @@ rendering (handy for headless tests; `game.state.noLock = true` lets small arms 
   trees, terrain. Player takes 50% bullet damage. Shells and grenades call `onExplosion` -> `Infantry.explosion`.
 - Soldiers are culled beyond 700 m, bodies after ~2 min; dropped loot (`drop:*` pickups) beyond 1.2 km.
 - Tanks lose speed when knocking down a tree / ramming a house (`tank.bump` slows them for a moment), more for light ones.
+- Personnel carriers: `hull.apc`, `hull.wheeled` (steering: turn rate grows with speed, `hull.steer` wheel pivots turn),
+  `hull.troops` [{ pos, eye, ry, fire }] -> seats with roles `troop0..N` (`seat.troop`), no gun (`gun: null`,
+  `canMountGun()` false), `hull.mgAmmo`, `hull.mgShield` (goes onto the MG pivot), `hull.noPost`, turret
+  `mgInside` (BTR-80). `interior.open` = no roof. `tank.troops` = kits of the riding infantry (`director.dismount`),
+  `APC_TIERS` / `loot.pickApcKey` by era. Mounted MGs (`WEAPONS[k].mount`) are never carried / found.
+- Welded patches (`Tank.addPatch`) are built by projecting a grid onto the host's own meshes (`patchGeometry`): they
+  shrink / shift to stay on one face and follow curved armour; `userData.size` is saved.
+- Trees: a shot into a stump cuts it lower (`world.cutStump`, `brokenTrees` entry `y2`), the piece falls down.
+- Infantry vs tanks: `Soldier.antiTank()` / `atGrenade(craft)` (two hand grenades -> `bundle`, pen 40),
+  `watchedBy(tank)` (the turret looks at him), `deckPoint(tank)`; taking over tanks: `Infantry.crewable / boarding /
+  climbIn` -> `infantry.onBoard` (TankAI 'hunt' with `leash`), `tank.crewKits` bail out as those men.
+- AI targets: `director.think(dt, now, targets)` / `infantry.update(dt, { targets })`, `pickTarget` (nearest, sticky).
+- Network play: tanks have `nid` and `netOwner` ('host' | 'guest'); a tank owned by the other machine is `remote`
+  (`Tank.netStep` follows `setNetPose`, no physics). The guest runs no AI (`director.disabled`), its guns are `visual`,
+  its shells `ghost`; `remoteInside`, `guns.remoteFoot / remoteExposed` let the host's enemy hit the guest.
+  `combat.now` is the game time (`tank.lastHitT`).

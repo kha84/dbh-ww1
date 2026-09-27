@@ -724,6 +724,11 @@ export function buildGrenadeModel(key, D) {
     mesh(g, G.cylY, mat, 0, 0.2, 0, 0.026, 0.08, 0.026);
     mesh(g, G.cylY, M.blued, 0, 0.2, 0, 0.03, 0.05, 0.03);                                  // fragmentation sleeve
     mesh(g, G.cylY, M.olive, 0, 0.08, 0, 0.014, 0.16, 0.014);
+  } else if (key === 'bundle') {                                                             // grenade heads tied round a stick grenade
+    mesh(g, G.cylY, mat, 0, 0.26, 0, 0.034, 0.075, 0.034);
+    for (const a of [0, 2.1, 4.2]) mesh(g, G.cylY, mat, Math.sin(a) * 0.066, 0.25, Math.cos(a) * 0.066, 0.032, 0.07, 0.032);
+    mesh(g, G.cylY, M.canvas, 0, 0.25, 0, 0.1, 0.018, 0.1);                               // binding wire / cord
+    mesh(g, G.cylY, M.beech, 0, 0.12, 0, 0.013, 0.22, 0.013);
   } else if (key === 'rpg43' || key === 'rkg3') {                                            // anti-tank: shaped charge head on a handle
     mesh(g, G.cylY, mat, 0, 0.25, 0, 0.045, 0.1, 0.045);
     mesh(g, new THREE.CylinderGeometry(0.03, 0.045, 0.05, 12), mat, 0, 0.325, 0, 1, 1, 1);

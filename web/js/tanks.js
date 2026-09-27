@@ -96,6 +96,105 @@ function isUnder(o, anc) {
   return false;
 }
 
+// ---------------------------------------------------------------- welded patches that follow the armour
+// A patch is a thin plate laid onto the surface of its host: a grid of points projected onto the host's own meshes
+// (not those of the parts sitting on it). It shrinks / shifts until it lies on one face of the armour (no corner
+// hanging in the air over an edge), its vertices follow curved castings, and its rim is a low weld bead.
+const PATCH_N = 5, PATCH_T = 0.016;
+const _pa = new THREE.Vector3(), _pb = new THREE.Vector3(), _pn = new THREE.Vector3(), _po = new THREE.Vector3();
+function patchTargets(host) {
+  const res = [];
+  const walk = o => {
+    if (!o.visible || o.userData.mark || o.userData.bag || o.userData.interior) return;
+    if (o !== host && o.userData.markHost) return;
+    if (o.isMesh) res.push(o);
+    for (const c of o.children) walk(c);
+  };
+  walk(host);
+  return res;
+}
+function patchGeometry(host, pos, quat, sx, sy) {
+  const targets = patchTargets(host);
+  if (!targets.length) return null;
+  host.updateMatrixWorld(true);
+  const hq = host.getWorldQuaternion(new THREE.Quaternion());
+  const q = hq.clone().multiply(quat);
+  const O = host.localToWorld(pos.clone());
+  const A = new THREE.Vector3(1, 0, 0).applyQuaternion(q), B = new THREE.Vector3(0, 1, 0).applyQuaternion(q);
+  const Nn = new THREE.Vector3(0, 0, 1).applyQuaternion(q);
+  // depth of the surface under the point (u, v) of the patch plane (null: nothing flat enough there)
+  const depth = (u, v) => {
+    _po.copy(O).addScaledVector(A, u).addScaledVector(B, v).addScaledVector(Nn, 0.2);
+    _ray.set(_po, _pn.copy(Nn).negate());
+    _ray.far = 0.36;
+    const hits = _ray.intersectObjects(targets, false);
+    for (const h of hits) {
+      if (!h.face) continue;
+      const n = _pa.copy(h.face.normal).applyMatrix3(_nm.getNormalMatrix(h.object.matrixWorld)).normalize();
+      if (n.dot(Nn) < 0.55) return null;
+      return 0.2 - h.distance;
+    }
+    return null;
+  };
+  const fit = (w, h, cu, cv) => {
+    const d = [];
+    for (let j = 0; j <= PATCH_N; j++) for (let i = 0; i <= PATCH_N; i++) {
+      // corners first would be nicer, but the grid is small: bail out on the first miss
+      const z = depth(cu + (i / PATCH_N - 0.5) * w, cv + (j / PATCH_N - 0.5) * h);
+      if (z == null || Math.abs(z) > 0.06) return null;
+      if (d.length && Math.abs(z - d[d.length - 1]) > 0.035 && i > 0) return null;     // a step in the armour
+      d.push(z);
+    }
+    return d;
+  };
+  let grid = null, W = sx, H = sy, CU = 0, CV = 0;
+  outer: for (let f = 1; f > 0.2; f *= 0.84) {
+    const w = sx * f, h = sy * f;
+    const sh = [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]];
+    for (const [a, b] of sh) {
+      const cu = a * (sx - w) * 0.5 + a * 0.02, cv = b * (sy - h) * 0.5 + b * 0.02;
+      if (f === 1 && (a || b)) continue;
+      const d = fit(w, h, cu, cv);
+      if (d) { grid = d; W = w; H = h; CU = cu; CV = cv; break outer; }
+    }
+  }
+  if (!grid) return null;
+  // top surface: grid lifted above the armour; rim: down to just below the surface
+  const n1 = PATCH_N + 1, P = [], UV = [], I = [];
+  const vert = (i, j, lift, inset = 0) => {
+    const u = CU + (i / PATCH_N - 0.5) * W * (1 - inset), v = CV + (j / PATCH_N - 0.5) * H * (1 - inset);
+    P.push(u, v, grid[j * n1 + i] + lift);
+    UV.push(i / PATCH_N, j / PATCH_N);
+    return P.length / 3 - 1;
+  };
+  for (let j = 0; j <= PATCH_N; j++) for (let i = 0; i <= PATCH_N; i++) {
+    const edge = i === 0 || j === 0 || i === PATCH_N || j === PATCH_N;
+    vert(i, j, edge ? PATCH_T * 0.55 : PATCH_T);
+  }
+  for (let j = 0; j < PATCH_N; j++) for (let i = 0; i < PATCH_N; i++) {
+    const a = j * n1 + i, b = a + 1, c = a + n1, e = c + 1;
+    I.push(a, b, e, a, e, c);
+  }
+  // skirt around the rim
+  const ring = [];
+  for (let i = 0; i < PATCH_N; i++) ring.push([i, 0]);
+  for (let j = 0; j < PATCH_N; j++) ring.push([PATCH_N, j]);
+  for (let i = PATCH_N; i > 0; i--) ring.push([i, PATCH_N]);
+  for (let j = PATCH_N; j > 0; j--) ring.push([0, j]);
+  const low = ring.map(([i, j]) => vert(i, j, -0.006));
+  for (let k = 0; k < ring.length; k++) {
+    const [i0, j0] = ring[k], [i1, j1] = ring[(k + 1) % ring.length];
+    const t0 = j0 * n1 + i0, t1 = j1 * n1 + i1, l0 = low[k], l1 = low[(k + 1) % ring.length];
+    I.push(t0, l0, l1, t0, l1, t1);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(UV, 2));
+  g.setIndex(I);
+  g.computeVertexNormals();
+  return g;
+}
+
 // ---------------------------------------------------------------- sandbags: a pile of three bags
 let BAG = null;
 function bagRes() {
@@ -153,6 +252,8 @@ export class Tank {
     this.paint = opts.paint ?? null;             // hull colour when repainted (null: the stock paint of the type)
     if (this.paint != null) paintObject(this.root, this.paint);
     this.turretless = !!HULLS[key].turretless;
+    this.apc = !!HULLS[key].apc;                 // armoured personnel carrier: troop seats, no main gun
+    this.wheeled = !!HULLS[key].wheeled;         // steers with its front wheels (can't turn on the spot)
     // yaw pivot: turret ring (or the Mark V gun mount)
     this.turret = new THREE.Group();
     this.turret.position.copy(this.turretless ? this.hull.mount : this.hull.ring.pos);
@@ -174,6 +275,7 @@ export class Tank {
     this.mgPivot.position.y = 0.3;
     this.mgPivot.rotation.order = 'YXZ';
     this.mgMount.add(this.mgPivot);
+    if (this.hull.mgShield) this.mgPivot.add(this.hull.mgShield);     // the gun shield turns with the gun
     this.turret.add(this.mgMount);
     this.mg = null;
     this.mgMesh = null;
@@ -212,10 +314,12 @@ export class Tank {
     if (mgKey) {
       this.setMG(makeWeapon(mgKey));
       const cal = WEAPONS[mgKey].cal;
-      if (this.cargo.ammo[cal] === undefined) this.cargo.ammo[cal] = opts.mgAmmo ?? 500;
+      if (this.cargo.ammo[cal] === undefined) this.cargo.ammo[cal] = opts.mgAmmo ?? HULLS[key].mgAmmo ?? 500;
     }
     for (let i = 0; i < (opts.bags || 0); i++) this.addSandbag();
     this.extinguishers = 3;
+    // infantry riding in a personnel carrier (soldier kits: they dismount to fight)
+    this.troops = opts.troops ? [...opts.troops] : [];
     this.loot = { repair_kit: opts.kits || 0, torch: opts.torches || 0 };
     // spare armour plates stowed on board: their colours (a count = plates painted like the tank)
     this.plates = Array.isArray(opts.plates) ? [...opts.plates] : new Array(opts.plates || 0).fill(this.hullColor);
@@ -252,7 +356,7 @@ export class Tank {
     const T = this.parts.turret;
     return T ? partVisual(T).gunPivot : this.mountPivot;
   }
-  canMountGun() { return !!this.parts.turret || this.turretless; }
+  canMountGun() { return !this.apc && (!!this.parts.turret || this.turretless); }
 
   // install / remove a part (turret body is handled by removeTurret / installTurret)
   setPart(kind, part, silent = false) {
@@ -322,7 +426,7 @@ export class Tank {
     // the machine gun sits in the second turret of twin-turret tanks (no pintle post there)
     const mgParent = T && T.second ? T.second.group : this.turret;
     if (this.mgMount.parent !== mgParent) mgParent.add(this.mgMount);
-    this.mgPost.visible = !(T && T.second);
+    this.mgPost.visible = !(T && (T.second || T.mgInside)) && !this.hull.noPost;
     this.mgMount.position.copy(mp);
     this.fuel = Math.min(this.fuel, this.fuelMax);
     if (this.ammo !== undefined) this.ammo = Math.min(this.ammo, this.def.ammoMax);
@@ -332,6 +436,7 @@ export class Tank {
   seats() {
     const res = [];
     for (const [role, s] of Object.entries(HULLS[this.key].seats)) res.push({ role, space: 'hull', ...s });
+    (HULLS[this.key].troops || []).forEach((s, i) => res.push({ role: 'troop' + i, space: 'hull', troop: true, ...s }));
     if (this.parts.turret) {
       for (const [role, s] of Object.entries(TURRETS[this.parts.turret.key].seats)) res.push({ role, space: s.in === 'second' ? 'second' : 'turret', ...s });
     }
@@ -528,6 +633,7 @@ export class Tank {
 
   // ------------------------------------------------ update
   update(dt, world, others) {
+    if (this.remote) { this.netStep(dt); return; }
     const p = this.root.position;
     const c = this.controls;
     if (!this.operated || this.craneLock) { c.throttle = 0; c.steer = 0; c.brake = 1; }
@@ -541,10 +647,16 @@ export class Tank {
       this.speed = Math.max(-maxS * 0.45, Math.min(maxS, this.speed));
       if (Math.abs(this.speed) < 0.01) this.speed = 0;
 
-      // tracked vehicles can pivot in place
-      const steerEff = 1 - Math.min(0.6, Math.abs(this.speed) / Math.max(1, this.def.maxSpeed) * 0.7);
-      this.heading += c.steer * this.turnEff * steerEff * dt * (this.speed >= -0.1 ? 1 : -1) *
-                      (0.45 + 0.55 * Math.min(1, Math.abs(this.speed) / 2.5));
+      if (this.wheeled) {
+        // wheels: the turn rate grows with the speed (no turning on the spot), reversing turns the other way
+        const k = THREE.MathUtils.clamp(this.speed / 4, -1, 1) * (1 - Math.min(0.5, Math.abs(this.speed) / Math.max(1, this.def.maxSpeed) * 0.5));
+        this.heading += c.steer * this.turnEff * k * dt;
+      } else {
+        // tracked vehicles can pivot in place
+        const steerEff = 1 - Math.min(0.6, Math.abs(this.speed) / Math.max(1, this.def.maxSpeed) * 0.7);
+        this.heading += c.steer * this.turnEff * steerEff * dt * (this.speed >= -0.1 ? 1 : -1) *
+                        (0.45 + 0.55 * Math.min(1, Math.abs(this.speed) / 2.5));
+      }
 
       const ox = p.x, oz = p.z;
       const dirX = Math.sin(this.heading), dirZ = Math.cos(this.heading);
@@ -616,8 +728,12 @@ export class Tank {
       this.tiltX += (THREE.MathUtils.clamp(rawPitch, -MAX_TILT, MAX_TILT) - this.tiltX) * k;
       this.tiltZ += (THREE.MathUtils.clamp(rawRoll, -MAX_TILT, MAX_TILT) - this.tiltZ) * k;
 
-      // wheel spin
+      // wheel spin, steered wheels turn
       for (const w of this.vis.wheels) w.rotation.x += this.speed * dt / this.vis.wheelR;
+      if (this.hull.steer) {
+        const a = c.steer * 0.42;
+        for (const st of this.hull.steer) st.rotation.y += (a - st.rotation.y) * Math.min(1, dt * 6);
+      }
     }
 
     // engine deck hatch animation
@@ -647,6 +763,65 @@ export class Tank {
       if (this.rammedT > 0) this.rammedT -= dt;
       this.updateFire(dt);
     }
+  }
+
+  // ------------------------------------------------ network play
+  // a tank driven on the other machine: follows the pose received over the network (see net.js) - no physics here
+  netStep(dt) {
+    const n = this.net;
+    const p = this.root.position;
+    const ox = p.x, oz = p.z;
+    const lerpA = (a, b, k) => a + Math.atan2(Math.sin(b - a), Math.cos(b - a)) * k;
+    if (n) {
+      const k = n.snap ? 1 : 1 - Math.exp(-dt * 12);
+      n.snap = false;
+      // a little extrapolation along the last speed hides the gaps between the packets
+      const age = Math.min(0.25, (performance.now() - n.at) / 1000);
+      const ex = Math.sin(n.heading) * n.speed * age, ez = Math.cos(n.heading) * n.speed * age;
+      p.x += (n.x + ex - p.x) * k; p.y += (n.y - p.y) * k; p.z += (n.z + ez - p.z) * k;
+      this.heading = lerpA(this.heading, n.heading, k);
+      this.tiltX += (n.tiltX - this.tiltX) * k; this.tiltZ += (n.tiltZ - this.tiltZ) * k;
+      this.turretYaw = lerpA(this.turretYaw, n.turretYaw, k);
+      this.gunElev += (n.gunElev - this.gunElev) * k;
+      this.secondYaw = lerpA(this.secondYaw, n.secondYaw || 0, k);
+      this.mgYaw = lerpA(this.mgYaw, n.mgYaw || 0, k); this.mgPitch += ((n.mgPitch || 0) - this.mgPitch) * k;
+      this.speed = n.speed;
+      this.controls.steer = n.steer || 0;
+    }
+    if (dt > 0) {
+      this.velocity.set((p.x - ox) / dt, 0, (p.z - oz) / dt);
+      this.speedKmh = Math.abs(this.speed) * 3.6;
+      for (const w of this.vis.wheels) w.rotation.x += this.speed * dt / this.vis.wheelR;
+      if (this.hull.steer) for (const st of this.hull.steer) st.rotation.y += (this.controls.steer * 0.42 - st.rotation.y) * Math.min(1, dt * 6);
+      const hinge = this.hull.bay.hinge;
+      hinge.rotation.x += ((this.bayOpen ? -1.95 : 0) - hinge.rotation.x) * Math.min(1, dt * 5);
+      this.hull.bay.hole.visible = hinge.rotation.x < -0.05;
+      if (this.reload > 0) this.reload -= dt;
+      if (this.mgCool > 0) this.mgCool -= dt;
+    }
+    this.root.quaternion.setFromAxisAngle(UP, this.heading)
+      .multiply(_q.setFromAxisAngle(AX, this.tiltX))
+      .multiply(_q2.setFromAxisAngle(AZ, this.tiltZ));
+    this.turret.rotation.y = this.turretYaw;
+    this.gun.rotation.x = -this.gunElev;
+    const S = this.secondTurret;
+    if (S) {
+      const c = Math.cos(-this.turretYaw), s = Math.sin(-this.turretYaw);
+      S.group.position.set(S.pos.x * c + S.pos.z * s, S.pos.y, -S.pos.x * s + S.pos.z * c);
+      S.group.rotation.y = this.secondYaw - this.turretYaw;
+    }
+    this.mgPivot.rotation.set(-this.mgPitch, this.mgYaw, 0);
+    this.root.updateMatrixWorld(true);
+  }
+  // the pose sent to the other machine
+  netPose() {
+    const p = this.root.position, r = x => Math.round(x * 1000) / 1000;
+    return [r(p.x), r(p.y), r(p.z), r(this.heading), r(this.tiltX), r(this.tiltZ), r(this.turretYaw), r(this.gunElev),
+            r(this.speed), r(this.secondYaw), r(this.mgYaw), r(this.mgPitch), r(this.controls.steer || 0)];
+  }
+  setNetPose(a, snap = false) {
+    this.net = { x: a[0], y: a[1], z: a[2], heading: a[3], tiltX: a[4], tiltZ: a[5], turretYaw: a[6], gunElev: a[7],
+                 speed: a[8], secondYaw: a[9], mgYaw: a[10], mgPitch: a[11], steer: a[12], at: performance.now(), snap };
   }
 
   // twin turrets: the machine-gun turret keeps its place on the hull while the gun turret traverses and turns on
@@ -850,13 +1025,15 @@ export class Tank {
     return res;
   }
   addPatch(host, pos, quat, sx, sy, color) {
-    const m = new THREE.Mesh(PATCH_GEO, patchMaterial(color));
+    this.root.updateMatrixWorld(true);
+    const m = new THREE.Mesh(patchGeometry(host, pos, quat, sx, sy) || PATCH_GEO, patchMaterial(color));
     m.userData.mark = true;
     m.userData.patch = true;
     m.userData.color = color;
+    m.userData.size = [sx, sy];
     m.position.copy(pos);
     m.quaternion.copy(quat);
-    m.scale.set(sx, sy, 1);
+    if (m.geometry === PATCH_GEO) m.scale.set(sx * 0.35, sy * 0.35, 1);      // no room: a small plate
     m.castShadow = false; m.receiveShadow = true;
     host.add(m);
     return m;
@@ -880,7 +1057,10 @@ export class Tank {
       if (hit) { this.addPatch(hit.host, hit.pos, hit.quat, 0.6, 0.5, color); n++; }
     }
     const all = this.patches();
-    for (let i = 0; i < all.length - MAX_PATCHES; i++) all[i].removeFromParent();
+    for (let i = 0; i < all.length - MAX_PATCHES; i++) {
+      all[i].removeFromParent();
+      if (all[i].geometry !== PATCH_GEO) all[i].geometry.dispose();
+    }
     return n;
   }
   // hit marks (not patches) still on the tank

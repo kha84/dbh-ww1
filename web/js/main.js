@@ -5,7 +5,7 @@ import { Tank, MODULE_IDS, MODULE_NAMES, SYSTEM_IDS, G, partVisual } from './tan
 import { HULLS, GUNS, SYSTEM_PART, PART_NAMES, ORIGIN_NAMES, SANDBAG, STARTER_TANK, makePart, partLabel } from './parts.js';
 import { turretCeiling } from './models.js';
 import { Combat, Effects, describeHit } from './combat.js';
-import { EnemyDirector } from './ai.js';
+import { EnemyDirector, TankAI } from './ai.js';
 import { Items, ITEM_DEFS, TOOL_USE, SHELLS_PER_BOX, CANISTER_L, SPRAY_USE, buildItemMesh, shellsLabel, ammoLabel, grenadeLabel } from './items.js';
 import { STEEL, colorName, swatch } from './paint.js';
 import { Workshop } from './workshop.js';
@@ -20,6 +20,7 @@ import { rng } from './noise.js';
 import { worldOptions, setupDuel, setupRange, duelStatus, clampToBounds, MODE_NAMES } from './modes.js';
 import { showMenu } from './menu.js';
 import { snapshot, restore, restoreBefore, writeSave, loadSave } from './save.js';
+import { Net, NET_KEY } from './net.js';
 
 // debug flags: ?nowater=1 ?noclouds=1 ?notrees=1 ?notanks=1 ?noenemies=1 ?noinfantry=1 ?noshadows=1 ?nofog=1
 //              ?waterred=1 ?watery=N ?noaa=1 ?logdepth=1 ?seed=N ?god=1 ?start=Z ?view=N
@@ -29,6 +30,9 @@ const dbg = new URLSearchParams(location.search);
 const LOAD = dbg.has('load') ? loadSave(dbg.get('load')) : null;
 const MODE = LOAD ? 'road' : (dbg.get('mode') || (dbg.has('seed') || dbg.has('start') ? 'road' : null));
 const CFG = { mode: MODE, tank: dbg.get('tank'), enemies: (dbg.get('enemies') || '').split(',').filter(Boolean) };
+// network play: ?net=host (this machine runs the world and waits for a second player) / ?net=guest (joins, see net.js)
+const NET = MODE && !LOAD && ['host', 'guest'].includes(dbg.get('net')) ? dbg.get('net') : null;
+let net = null;
 // every game gets its own world unless a seed is given (?seed=N replays a world)
 const SEED = LOAD ? LOAD.seed : dbg.has('seed') ? parseInt(dbg.get('seed'), 10) : Math.floor(Math.random() * 999999) + 1;
 
@@ -153,6 +157,7 @@ const infantry = new Infantry(scene, world, guns);
 const director = new EnemyDirector(world, scene, SEED, infantry);
 director.guns = guns;
 if (MODE && MODE !== 'road') { director.disabled = true; director.noInfantry = true; }
+if (NET === 'guest') { director.disabled = true; director.noInfantry = true; }      // the host runs the enemy
 const items = new Items(scene, world);
 director.items = items;
 items.onTaken = p => director.bagTaken(p);
@@ -183,7 +188,7 @@ director.onLoot = (id, type, x, z, data) => {
 const garrisoned = new Set();
 function garrison(s) {
   const plan = s.plan;
-  if (plan.k < 2 || garrisoned.has(plan.k) || dbg.get('noinfantry') === '1' || dbg.get('noenemies') === '1') return;
+  if (NET === 'guest' || plan.k < 2 || garrisoned.has(plan.k) || dbg.get('noinfantry') === '1' || dbg.get('noenemies') === '1') return;
   garrisoned.add(plan.k);
   const r = rng((plan.seed ^ 0x9e3779b9) >>> 0);
   const d = difficultyAt(plan.z);
@@ -264,10 +269,12 @@ camera.add(handShells);
 function spawnTank(key, x, z, heading, opts) {
   const t = new Tank(scene, key, new THREE.Vector3(x, 0, z), heading, opts);
   tanks.push(t);
+  if (net && net.host) net.register(t);
   return t;
 }
 
 function removeTank(t) {
+  if (net) net.tankRemoved(t);
   t.dispose();
   const i = tanks.indexOf(t);
   if (i >= 0) tanks.splice(i, 1);
@@ -305,6 +312,11 @@ combat.onEvent = res => {
   const mine = (state.vehicle && res.shooter === state.vehicle) || !!(res.shooter && res.shooter.player);
   if (mine) showHit(describeHit(res));
   if (res.bail) bailOut(res.tank);
+  // the infantry in a personnel carrier: lost with it, or out of the back when its crew is killed
+  else if (res.tank.troops && res.tank.troops.length && res.tank.team === 'enemy') {
+    if (res.destroyed) res.tank.troops = [];
+    else if (res.crewKilled) director.dismount(res.tank);
+  }
   if ((res.crewKilled || res.destroyed || res.bail) && res.tank.team === 'enemy' && !res.tank.counted) {
     res.tank.counted = true;
     if (mine) {
@@ -314,33 +326,61 @@ combat.onEvent = res => {
         : `Экипаж ${res.tank.def.name} уничтожен — танк можно захватить`, '#9fe07f');
     }
   }
-  if (res.tank === state.vehicle) {
-    flashDamage();
-    const mods = res.modules.map(m => MODULE_NAMES[m].toLowerCase());
-    if (res.ricochet) msg('Рикошет по нашему танку', '#ddd');
-    else if (!res.pen && !mods.length) msg('Попадание — броня выдержала', '#ddd');
-    else msg('Нас пробили' + (mods.length ? ': ' + mods.join(', ') : ''), '#ff9a7a');
-    if (res.fire) msg(res.fire === 'ammo' ? 'Боеукладка горит! Туши — F!' : 'Бензобак горит! Туши — F!', '#ff5a3a');
-  }
+  if (res.tank === state.vehicle) ownHitMsg(res);
 };
+function ownHitMsg(res) {
+  flashDamage();
+  const mods = res.modules.map(m => MODULE_NAMES[m].toLowerCase());
+  if (res.ricochet) msg('Рикошет по нашему танку', '#ddd');
+  else if (!res.pen && !mods.length) msg('Попадание — броня выдержала', '#ddd');
+  else msg('Нас пробили' + (mods.length ? ': ' + mods.join(', ') : ''), '#ff9a7a');
+  if (res.fire) msg(res.fire === 'ammo' ? 'Боеукладка горит! Туши — F!' : 'Бензобак горит! Туши — F!', '#ff5a3a');
+}
 combat.onPlayerDamage = (amount) => damagePlayer(amount);
-combat.onExplosion = (pos, r, dmg, owner) => infantry.explosion(pos, r, dmg, owner);
+combat.onExplosion = (pos, r, dmg, owner) => { infantry.explosion(pos, r, dmg, owner); if (net) net.explosion(pos, r, dmg); };
 
-// crew of a burning enemy tank jumps out and fights on foot
+// crew of a burning enemy tank jumps out and fights on foot (soldiers who took the tank over keep their own kit)
 function bailOut(t) {
   if (dbg.get('noinfantry') === '1') return;
   const d = difficultyAt(t.root.position.z);
   const n = 2 + (Math.random() < 0.5 ? 1 : 0);
-  const kits = [];
-  for (let i = 0; i < n; i++) kits.push(soldierKit(Math.random, d, true));
+  const own = !!(t.crewKits && t.crewKits.length);
+  const kits = own ? t.crewKits : [];
+  if (!own) for (let i = 0; i < n; i++) kits.push(soldierKit(Math.random, d, true));
+  t.crewKits = null;
+  // riding infantry of a personnel carrier jumps out too
+  if (t.troops && t.troops.length) { kits.push(...t.troops.map(k => ({ ...k, kind: 'enemy' }))); t.troops = []; }
   infantry.spawnCrew(t, kits);
 }
+
+// enemy soldiers climbed into a free tank: it gets a crew and fights (the player's own tank too, if left behind)
+infantry.onBoard = (s, t, first) => {
+  if (!first) return;
+  if (net) net.takeBack(t);
+  const mine = t.team === 'player';
+  t.crew = true;
+  t.crewHp = 100;
+  t.team = 'enemy';
+  t.counted = false;
+  t.derelict = false;
+  if (t.bayOpen) t.setBay(false);
+  director.release(t);
+  director.ais.push(new TankAI(t, 'hunt', world, { leash: 450 }));
+  if (state.stash === t) closeStash();
+  const near = t.root.position.distanceTo(state.vehicle ? state.vehicle.root.position : player.position) < 400;
+  if (mine) msg(`Противник захватил ваш ${t.def.name}!`, '#ff5a3a');
+  else if (near) msg(`Пехота противника заняла ${t.def.name}!`, '#ff9a7a');
+};
 
 // small arms / grenades
 guns.onPlayerHit = (amount) => damagePlayer(amount, true);
 guns.onExplosion = (pos, r, dmg, owner) => {
   infantry.explosion(pos, r, dmg, owner);
-  if (state.mode === 'walk' && !combat.god) {
+  if (net) net.explosion(pos, r, dmg);
+  if (troopShoot() && !combat.god) {
+    const d = pos.distanceTo(camera.position);
+    if (d < r) damagePlayer(dmg * (1 - d / r) * 0.7);
+  } else if (state.mode === 'walk' && !combat.god) {
     const d = pos.distanceTo(player.position.clone().setY(player.position.y + 0.8));
     if (d < r) damagePlayer(dmg * (1 - d / r) * 0.9);
   }
@@ -356,6 +396,7 @@ infantry.onDeath = (s, owner) => {
   const W = WEAPONS[s.weapon.key];
   if (Math.random() < 0.8) items.drop('ammo', p.x + Math.sin(a + 2) * 0.8, p.z + Math.cos(a + 2) * 0.8, { cal: W.cal, n: Math.round(Math.max(10, W.mag) * (0.6 + Math.random())) });
   for (const [k, n] of Object.entries(s.grenades)) if (n > 0) items.drop('grenade', p.x + Math.sin(a + 4) * 0.8, p.z + Math.cos(a + 4) * 0.8, { key: k, n });
+  if (net && net.infantryKilled(owner)) return;                 // the other player's kill
   if (owner && (owner.player || (owner.tank && owner.tank === state.vehicle))) {
     state.infKills++;
     showHit(owner.tank ? 'Пехотинец уничтожен' : 'Противник убит');
@@ -363,7 +404,7 @@ infantry.onDeath = (s, owner) => {
 };
 
 function damagePlayer(amount, bullet = false) {
-  if (state.over || combat.god) return;
+  if (state.over || state.dead || combat.god) return;
   if (bullet && state.mode === 'walk' && Math.random() < 0.3) msg('Вы ранены!', '#ff9a7a');
   state.hp -= amount;
   state.lastDamageT = state.time;
@@ -375,12 +416,13 @@ function damagePlayer(amount, bullet = false) {
   }
 }
 
-function victory() {
-  state.duel.over = true;
+function victory(text = null) {
+  if (state.duel) state.duel.over = true;
   state.over = true;
   const st = duelStatus(state);
-  $('vStats').textContent = `Уничтожено танков противника: ${st.total} · время боя ${Math.floor(state.time / 60)}:${String(Math.floor(state.time % 60)).padStart(2, '0')}` +
+  $('vStats').textContent = text || `Уничтожено танков противника: ${st.total} · время боя ${Math.floor(state.time / 60)}:${String(Math.floor(state.time % 60)).padStart(2, '0')}` +
     ` · ваш танк: ${state.vehicle ? state.vehicle.def.name : '—'}`;
+  if (net && net.host) net.victory($('vStats').textContent);
   $('victory').classList.remove('hidden');
   if (document.pointerLockElement) document.exitPointerLock();
   sfx.setEngine(false, 0);
@@ -388,6 +430,8 @@ function victory() {
 
 function gameOver(reason) {
   if (state.over) return;
+  // network play: the game goes on - back on your feet beside the other player after a while
+  if (net && net.connected && !state.dead) { netDeath(reason); return; }
   state.over = true;
   $('goReason').textContent = reason;
   $('goStats').textContent = `Пройдено: ${((state.maxZ - state.startZ) / 1000).toFixed(2)} км · Уничтожено танков: ${state.kills}` +
@@ -395,6 +439,27 @@ function gameOver(reason) {
   $('gameover').classList.remove('hidden');
   if (document.pointerLockElement) document.exitPointerLock();
   sfx.setEngine(false, 0);
+}
+
+// network play: killed - back on your feet beside the other player after a while
+function netDeath(reason) {
+  state.dead = true;
+  state.deadT = 10;
+  state.hp = 0;
+  msg(`${reason} Возрождение через 10 с рядом с напарником.`, '#ff9a7a');
+  if (state.mode === 'drive') exitVehicle(true);
+  state.fireHeld = false; state.aim = false;
+}
+function netRespawn() {
+  const p = (net && net.partnerPos()) || player.position.clone();
+  const a = Math.random() * Math.PI * 2;
+  p.x += Math.sin(a) * 4; p.z += Math.cos(a) * 4;
+  p.y = world.heightAt(p.x, p.z);
+  player.position.copy(p);
+  state.dead = false;
+  state.hp = 100;
+  state.velY = 0;
+  msg('Снова в строю', '#9fe07f');
 }
 
 // ================== input ==================
@@ -421,7 +486,7 @@ document.addEventListener('keydown', e => {
   if (e.code === 'KeyQ') pressQ();
   if (e.code === 'KeyR') {
     if (state.repairOpen) closeRepair();
-    else if (state.mode === 'walk' && !state.crane && !state.stash && startReload()) { /* reloading */ }
+    else if ((state.mode === 'walk' || troopShoot()) && !state.crane && !state.stash && startReload()) { /* reloading */ }
     else if (state.mode === 'walk' && items.drawnWeapon() && !state.nearTank) {
       const { w, W } = items.drawnWeapon();
       if (w.mag >= W.mag) msg('Магазин полон');
@@ -435,6 +500,7 @@ document.addEventListener('keydown', e => {
     if (state.repairOpen) doRepair(n);
     else if (state.crane) doCrane(n);
     else if (state.stash) doStash(n);
+    else if (troopSeat() && n < 3) selectWeapon(n);
     else if (state.mode === 'drive' && state.view === 'inside' && n < SEAT_KEYS.length) sitAt(SEAT_KEYS[n]);
     else if (state.mode === 'walk' && n < 3) selectWeapon(n);
   }
@@ -443,7 +509,14 @@ document.addEventListener('keydown', e => {
 // who the player controls from the current position in the tank
 const SEAT_KEYS = ['commander', 'gunner', 'driver'];
 const SEAT_NAMES = { commander: 'командир', gunner: 'наводчик', driver: 'механик-водитель' };
+const seatName = role => SEAT_NAMES[role] || (/^troop/.test(role) ? 'десант' : role);
 const canGun = () => state.mode === 'drive' && (state.view !== 'inside' || state.seat === 'gunner' || state.seat === 'commander');
+// a personnel carrier's troop seat from which the player fires his own weapon (over the side / from the hatch)
+function troopSeat() {
+  if (state.mode !== 'drive' || state.view !== 'inside' || !state.seat || !/^troop/.test(state.seat)) return null;
+  return seatByRole(state.vehicle, state.seat) || null;
+}
+const troopShoot = () => { const s = troopSeat(); return !!(s && s.fire); };
 const canDrive = () => state.mode === 'drive' && (state.view !== 'inside' || state.seat === 'driver' || state.seat === 'commander');
 document.addEventListener('keyup', e => { keys[e.code] = false; });
 
@@ -479,7 +552,9 @@ canvas.addEventListener('contextmenu', e => e.preventDefault());
 document.addEventListener('mousedown', e => {
   if (!state.started || state.paused || state.over) return;
   sfx.resume();
-  if (e.button === 0 && locked && state.mode === 'drive') { if (state.wsel === 'mg') state.mgHeld = true; else state.fireReq = true; }
+  if (e.button === 0 && locked && troopShoot()) state.fireHeld = true;
+  else if (e.button === 0 && locked && state.mode === 'drive') { if (state.wsel === 'mg') state.mgHeld = true; else state.fireReq = true; }
+  if (e.button === 2 && troopShoot()) state.aim = true;
   if (e.button === 0 && locked && state.mode === 'walk') state.fireHeld = true;
   if (e.button === 2 && canGun()) state.sight = true;
   if (e.button === 2 && state.mode === 'walk') state.aim = true;
@@ -500,6 +575,7 @@ function togglePause() {
 }
 function setPause(v) {
   state.paused = v;
+  if (v) for (const k in keys) keys[k] = false;       // (network play: the world goes on while paused)
   pauseEl.classList.toggle('hidden', !v);
   if (v && locked) document.exitPointerLock();
   if (!v && !locked) canvas.requestPointerLock()?.catch?.(() => {});
@@ -518,6 +594,7 @@ $('bAgain').onclick = () => {
 // ================== saving ==================
 function saveGame() {
   if (MODE !== 'road') { msg('Сохранение доступно только в основной игре'); return; }
+  if (NET) { msg('В сетевой игре сохранение недоступно'); return; }
   if (state.over) return;
   try {
     const data = snapshot({ state, player, items, tanks, director, world, workshop, infantry, garrisoned, SEED });
@@ -628,7 +705,7 @@ function predictImpact(v) {
 
 // ================== vehicles: enter / exit ==================
 let prefView = 'third';
-function tryToggleVehicle() {
+function tryToggleVehicle(asDriver = false) {
   if (state.mode === 'walk') {
     const v = state.nearTank;
     if (!v) return;
@@ -639,14 +716,21 @@ function tryToggleVehicle() {
     if (items.hands === 'sandbag') { placeSandbag(v); return; }
     if (items.hands === 'canister') { msg('Удерживай F у танка — залить топливо в баки'); return; }
     if (items.hands) { msg('Руки заняты — брось ношу (G)'); return; }
+    let ride = false;
+    if (net) {
+      const c = net.claim(v);
+      if (!c) return;
+      ride = c === 'ride';
+    }
     closeStash();
     closeCrane();
     state.mode = 'drive';
     state.vehicle = v;
     v.playerInside = true;
     state.fireHeld = false; state.aim = false; state.reloadT = 0;
-    state.wsel = 'gun';
-    if (v.team !== 'player') {
+    state.wsel = !v.parts.gun && v.mg ? 'mg' : 'gun';
+    const passenger = ride || (v.apc && !asDriver && behindHalf(v, player.position));
+    if (v.team !== 'player' && !ride) {
       msg(v.team === 'enemy' ? `Захвачен ${v.def.name} противника` : `Танк ${v.def.name} ваш`, '#9fe07f');
       v.team = 'player';
       director.release(v);
@@ -657,34 +741,41 @@ function tryToggleVehicle() {
     $('crosshair').classList.add('driving');
     closeRepair();
     state.view = 'third';
-    if (prefView === 'inside') enterInside();
+    if (passenger) {
+      const s = v.seats().find(x => x.troop && x.fire) || v.seats().find(x => x.troop);
+      enterInside(s.role);
+      msg(`${v.def.name}: вы в десантном отделении. 1/2/3 — оружие, ЛКМ — огонь${s.fire ? '' : ' (отсюда не стрелять — пересядь, Q)'}, Q — встать, E — выйти`, '#c9b48a');
+    } else if (prefView === 'inside') enterInside();
     if (v.bayOpen) msg('Моторный отсек открыт — двигатель не заведётся. Выйди и закрой его (Q)', '#e8c96a');
     if (!v.parts.engine) msg('В танке нет двигателя', '#ff9a7a');
     else if (v.fuel <= 0) msg(v.parts.fuel ? 'Баки пусты — нужна заправка или канистра' : 'Нет топливных баков — топливо некуда залить', '#ff9a7a');
-  } else {
-    const v = state.vehicle;
-    const b = v.vis.hullBox;
-    for (const side of [1, -1]) {
-      const off = new THREE.Vector3(side * (b.max.x + 1.3), 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), v.heading);
-      const out = v.root.position.clone().add(off);
-      out.y = world.heightAt(out.x, out.z);
-      if (out.y < WATER_LEVEL - 0.3) continue;
-      if (state.view === 'inside') { leaveInside(); prefView = 'inside'; } else prefView = 'third';
-      player.position.copy(out);
-      state.yaw = state.aimYaw;
-      state.pitch = 0;
-      state.mode = 'walk';
-      v.playerInside = false;
-      v.aimPoint = null;
-      state.vehicle = null;
-      state.velY = 0;
-      state.sight = false;
-      $('crosshair').classList.remove('driving');
-      sfx.setEngine(false, 0);
-      return;
-    }
-    msg('Здесь не выйти — вода');
+  } else exitVehicle();
+}
+
+// out of the vehicle (force: even into water - network death)
+function exitVehicle(force = false) {
+  const v = state.vehicle;
+  const b = v.vis.hullBox;
+  for (const side of force ? [1, -1, 0] : [1, -1]) {
+    const off = new THREE.Vector3(side * (b.max.x + 1.3), 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), v.heading);
+    const out = v.root.position.clone().add(off);
+    out.y = world.heightAt(out.x, out.z);
+    if (out.y < WATER_LEVEL - 0.3 && side) continue;
+    if (state.view === 'inside') { leaveInside(); prefView = 'inside'; } else prefView = 'third';
+    player.position.copy(out);
+    state.yaw = state.aimYaw;
+    state.pitch = 0;
+    state.mode = 'walk';
+    v.playerInside = false;
+    v.aimPoint = null;
+    state.vehicle = null;
+    state.velY = 0;
+    state.sight = false;
+    $('crosshair').classList.remove('driving');
+    sfx.setEngine(false, 0);
+    return;
   }
+  msg('Здесь не выйти — вода');
 }
 
 // ================== first-person view inside the tank ==================
@@ -693,15 +784,23 @@ function toggleView() {
   else { leaveInside(); msg('Вид снаружи'); }
 }
 
-function enterInside() {
+function enterInside(role = null) {
   const v = state.vehicle;
   v.setInterior(true);
   state.view = 'inside';
   state.sight = false;
   const seats = v.seats();
-  const s = seats.find(x => x.role === 'commander') || seats.find(x => x.role === 'driver');
+  const s = (role && seats.find(x => x.role === role)) || seats.find(x => x.role === 'commander') || seats.find(x => x.role === 'driver');
   sitAt(s.role, true);
-  msg('Вид изнутри: Q — встать/сесть, 1/2/3 — командир/наводчик/мехвод, V — вид снаружи', '#c9b48a');
+  if (!role) msg('Вид изнутри: Q — встать/сесть, 1/2/3 — командир/наводчик/мехвод, V — вид снаружи', '#c9b48a');
+}
+
+// the rear half of a personnel carrier: from there the player climbs into the troop compartment
+function behindHalf(t, p) {
+  const b = t.vis.hullBox;
+  const c = Math.cos(t.heading), s = Math.sin(t.heading);
+  const lz = (p.x - t.root.position.x) * s + (p.z - t.root.position.z) * c;
+  return lz < (b.min.z + b.max.z) / 2;
 }
 
 function leaveInside() {
@@ -727,12 +826,12 @@ function seatHullPos(v, s, which = 'pos') {
 function sitAt(role, quiet = false) {
   const v = state.vehicle;
   const s = seatByRole(v, role);
-  if (!s) { msg(role === 'driver' ? 'Нет места мехвода' : `Нет места: ${SEAT_NAMES[role]} — башня снята`); return; }
+  if (!s) { msg(role === 'driver' ? 'Нет места мехвода' : `Нет места: ${seatName(role)} — башня снята`); return; }
   state.seat = role;
   state.headYaw = 0; state.headPitch = -0.05;
   state.sight = false;
   if (role !== 'driver') { state.aimYaw = v.heading + v.turretYaw; state.aimPitch = -0.04; }
-  if (!quiet) msg(`Место: ${SEAT_NAMES[role]}`, '#c9b48a');
+  if (!quiet) msg(`Место: ${seatName(role)}`, '#c9b48a');
 }
 
 function standUp() {
@@ -1546,10 +1645,12 @@ function shootWeapon(w, W) {
   dir.x += (Math.random() - 0.5) * 2 * sp; dir.y += (Math.random() - 0.5) * 2 * sp; dir.z += (Math.random() - 0.5) * 2 * sp;
   dir.normalize();
   const muzzle = viewModel.muzzleWorld();
-  guns.fire(camera.position.clone(), dir, W, { player: true }, muzzle, W.cat !== 'rifle');
+  const riding = state.mode === 'drive' ? state.vehicle : null;
+  guns.fire(camera.position.clone(), dir, W, riding ? { player: true, tank: riding } : { player: true }, muzzle, W.cat !== 'rifle');
   // recoil
-  state.pitch = Math.min(1.45, state.pitch + W.recoil * (state.aim ? 0.55 : 1) * (0.7 + Math.random() * 0.6));
-  state.yaw += (Math.random() - 0.5) * W.recoil * 0.5;
+  const kick = W.recoil * (state.aim ? 0.55 : 1) * (0.7 + Math.random() * 0.6), side = (Math.random() - 0.5) * W.recoil * 0.5;
+  if (riding) { state.headPitch = Math.min(0.9, state.headPitch + kick); state.headYaw += side; }
+  else { state.pitch = Math.min(1.45, state.pitch + kick); state.yaw += side; }
   state.kick = 1;
   if (w.mag <= 0) startReload();
 }
@@ -1558,7 +1659,8 @@ function throwGrenade() {
   const key = items.grenadeKey;
   if (!key || !(items.grenades[key] > 0)) { msg('Гранат нет'); items.drawn = null; return; }
   const dir = lookDir();
-  const vel = dir.clone().multiplyScalar(state.aim ? 19 : 15).add(new THREE.Vector3(0, 3.5, 0)).add(playerVel);
+  const vel = dir.clone().multiplyScalar(state.aim ? 19 : 15).add(new THREE.Vector3(0, 3.5, 0))
+    .add(state.mode === 'drive' ? state.vehicle.velocity : playerVel);
   guns.throwGrenade(camera.position.clone().addScaledVector(dir, 0.5), vel, key, { player: true });
   items.grenades[key]--;
   state.wCool = 0.9;
@@ -1592,7 +1694,7 @@ function updateWeapon(dt) {
 
 // first-person weapon model (viewmodel.js): hip / aimed pose, recoil kick, reload dip, bob and sway
 function updateViewModel(dt) {
-  const walking = state.mode === 'walk';
+  const walking = state.mode === 'walk' || troopShoot();
   const d = items.drawnWeapon();
   const key = !walking || items.hands ? null : items.drawn === 'grenade' ? (items.grenadeKey ? 'g:' + items.grenadeKey : null) : d ? d.w.key : null;
   viewModel.set(key);
@@ -1609,6 +1711,7 @@ function updateViewModel(dt) {
 function toggleTankWeapon() {
   const v = state.vehicle;
   if (!v.mg) { msg('На танке нет пулемёта'); state.wsel = 'gun'; return; }
+  if (!v.parts.gun && !v.canMountGun()) { state.wsel = 'mg'; msg(`Только пулемёт ${WEAPONS[v.mg.key].name} (${v.mgAmmo} патр.)`, '#c9b48a'); return; }
   state.wsel = state.wsel === 'gun' ? 'mg' : 'gun';
   state.mgHeld = false;
   msg(state.wsel === 'mg' ? `Пулемёт ${WEAPONS[v.mg.key].name} (${v.mgAmmo} патр.)` : `Орудие ${v.def.caliber}`, '#c9b48a');
@@ -1623,7 +1726,7 @@ function updateWalk(dt) {
 
   let f = (keys['KeyW'] ? 1 : 0) - (keys['KeyS'] ? 1 : 0);
   let s = (keys['KeyD'] ? 1 : 0) - (keys['KeyA'] ? 1 : 0);
-  if (state.repairOpen || state.crane) f = s = 0;
+  if (state.repairOpen || state.crane || state.dead) f = s = 0;
   const len = Math.hypot(f, s);
   if (len > 0) { f /= len; s /= len; }
   const sin = Math.sin(state.yaw), cos = Math.cos(state.yaw);
@@ -1719,7 +1822,8 @@ function updateDriveCamera(dt) {
   const v = state.vehicle;
   aimDir.set(Math.sin(state.aimYaw) * Math.cos(state.aimPitch), Math.sin(state.aimPitch), Math.cos(state.aimYaw) * Math.cos(state.aimPitch));
   const inside = state.view === 'inside';
-  const targetFov = state.sight ? 16 : inside ? 78 : BASE_FOV;
+  const dw = troopShoot() && state.aim && !items.hands ? items.drawnWeapon() : null;       // aiming from a troop seat
+  const targetFov = state.sight ? 16 : dw ? (dw.W.m.scope ? 24 : 52) : inside ? 78 : BASE_FOV;
   if (Math.abs(camera.fov - targetFov) > 0.01) {
     camera.fov += (targetFov - camera.fov) * Math.min(1, dt * 14);
     camera.updateProjectionMatrix();
@@ -1898,21 +2002,22 @@ function updateGauge(v) {
   if (!v) { gaugeEl.style.display = 'none'; return; }
   gaugeEl.style.display = 'block';
   $('gaugeSpeed').innerHTML = `${v.speedKmh.toFixed(0)}<small> км/ч</small>`;
-  $('gaugeName').textContent = `${v.def.name} · ${v.def.caliber}`;
+  $('gaugeName').textContent = v.apc ? `${v.def.name} · БТР` : `${v.def.name} · ${v.def.caliber}`;
   const view = state.view === 'inside'
-    ? `<div class="gline seat"><span>Место</span><b>${state.seat ? SEAT_NAMES[state.seat] : 'в отделении'}</b></div>`
+    ? `<div class="gline seat"><span>Место</span><b>${state.seat ? seatName(state.seat) : 'в отделении'}</b></div>`
     : `<div class="gline seat"><span>Вид</span><b>снаружи (V — изнутри)</b></div>`;
   const rt = v.reloadTime;
   const rl = v.hp.gun <= 0 ? 0 : Math.max(0, 1 - v.reload / rt);
   const fuelP = v.fuelMax > 0 ? v.fuel / v.fuelMax * 100 : 0;
   const mgW = v.mg && WEAPONS[v.mg.key];
-  $('gaugeInfo').innerHTML = view +
+  const troops = v.apc ? v.seats().filter(s => s.troop).length : 0;
+  $('gaugeInfo').innerHTML = view + (v.apc ? `<div class="gline"><span>Десант</span><b>${troops} мест</b></div>` :
     `<div class="gline"><span>Снаряды</span><b>${Math.floor(v.ammo)} / ${v.def.ammoMax}</b></div>` +
     `<div class="gline"><span>${!v.parts.gun ? 'Орудия нет' : v.hp.gun <= 0 ? 'Орудие уничтожено' : rl >= 1 ? 'Заряжено' : 'Перезарядка ' + Math.max(0, v.reload).toFixed(1) + ' с'}</span></div>` +
-    `<div class="mbar"><i style="width:${rl * 100}%;background:${rl >= 1 ? '#7fe07f' : '#e8a53a'}"></i></div>` +
+    `<div class="mbar"><i style="width:${rl * 100}%;background:${rl >= 1 ? '#7fe07f' : '#e8a53a'}"></i></div>`) +
     (mgW ? `<div class="gline ${state.wsel === 'mg' ? 'seat' : ''}"><span>${state.wsel === 'mg' ? '▶ ' : ''}Пулемёт ${mgW.name}</span><b>${v.mgAmmo}</b></div>`
          : `<div class="gline"><span>Пулемёта нет</span></div>`) +
-    `<div class="gline"><span>${state.wsel === 'gun' ? '▶ орудие' : 'X — орудие / пулемёт'}</span></div>` +
+    (v.apc ? '' : `<div class="gline"><span>${state.wsel === 'gun' ? '▶ орудие' : 'X — орудие / пулемёт'}</span></div>`) +
     `<div class="gline"><span>Топливо</span><b>${Math.round(v.fuel)} / ${v.fuelMax} л</b></div>` +
     `<div class="mbar"><i style="width:${fuelP}%;background:${fuelP < 15 ? '#e0503a' : '#c9b48a'}"></i></div>` +
     `<div class="gline"><span>Огнетушители</span><b>${v.extinguishers}</b></div>` +
@@ -2040,7 +2145,8 @@ function updatePrompt() {
       if (t.wrecked) lines.push(`${t.def.name} — сгоревший танк`);
       else if (t.crew) lines.push(`${t.def.name}: экипаж жив`);
       else {
-        if (!items.hands) lines.push(`<b>E</b> — сесть в ${t.def.name}`);
+        if (!items.hands) lines.push(t.apc ? (behindHalf(t, player.position) ? `<b>E</b> — сесть в десантное отделение ${t.def.name}`
+          : `<b>E</b> — сесть в ${t.def.name} (сзади — в десант)`) : `<b>E</b> — сесть в ${t.def.name}`);
         if (!items.hands && !state.nearItem) lines.push(`<b>F</b> — укладка танка (ремкомплекты, бронелисты, снаряды, оружие)`);
         if (!items.hands && items.inventory.cutter > 0) {
           lines.push(t.hp.hull >= 75 ? 'Удерживай <b>T</b> — срезать бронелист резаком' : 'Корпус повреждён — бронелист не срезать');
@@ -2058,9 +2164,12 @@ function updatePrompt() {
     }
   } else {
     const v = state.vehicle;
+    const ts = troopSeat();
+    if (ts) lines.push(ts.fire ? `Десант: <b>1/2/3</b> — оружие, <b>ЛКМ</b> — огонь, <b>R</b> — перезарядка, <b>Q</b> — встать`
+      : 'Десант: отсюда не стрелять — <b>Q</b>, встань и пересядь к люку / бойнице');
     if (state.view === 'inside' && !state.seat) {
       const s = nearestSeat(v);
-      lines.push(s ? `<b>Q</b> — сесть: ${SEAT_NAMES[s.role]}` : 'WASD — перемещение внутри танка');
+      lines.push(s ? `<b>Q</b> — сесть: ${seatName(s.role)}` : 'WASD — перемещение внутри танка');
     }
     if (v.bayOpen) lines.push('Моторный отсек открыт — двигатель не заводится');
     else if (!v.parts.engine) lines.push('Двигателя нет');
@@ -2068,6 +2177,7 @@ function updatePrompt() {
     if (state.zoneText) lines.push(`${state.zone.label}: ${state.zoneText}`);
     else if (state.zone) lines.push(`${state.zone.label}: остановись для обслуживания`);
   }
+  if (state.dead) lines.unshift(`<b>Вы погибли</b> — возрождение рядом с напарником через ${Math.ceil(state.deadT)} с`);
   if (lines.length) {
     promptEl.innerHTML = lines.join('<br>');
     promptEl.style.display = 'block';
@@ -2087,19 +2197,30 @@ function frame(dt) {
   world.update(anchor, 4);
   world.animate(dt);
   const created = director.update(anchor, tanks);
+  // network play: the enemy turns up around the other player too
+  const ra = net && net.connected && net.host ? net.remoteAnchor() : null;
+  if (ra) created.push(...director.update(ra, tanks));
   if (created.length) tanks.push(...created);
+  if (state.dead && (state.deadT -= dt) <= 0) netRespawn();
 
-  // AI and player control
+  // AI and player control (network play: the other player is a target too; the guest runs no AI)
   const target = walking
-    ? { pos: player.position, vel: playerVel, isTank: false }
-    : { pos: v.root.position, vel: v.velocity, isTank: true };
+    ? { id: 'local', pos: player.position, vel: playerVel, isTank: false }
+    : { id: 'local', pos: v.root.position, vel: v.velocity, isTank: true, tank: v };
   if (walking) target.crouch = state.crouch;
-  director.think(dt, state.time, state.over ? null : target, combat);
-  infantry.update(dt, { now: state.time, target: state.over ? null : target, tanks });
+  const targets = [];
+  if (!state.over && !state.dead) targets.push(target);
+  if (net) { const rt = net.remoteTarget(); if (rt) targets.push(rt); }
+  combat.now = state.time;
+  if (!net || net.host) {
+    director.think(dt, state.time, targets, combat);
+    infantry.update(dt, { now: state.time, targets, tanks });
+  } else net.puppets(dt);
   if (!walking) updateDriveControls();
 
   for (const t of tanks) t.update(dt, world, tanks);
   if (world.opts.bounds) for (const t of tanks) clampToBounds(world, t.root.position);
+  if (net) net.update(dt);
 
   if (walking) updateWalk(dt);
   else {
@@ -2144,9 +2265,10 @@ function frame(dt) {
   guns.tanks = tanks;
   guns.soldiers = infantry.soldiers;
   guns.foot = { pos: player.position, active: walking, crouch: state.crouch };
+  guns.exposed = troopShoot() ? { pos: camera.position } : null;
   guns.listener.copy(camera.position);
   guns.update(dt);
-  if (walking) updateWeapon(dt); else updateViewModel(dt);
+  if (walking || troopShoot()) updateWeapon(dt); else updateViewModel(dt);
   fx.update(dt);
   items.update(dt);
 
@@ -2159,7 +2281,7 @@ function frame(dt) {
     let best = null, bd = TANK_REACH;
     for (const t of tanks) {
       const d = tankDist(t, player.position);
-      if (d < bd) { bd = d; best = t; }
+      if (d < bd && (!net || net.usable(t))) { bd = d; best = t; }      // (network: not the other player's tank)
     }
     state.nearTank = best;
     updateHold(dt);
@@ -2191,10 +2313,11 @@ function frame(dt) {
   if ((despawnT -= dt) <= 0) {
     despawnT = 2;
     for (const t of [...tanks]) {
-      if (t === v) continue;
-      if (t.root.position.distanceTo(anchor) > (t.team === 'player' ? 2500 : 1500)) removeTank(t);
+      if (t === v || (net && !net.host)) continue;     // the guest's tanks come and go with the host's world
+      const far = t.team === 'player' ? 2500 : 1500;
+      if (t.root.position.distanceTo(anchor) > far && (!ra || t.root.position.distanceTo(ra) > far)) removeTank(t);
     }
-    infantry.prune(anchor);
+    if (!net || net.host) infantry.prune(anchor, 700, ra);           // (the guest's soldiers come from the host)
     director.prune(anchor);
     for (const p of [...items.pickups.values()]) {
       if (p.id.startsWith('drop:') && Math.hypot(p.pos.x - anchor.x, p.pos.z - anchor.z) > 1200) items.remove(p.id, false);
@@ -2245,8 +2368,8 @@ function frame(dt) {
   updateWeaponPanel();
   markers.update(dt, { tanks, vehicle: state.vehicle, camera, world, time: state.time });
   updatePrompt();
-  if (state.duel) {
-    const st = duelStatus(state);
+  if (state.duel || state.netDuel) {
+    const st = state.duel ? duelStatus(state) : { left: state.netDuel[0], total: state.netDuel[1] };
     topEl.innerHTML = `Дуэль &nbsp;·&nbsp; противников осталось: <b>${st.left} / ${st.total}</b>`;
   } else if (state.range) topEl.innerHTML = `Танкодром &nbsp;·&nbsp; мишеней поражено: <b>${tanks.filter(t => t.derelict && t.marks.length).length}</b>`;
   else topEl.innerHTML = `Пройдено: <b>${((state.maxZ - state.startZ) / 1000).toFixed(2)} км</b> &nbsp;·&nbsp; Танков: <b>${state.kills}</b>` +
@@ -2259,7 +2382,8 @@ function frame(dt) {
 function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(0.05, clock.getDelta());
-  if (!state.paused && state.started && !state.over) frame(dt);
+  // network play: the world does not stop for a pause
+  if ((!state.paused || (net && net.connected)) && state.started && !state.over) frame(dt);
   renderer.render(scene, camera);
 }
 
@@ -2320,7 +2444,7 @@ function setupStart() {
 // modes: put the player into a tank at the start
 function enterTank(t) {
   state.nearTank = t;
-  tryToggleVehicle();
+  tryToggleVehicle(true);
 }
 
 // continue a saved game
@@ -2351,18 +2475,95 @@ async function boot() {
     barFill.style.width = `${(1 - left / total) * 60}%`;
     await new Promise(r => setTimeout(r, 0));
   }
+  if (NET === 'guest') {
+    // the second player: the same world from the seed, the rest comes from the host (net.js)
+    $('bSave').style.display = 'none';
+    $('seedInfo').textContent = `Сетевая игра (второй игрок) · ${MODE_NAMES[MODE]} · мир #${SEED}`;
+    barFill.style.width = '100%';
+    const join = (() => { try { return JSON.parse(sessionStorage.getItem(NET_KEY) || 'null'); } catch { return null; } })();
+    net = new Net(netCtx(), 'guest');
+    if (!join || !join.offer) { loadText.textContent = 'Нет данных для подключения — зайди через меню «Сетевая игра»'; return; }
+    loadText.textContent = 'Подключение к хозяину игры...';
+    net.join(join).catch(err => { console.error(err); loadText.textContent = 'Не удалось подключиться: ' + err.message; });
+    return;
+  }
   const ctx = { world, tanks, spawnTank, director, items, player, state, enterTank, msg, cfg: CFG };
   if (LOAD) restoreGame(LOAD);
   else if (MODE === 'duel') setupDuel(ctx);
   else if (MODE === 'range') setupRange(ctx);
   else setupStart();
   if (MODE !== 'road') { $('bSave').style.display = 'none'; $('seedInfo').textContent = MODE_NAMES[MODE]; }
+  if (NET === 'host') {
+    $('bSave').style.display = 'none';
+    net = new Net(netCtx(), 'host');
+    net.startHosting().catch(err => { console.error(err); netUI.status('Сеть: ошибка — ' + err.message); });
+  }
   barFill.style.width = '100%';
   loadText.textContent = 'Готово! Нажми, чтобы играть';
   setTimeout(() => {
     loaderEl.classList.add('hidden');
     state.started = true;
   }, 300);
+}
+
+// ================== network play (net.js) ==================
+// status line / invitation in the pause menu (host), connection info on the loading screen (guest)
+const netUI = {
+  status(text) { const el = $('netStatus'); el.textContent = text || ''; el.style.display = text ? 'block' : 'none'; },
+  panel(html) { const el = $('netPanel'); el.innerHTML = html; el.classList.toggle('hidden', !html); return el; },
+  hostRoom(room) {
+    this.panel(`<h3>Сетевая игра</h3><p>Код комнаты: <b class="code">${room}</b></p>` +
+      `<p class="small">Второй игрок: главное меню → «Сетевая игра» → «Присоединиться» → этот код.</p>`);
+    this.status(`Сеть: ждём второго игрока · код комнаты ${room}`);
+  },
+  hostCode(code, onAnswer) {
+    const el = this.panel(`<h3>Сетевая игра</h3>
+      <p class="small">1. Передай второму игроку код-приглашение (он вводит его в меню «Сетевая игра → Присоединиться»):</p>
+      <textarea readonly id="netOffer">${code}</textarea><button id="netCopy">Копировать</button>
+      <p class="small">2. Вставь код ответа, который он пришлёт:</p>
+      <textarea id="netAnswer" placeholder="код ответа"></textarea><button id="netAccept">Подключить</button>`);
+    el.querySelector('#netCopy').onclick = e => { e.stopPropagation(); copyText(code); };
+    el.querySelector('#netAccept').onclick = e => { e.stopPropagation(); onAnswer(el.querySelector('#netAnswer').value); };
+    el.onclick = e => e.stopPropagation();
+    this.status('Сеть: ждём второго игрока — приглашение в меню паузы (ESC)');
+  },
+  guestWait(code) {
+    const el = $('netJoin');
+    el.classList.remove('hidden');
+    if (!code) { el.innerHTML = '<p>Ждём ответа хозяина игры...</p>'; return; }
+    el.innerHTML = `<p class="small">Передай хозяину игры этот код ответа (он вставляет его в меню паузы):</p>
+      <textarea readonly>${code}</textarea><button id="netCopy2">Копировать</button><p class="small">Ждём подключения...</p>`;
+    el.querySelector('#netCopy2').onclick = () => copyText(code);
+  },
+  connected() {
+    $('netJoin').classList.add('hidden');
+    this.panel(`<h3>Сетевая игра</h3><p>Второй игрок в игре.</p>`);
+  },
+};
+function copyText(text) {
+  if (navigator.clipboard) navigator.clipboard.writeText(text).then(() => msg('Скопировано'), () => {});
+}
+function netCtx() {
+  return {
+    state, player, playerVel, camera, scene, world, tanks, items, combat, guns, infantry, director, fx, sfx, MODE, SEED, CFG,
+    spawnTank, removeTank, msg, showHit, describeHit, damagePlayer, troopSeat,
+    duelStatus: () => duelStatus(state),
+    enterVehicle: t => enterTank(t),
+    exitVehicle: () => { if (state.mode === 'drive') exitVehicle(true); },
+    closeMenus: () => { closeStash(); closeRepair(); closeCrane(); },
+    ownHit: res => ownHitMsg(res),
+    onVictory: text => victory(text),
+    onLost: text => gameOver(text),
+    startGuest() {
+      // the guest starts with a revolver and a few rounds (the road hands out the rest)
+      if (!items.small) { items.small = makeWeapon('nagant'); items.addAmmo('7.62×38R', 14); }
+      state.startZ = state.maxZ = player.position.z;
+      loaderEl.classList.add('hidden');
+      state.started = true;
+      msg(`Сетевая игра: ${MODE_NAMES[MODE]}, мир #${SEED}. Второй игрок — в форме цвета хаки.`, '#e8c96a');
+    },
+    ui: netUI,
+  };
 }
 
 boot();
@@ -2373,4 +2574,4 @@ window.game = { state, tanks, world, items, combat, director, workshop, player, 
   snapshot: () => snapshot({ state, player, items, tanks, director, world, workshop, infantry, garrisoned, SEED }),
   guns, infantry, SEED, selectWeapon, viewModel, startReload, placeSandbag, mgAction, toggleTankWeapon, updateDriveControls,
   openStash, doStash, stowPlate, loadShells,
-  enterInside, leaveInside, sitAt, pressF, pressQ, dropHeld, tryToggleVehicle, openCrane, doCrane };
+  enterInside, leaveInside, sitAt, pressF, pressQ, dropHeld, tryToggleVehicle, openCrane, doCrane, get net() { return net; } };

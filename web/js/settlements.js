@@ -174,12 +174,17 @@ export function buildSettlement(world, plan) {
                   meshes: collect, obstacle: o, hp: story > 1 ? 140 : 80 };
     collect = null;
     o.house = rec;
-    rec.hit = (point, dir, dmg) => hitHouse(rec, point, dmg);
+    rec.hit = (point, dir, dmg, remote = false) => {
+      if (!remote && world.onHouse) world.onHouse('hit', rec, point, dmg);
+      hitHouse(rec, point, dmg);
+    };
     rec.ram = speed => {
       if (rec.ruined || speed < (rec.story > 1 ? 4 : 2.5)) return false;
+      if (world.onHouse) world.onHouse('ruin', rec);
       ruinHouse(rec);
       return true;
     };
+    rec.ruin = () => ruinHouse(rec);
     houses.push(rec);
     return f;
   };

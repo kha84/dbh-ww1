@@ -203,6 +203,20 @@
   #menu .sitem button { padding: 6px 12px; font-size: 14px; margin-left: 6px; }
   #menu .sitem .del { background: #5a2a22; }
   #menu .hint { margin-top: 30px; color: #6f7a62; font-size: 13px; }
+  #menu h3 { color: #b7a97f; font-size: 16px; letter-spacing: 2px; margin: 16px 0 6px; width: 520px; max-width: 94vw; }
+  /* ---------- Network play ---------- */
+  #netStatus { position: fixed; top: 52px; left: 50%; transform: translateX(-50%); z-index: 30; display: none;
+               background: rgba(20,24,16,.75); color: #d8cfa8; font-size: 13px; padding: 4px 12px; border-radius: 5px; pointer-events: none; }
+  .netbox { margin: 12px auto; max-width: 560px; background: rgba(0,0,0,.35); border: 1px solid #6f7c5c; border-radius: 7px;
+            padding: 10px 14px; color: #ddd; text-align: left; }
+  .netbox.hidden { display: none; }
+  .netbox h3 { color: #c9b48a; font-size: 16px; margin: 0 0 6px; }
+  .netbox .code { font-size: 26px; letter-spacing: 6px; color: #f0dc9a; }
+  .netbox .small { font-size: 12.5px; color: #aeb99c; margin: 6px 0; }
+  .netbox textarea { width: 100%; height: 58px; background: #1e231a; color: #ddd; border: 1px solid #6f7c5c; border-radius: 4px;
+                     font-size: 11px; word-break: break-all; }
+  .netbox button { margin-top: 4px; }
+  #loader .netbox { pointer-events: auto; }
 </style>
 </head>
 <body>
@@ -215,7 +229,9 @@
   <p>ДОРОГА В БЕСКОНЕЧНОСТЬ</p>
   <div id="bar"><div id="barFill"></div></div>
   <div id="loadText">Загрузка...</div>
+  <div id="netJoin" class="netbox hidden"></div>
 </div>
+<div id="netStatus"></div>
 
 <div id="dmgFlash"></div>
 <div id="sight">
@@ -293,8 +309,12 @@
     <tr><td class="k">R</td><td>ремкомплект — починить систему</td></tr>
     <tr><td class="k">V</td><td>вид снаружи / изнутри танка</td></tr>
     <tr><td class="k">Q / 1 2 3</td><td>изнутри: встать-сесть / командир, наводчик, мехвод</td></tr>
+    <tr><td></td><td class="h">БРОНЕТРАНСПОРТЁР</td></tr>
+    <tr><td class="k">E спереди / сзади</td><td>сесть за управление / в десантное отделение</td></tr>
+    <tr><td class="k">десант: 1 2 3, ЛКМ, R</td><td>своё оружие: выбрать, стрелять через борт / из люка, перезарядить; Q — встать, пересесть</td></tr>
     <tr><td class="k">ESC</td><td>пауза</td></tr>
   </table>
+  <div id="netPanel" class="netbox hidden"></div>
   <div class="pbtns"><button id="bResume">Продолжить</button><button id="bSave">Сохранить игру</button><button id="bMenu">Главное меню</button></div>
   <div class="resume">ESC — продолжить · F5 — быстрое сохранение</div>
   <div id="seedInfo"></div>

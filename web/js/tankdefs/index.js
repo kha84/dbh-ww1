@@ -20,7 +20,14 @@ import t28 from './t28.js';
 import t35 from './t35.js';
 import pz4 from './pz4.js';
 import sherman from './sherman.js';
+// armoured personnel carriers
+import markIX from './markIX.js';
+import sdkfz251 from './sdkfz251.js';
+import btr152 from './btr152.js';
+import m113 from './m113.js';
+import btr80 from './btr80.js';
 
-export const TANK_DEFS = [ft, markV, vickers, t26, t28, t35, type89, pz2, bt7, charb1, sherman, pz4, t44, is2, t55, avre, leo2, abrams];
+export const TANK_DEFS = [ft, markV, vickers, t26, t28, t35, type89, pz2, bt7, charb1, sherman, pz4, t44, is2, t55, avre, leo2, abrams,
+  markIX, sdkfz251, btr152, m113, btr80];
 export const DEFS = Object.fromEntries(TANK_DEFS.map(d => [d.key, d]));
 for (const d of TANK_DEFS) PALETTES[d.key] = d.palette;

@@ -132,9 +132,11 @@ export class Combat {
     this.foot = null;                // { pos, active } on-foot player target
     this.listener = new THREE.Vector3();
     this.onEvent = () => {};
+    this.onFired = () => {};         // (shell spec, tank): a real shell left the gun (network play sends it over)
     this.onPlayerDamage = () => {};
     this.onExplosion = () => {};     // (pos, radius, dmg, owner): infantry takes blast damage
     this.god = false;
+    this.now = 0;                    // game time (set by the game each frame)
     const tg = new THREE.CylinderGeometry(0.07, 0.07, 3.0, 5);
     this.tracerGeo = tg;
     this.tracerMat = new THREE.MeshBasicMaterial({ color: 0xffd27a, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false });
@@ -143,6 +145,13 @@ export class Combat {
   fireFrom(tank) {
     const s = tank.shoot();
     if (!s) return false;
+    this.onFired(s, tank);
+    this.launch(s);
+    return true;
+  }
+  // a shell in flight from spec s ({ pos, vel, pen, dmg, owner, ghost }); ghost shells (network play: fired on the
+  // other machine) only make the effects - hits are worked out where the real shell flies
+  launch(s) {
     const dir = s.vel.clone().normalize();
     this.fx.muzzle(s.pos, dir);
     const mesh = new THREE.Mesh(this.tracerGeo, this.tracerMat);
@@ -150,7 +159,6 @@ export class Combat {
     this.scene.add(mesh);
     this.shells.push({ ...s, mesh, life: 7 });
     this.sfx.shot(s.pos.distanceTo(this.listener));
-    return true;
   }
 
   update(dt) {
@@ -236,6 +244,14 @@ export class Combat {
 
     const hp = p0.clone().lerp(p1, best.t);
     const dir = s.vel.clone().normalize();
+    if (s.ghost) {
+      // effects only: the damage is done on the machine that runs the world
+      if (best.kind === 'water') this.fx.splash(hp);
+      else if (best.kind === 'tank') { this.fx.ricochet(hp); this.fx.explosion(hp, 0.8, false); }
+      else this.fx.explosion(hp, best.kind === 'tree' ? 0.8 : 1, best.kind !== 'tank');
+      this.sfx.boom(hp.distanceTo(this.listener), best.kind === 'water' ? 0.4 : 0.9);
+      return true;
+    }
     if (best.kind === 'tank') {
       this.hitTank(best.tank, best.vol, hp, dir, s);
     } else if (best.kind === 'water') {
@@ -359,7 +375,7 @@ export class Combat {
         tank.damage('hull', rand(1, 3));
       }
     }
-    tank.lastHitT = performance.now() / 1000;
+    tank.lastHitT = this.now;
     tank.addMark(hitPoint, dir, res.ricochet ? 'scrape' : res.pen ? 'hole' : 'dent');
     // sandbags on the struck face get torn off
     if (vol.part === 'hull' && (face === 'front' || face === 'side') && tank.bagCount(face) > 0 &&
@@ -382,8 +398,9 @@ export class Combat {
       }
     }
     if (res.crew) {
-      if (tank.playerInside) { if (!this.god) this.onPlayerDamage(Math.min(55, res.crew * 0.6), s.owner); }
-      else if (tank.crew) {
+      if (tank.playerInside && !this.god) this.onPlayerDamage(Math.min(55, res.crew * 0.6), s.owner);
+      if (tank.remoteInside) res.remoteCrew = Math.min(55, res.crew * 0.6);             // the other player (network)
+      if (!tank.playerInside && !tank.remoteInside && tank.crew) {
         tank.crewHp -= res.crew;
         if (tank.crewHp <= 0) { tank.killCrew(); res.crewKilled = true; }
       }

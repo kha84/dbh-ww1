@@ -4,7 +4,8 @@ import { hash, rng } from './noise.js';
 import { Tank, sandbagMesh } from './tanks.js';
 import { HULLS } from './parts.js';
 import { makeWeapon } from './weapons.js';
-import { difficultyAt, pickTankKey, soldierKit, lootRoll } from './loot.js';
+import { pickTarget } from './infantry.js';
+import { difficultyAt, pickTankKey, pickApcKey, soldierKit, lootRoll } from './loot.js';
 
 const ENC_LEN = 450;          // road stretch per potential encounter
 const dbg = new URLSearchParams(location.search);
@@ -65,6 +66,7 @@ export class TankAI {
     this.dir = opts.dir || 1;
     this.lane = opts.lane || 2.5;
     this.watchZ = opts.watchZ;
+    this.leash = opts.leash || 0;      // hunt: goes after targets only this close (0 = anywhere)
     this.alert = false;
     this.lastSeen = -1e9;
     this.lastPos = new THREE.Vector3();
@@ -152,7 +154,18 @@ export class TankAI {
           if (hullNeedsTurn) this.driveTo(target.pos.x, target.pos.z, 0.02); else c.brake = 1;
         }
       }
-      if (this.mode === 'patrol') {
+      if (t.apc) {
+        // personnel carrier: stops to put its infantry out, then keeps its distance from tanks and supports the
+        // infantry with the machine gun against men on foot
+        if (t.troops.length && (dist < 260 || now - t.lastHitT < 5)) {
+          c.brake = 1;
+          if (Math.abs(t.speed) < 1.2) this.wantDismount = true;
+        } else if (target.isTank && dist < 200) {
+          const ax = p.x - (target.pos.x - p.x), az = p.z - (target.pos.z - p.z);
+          this.driveTo(ax, az, 0.6);
+        } else if (!this.los || dist > (target.isTank ? 320 : 150)) this.driveTo(this.lastPos.x, this.lastPos.z, 0.5);
+        else c.brake = 1;
+      } else if (this.mode === 'patrol') {
         const hullNeedsTurn = t.def.turretArc &&
           Math.abs(wrap(Math.atan2(target.pos.x - p.x, target.pos.z - p.z) - t.heading)) > t.def.turretArc * 0.8;
         if (!this.los || dist > 200) this.driveTo(this.lastPos.x, this.lastPos.z, 0.55);
@@ -162,7 +175,7 @@ export class TankAI {
 
       // machine gun against a man on foot
       t.mgTarget = null;
-      if (!target.isTank && t.mg && t.mgAmmo > 0 && this.los && dist < 320 && guns) {
+      if ((!target.isTank || (t.apc && dist < 260)) && t.mg && t.mgAmmo > 0 && this.los && dist < 320 && guns) {
         t.mgTarget = target.pos.clone().setY(target.pos.y + 0.9).addScaledVector(this.err, 0.4);
         if (this.mgPause > 0) this.mgPause -= dt;
         else if ((t.mgAimErr ?? 1) < 0.06) {
@@ -192,9 +205,15 @@ export class TankAI {
     t.mgTarget = null;
     this.scan += dt;
     if (this.mode === 'hunt') {
-      // knows roughly where the enemy is: advance towards it
-      if (target) this.driveTo(target.pos.x + Math.sin(this.scan * 0.05) * 40, target.pos.z, 0.55);
-      t.aimPoint = target ? target.pos.clone().setY(target.pos.y + 1.5) : null;
+      // knows roughly where the enemy is: advance towards it (a leashed crew only when it is close)
+      if (target && (!this.leash || dist < this.leash)) {
+        this.driveTo(target.pos.x + Math.sin(this.scan * 0.05) * 40 * Math.min(1, dist / 150), target.pos.z, 0.55);
+        t.aimPoint = target.pos.clone().setY(target.pos.y + 1.5);
+      } else {
+        c.brake = 1;
+        t.aimPoint = p.clone().add(new THREE.Vector3(Math.sin(this.scan * 0.3) * 40, 2, Math.cos(this.scan * 0.3) * 40));
+        return;
+      }
       this.handleStuck(dt);
       return;
     }
@@ -388,6 +407,35 @@ export class EnemyDirector {
     if (r() < 0.35) this.squad(this.world.roadX(z) + Math.cos(hd) * side * 22, z - Math.sin(hd) * side * 22, 2 + Math.floor(r() * 2), r, d, hd);
   }
 
+  // personnel carrier of the era, full of infantry (they dismount when the enemy is met)
+  spawnApc(zc, r, d, created, i = 0) {
+    const z = zc + (r() - 0.5) * 200 + i * 22;
+    const dir = r() < 0.5 ? 1 : -1;
+    const x = this.world.roadX(z) + 2.5 * dir;
+    if (this.world.settlementNear(x, z, 30)) return null;
+    const key = pickApcKey(r, d);
+    const seats = (HULLS[key].troops || []).length;
+    const troops = [];
+    if (!this.noInfantry) for (let k = 0; k < Math.min(seats, 3 + Math.floor(r() * 4 + d * 2)); k++) troops.push(soldierKit(r, d));
+    const heading = dir > 0 ? this.world.roadHeading(z) : this.world.roadHeading(z) + Math.PI;
+    const t = this.makeTank(key, new THREE.Vector3(x, 0, z), heading, r, { troops, bags: 0 });
+    this.ais.push(new TankAI(t, 'patrol', this.world, { z0: zc - 280, z1: zc + 280, dir, lane: 2.5 }));
+    created.push(t);
+    return t;
+  }
+
+  // the infantry climbs out of the back of a personnel carrier and joins the fight
+  dismount(t) {
+    const kits = t.troops;
+    t.troops = [];
+    if (!kits.length || !this.infantry) return [];
+    const b = t.vis.hullBox;
+    const back = new THREE.Vector3(0, 0, b.min.z - 2).applyAxisAngle(new THREE.Vector3(0, 1, 0), t.heading).add(t.root.position);
+    const sq = this.infantry.spawnSquad(back.x, back.z, kits, t.heading + Math.PI, Math.random);
+    for (const s of sq) { s.alertReq = true; s.state = 'combat'; }
+    return sq;
+  }
+
   // spawn encounters ahead/around the player; returns newly created tanks
   update(playerPos, tanks) {
     const created = [];
@@ -406,7 +454,10 @@ export class EnemyDirector {
       if (r2() < 0.4) this.spawnWreck(j, zc, r2, d, created);
       if (r2() < 0.28 + d * 0.25) this.spawnPost(j, zc, r2, d);
       const roll = r();
-      if (roll < 0.42 - difficulty * 0.12) continue;           // quiet stretch
+      if (roll < 0.42 - difficulty * 0.12) {                    // quiet stretch, now and then a lone carrier with infantry
+        if (r() < 0.3) this.spawnApc(zc, r, d, created);
+        continue;
+      }
       if (roll < 0.74) {
         // patrol
         const n = r() < 0.25 + difficulty * 0.3 ? 2 : 1;
@@ -421,6 +472,8 @@ export class EnemyDirector {
           created.push(t);
         }
         if (r() < 0.45) this.squad(this.world.roadX(zc) + (r() < 0.5 ? -12 : 12), zc + (r() - 0.5) * 100, 2 + Math.floor(r() * 3), r, d, 0);
+        // a personnel carrier with infantry riding along with the tanks
+        if (r() < 0.5 + d * 0.15) this.spawnApc(zc, r, d, created, n);
       } else {
         // ambush in caponiers facing the road
         const n = r() < 0.3 + difficulty * 0.3 ? 2 : 1;
@@ -447,8 +500,12 @@ export class EnemyDirector {
     return created;
   }
 
-  think(dt, now, target, combat) {
-    for (const ai of this.ais) ai.update(dt, now, target, combat, this.guns);
+  // targets: the player (and the other player in network play)
+  think(dt, now, targets, combat) {
+    for (const ai of this.ais) {
+      ai.update(dt, now, pickTarget(ai, targets, now), combat, this.guns);
+      if (ai.wantDismount) { ai.wantDismount = false; this.dismount(ai.tank); }
+    }
   }
 
   // remove scenery far behind / ahead

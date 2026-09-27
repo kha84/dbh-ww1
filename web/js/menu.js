@@ -1,8 +1,10 @@
 // Main menu shown when the page is opened without a game mode: the endless road (random or given seed), a duel,
 // the tank range, loading a saved game. Starting a game reloads the page with the mode in the URL.
-import { HULLS, TANK_TIERS, computeSpec, defaultParts } from './parts.js';
+import { HULLS, TANK_TIERS, APC_TIERS, computeSpec, defaultParts } from './parts.js';
+import { WEAPONS } from './weapons.js';
 import { DEFS } from './tankdefs/index.js';
 import { listSaves, deleteSave } from './save.js';
+import { Signal, unpack, isRoomCode, NET_KEY } from './net.js';
 
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const go = params => { location.search = '?' + new URLSearchParams(params).toString(); };
@@ -10,12 +12,19 @@ const go = params => { location.search = '?' + new URLSearchParams(params).toStr
 // tanks in the order they appeared (TANK_TIERS is sorted by year)
 const TANKS = TANK_TIERS;
 function tankOptions(sel, withRandom = false) {
+  const opt = k => `<option value="${k}" ${k === sel ? 'selected' : ''}>${esc(HULLS[k].name)} (${DEFS[k].year})</option>`;
   return (withRandom ? `<option value="random">Случайный</option>` : '') +
-    TANKS.map(k => `<option value="${k}" ${k === sel ? 'selected' : ''}>${esc(HULLS[k].name)} (${DEFS[k].year})</option>`).join('');
+    `<optgroup label="Танки">${TANKS.map(opt).join('')}</optgroup>` +
+    `<optgroup label="Бронетранспортёры">${APC_TIERS.map(opt).join('')}</optgroup>`;
 }
 function tankCard(k) {
   if (!HULLS[k]) return '<div class="tcard">Тип танка выбирается случайно</div>';
   const d = computeSpec(k, defaultParts(k));
+  if (d.apc) {
+    return `<div class="tcard"><b>${esc(d.name)}</b> · бронетранспортёр · ${DEFS[k].year} г.<br>` +
+      `${d.weight.toFixed(1)} т · ${d.power} л.с. · до ${(d.maxSpeed * 3.6).toFixed(0)} км/ч · ${d.wheeled ? 'колёсный' : 'гусеничный'}<br>` +
+      `пулемёт ${esc(WEAPONS[DEFS[k].mg].name)} · десант ${(HULLS[k].troops || []).length} мест · броня лба ${d.armor.hull.front} мм</div>`;
+  }
   return `<div class="tcard"><b>${esc(d.name)}</b> · ${DEFS[k].year} г.<br>` +
     `${d.weight.toFixed(1)} т · ${d.power} л.с. · до ${(d.maxSpeed * 3.6).toFixed(0)} км/ч<br>` +
     `орудие ${esc(d.caliber)}, пробитие ${d.pen} мм · броня лба ${d.armor.hull.front}/${d.armor.turret.front} мм</div>`;
@@ -31,6 +40,7 @@ export function showMenu(root) {
         <button data-go="road">Основная игра<small>бесконечная дорога · случайный или заданный мир</small></button>
         <button data-go="duel">Дуэль<small>свой танк против выбранных противников</small></button>
         <button data-go="range">Танкодром<small>поездить и пострелять на полигоне</small></button>
+        <button data-go="net">Сетевая игра<small>вдвоём в одном мире: создать игру или присоединиться по коду</small></button>
         <button data-go="load">Загрузить игру<small>${listSaves().length ? `сохранений: ${listSaves().length}` : 'сохранений нет'}</small></button>
       </div>
       <p class="hint">В игре: ESC — пауза, управление и сохранение · F5 — быстрое сохранение</p>`;
@@ -78,6 +88,68 @@ export function showMenu(root) {
         <div class="mrow"><button class="go">На полигон</button>${back()}</div>`;
       root.querySelector('#mTank').onchange = e => { root.querySelector('#mCard').innerHTML = tankCard(e.target.value); };
       root.querySelector('.go').onclick = () => go({ mode: 'range', tank: root.querySelector('#mTank').value });
+      wireBack();
+    },
+    net() {
+      root.innerHTML = `<h2>Сетевая игра</h2>
+        <p class="note">Два игрока в одном мире. Хозяин игры ведёт мир (противник, трофеи), второй присоединяется по коду.
+          Игра через <b>server.py</b> — хватает короткого кода комнаты; с любым другим сервером хозяин передаёт
+          код-приглашение, а второй игрок возвращает ему код ответа (например, через мессенджер).</p>
+        <h3>Создать игру</h3>
+        <div class="mrow"><label>Режим</label><select id="nMode">
+          <option value="road">Дорога — вдвоём против всех</option><option value="duel">Дуэль — вдвоём против танков</option>
+          <option value="range">Танкодром</option></select></div>
+        <div class="mrow" id="nSeedRow"><label>Номер мира</label><input id="nSeed" type="number" min="1" placeholder="случайный"></div>
+        <div class="mrow" id="nTankRow"><label>Ваша машина</label><select id="nTank">${tankOptions('t26')}</select></div>
+        <div class="mrow" id="nFoesRow"><label>Противников</label><select id="nFoes">${[1, 2, 3, 4, 5].map(i => `<option ${i === 3 ? 'selected' : ''}>${i}</option>`).join('')}</select></div>
+        <div class="mrow"><button class="go" id="nHost">Создать</button></div>
+        <h3>Присоединиться</h3>
+        <div class="mrow"><label>Код</label><input id="nCode" placeholder="код комнаты или код-приглашение"></div>
+        <div class="mrow"><label>Ваша машина</label><select id="nTank2">${tankOptions('bt7')}</select></div>
+        <p class="note">Машина второго игрока — для дуэли и танкодрома; на дороге он садится во второй танк у старта.</p>
+        <div class="mrow"><button class="go" id="nJoin">Присоединиться</button>${back()}</div>
+        <p class="note" id="nMsg"></p>`;
+      const q = s => root.querySelector(s);
+      const sync = () => {
+        const m = q('#nMode').value;
+        q('#nSeedRow').style.display = m === 'road' ? '' : 'none';
+        q('#nTankRow').style.display = m === 'road' ? 'none' : '';
+        q('#nFoesRow').style.display = m === 'duel' ? '' : 'none';
+      };
+      q('#nMode').onchange = sync;
+      sync();
+      q('#nHost').onclick = () => {
+        const m = q('#nMode').value;
+        if (m === 'road') {
+          const v = parseInt(q('#nSeed').value, 10);
+          go({ mode: 'road', seed: v > 0 ? v : Math.floor(Math.random() * 999999) + 1, net: 'host' });
+        } else {
+          const foes = new Array(+q('#nFoes').value).fill('random').join(',');
+          go({ mode: m, tank: q('#nTank').value, ...(m === 'duel' ? { enemies: foes } : {}), seed: Math.floor(Math.random() * 999999) + 1, net: 'host' });
+        }
+      };
+      q('#nJoin').onclick = async () => {
+        const code = q('#nCode').value.trim();
+        const say = t => { q('#nMsg').textContent = t; };
+        if (!code) { say('Введи код комнаты или код-приглашение'); return; }
+        try {
+          let offer, room = null;
+          if (isRoomCode(code)) {
+            room = code.toUpperCase();
+            say('Ищу комнату...');
+            const text = await Signal.get(room, 'offer');
+            if (!text) { say('Комната не найдена (игра запущена через server.py? код верный?)'); return; }
+            offer = await unpack(text);
+          } else offer = await unpack(code);
+          sessionStorage.setItem(NET_KEY, JSON.stringify({ offer, room, tank: q('#nTank2').value }));
+          const p = { mode: offer.mode, seed: offer.seed, net: 'guest' };
+          if (offer.start) p.start = offer.start;
+          go(p);
+        } catch (e) {
+          console.error(e);
+          say('Не получилось прочитать код: ' + e.message);
+        }
+      };
       wireBack();
     },
     load() {

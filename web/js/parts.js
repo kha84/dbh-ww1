@@ -36,11 +36,13 @@ export const CATALOG = { engine: ENGINES, gun: GUNS, fuel: FUELS, drive: DRIVES,
 
 // default composition of each tank type
 export function defaultParts(key) {
-  const p = { engine: makePart('engine', key), gun: makePart('gun', key), fuel: makePart('fuel', key),
-              drive: makePart('drive', key), turret: null };
-  if (TURRETS[key]) p.turret = makePart('turret', key);
-  return p;
+  const has = (cat, kind) => cat[key] ? makePart(kind, key) : null;
+  // personnel carriers have no main gun (only the machine gun on the pintle / in the small turret)
+  return { engine: has(ENGINES, 'engine'), gun: has(GUNS, 'gun'), fuel: has(FUELS, 'fuel'), drive: has(DRIVES, 'drive'),
+           turret: has(TURRETS, 'turret') };
 }
+// armoured personnel carriers (carry infantry, armed with a machine gun)
+export const isApc = key => !!(HULLS[key] && HULLS[key].apc);
 
 let PART_ID = 0;
 export function makePart(kind, key, hp = 100) {
@@ -94,7 +96,7 @@ export function computeSpec(hullKey, parts, bags = null) {
   if (T) for (const c of T.crew) crew.push({ ...c, space: 'turret' });
 
   return {
-    key: hullKey,
+    key: hullKey, apc: !!H.apc, wheeled: !!H.wheeled,
     name: H.name + (frank ? ' (сборный)' : ''),
     hullName: H.name,
     frank, weight, power, pw, driveOk,
@@ -130,6 +132,8 @@ export function tankRating(key) {
 const YEAR = Object.fromEntries(TANK_DEFS.map(d => [d.key, d.year || 0]));
 // tank types in the order they appeared in the world (same year: the weaker one first). The road follows it:
 // the oldest machines are met at the start, the newest far down the road.
-export const TANK_TIERS = Object.keys(HULLS).sort((a, b) => YEAR[a] - YEAR[b] || tankRating(a) - tankRating(b));
+export const TANK_TIERS = Object.keys(HULLS).filter(k => !isApc(k)).sort((a, b) => YEAR[a] - YEAR[b] || tankRating(a) - tankRating(b));
+// personnel carriers in the order they appeared
+export const APC_TIERS = Object.keys(HULLS).filter(isApc).sort((a, b) => YEAR[a] - YEAR[b]);
 // the weakest tank of all: the player starts the road in it
-export const STARTER_TANK = Object.keys(HULLS).reduce((a, b) => tankRating(b) < tankRating(a) ? b : a);
+export const STARTER_TANK = TANK_TIERS.reduce((a, b) => tankRating(b) < tankRating(a) ? b : a);

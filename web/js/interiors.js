@@ -535,7 +535,7 @@ export function buildHullInterior(key, hv) {
   for (let z = z0 + 0.3; z < z1 - 0.1; z += 0.6) ibox(g, M.dark, 0, f + 0.005, z, x * 1.8, 0.01, 0.04);   // floor plate seams
   // roof with the turret ring / cab openings
   const holeR = ring ? ring.r - 0.04 : 0;
-  addPanel(g, panel(V(0, r, 0), AX, AZ, breaks(-x, x, 0.05, cab ? [-cab.x, cab.x] : []),
+  if (!I.open) addPanel(g, panel(V(0, r, 0), AX, AZ, breaks(-x, x, 0.05, cab ? [-cab.x, cab.x] : []),
     breaks(z0, z1, 0.05, cab ? cab.z : []), (u, v) => {
       if (ring && Math.hypot(u - ring.pos.x, v - ring.pos.z) < holeR) return false;
       if (cab && Math.abs(u) < cab.x && v > cab.z[0] && v < cab.z[1]) return false;
@@ -594,6 +594,8 @@ export function buildHullInterior(key, hv) {
     PROPS.seat(g, M, { at: s.pos, style: s.style || I.seatStyle, recline: s.recline });
     if (role === 'driver') PROPS.driver(g, M, { eye: s.eye, floor: f, style: I.controls, dash: I.dash, dials: I.dials });
   }
+  // infantry seats of the personnel carriers
+  for (const s of H.troops || []) PROPS.seat(g, M, { at: s.pos, ry: s.ry || 0, style: s.style || 'pan' });
   // tank-specific equipment
   if (I.props) for (const p of I.props) PROPS[p.type](g, M, p, I);
   else {
@@ -601,8 +603,8 @@ export function buildHullInterior(key, hv) {
     ibox(g, M.gear, -x + 0.18, f + 0.35, (z0 + z1) / 2 - 0.4, 0.3, 0.6, 0.8);
     PROPS.extinguisher(g, M, { at: [x - 0.1, f + 0.5, z0 + 0.35] });
   }
-  PROPS.lamp(g, M, { at: [0.3, r - 0.03, z0 + 0.4] });
-  if (!ring) PROPS.lamp(g, M, { at: [-0.3, r - 0.03, (z0 + z1) / 2] });
+  if (!I.open) PROPS.lamp(g, M, { at: [0.3, r - 0.03, z0 + 0.4] });
+  if (!ring && !I.open) PROPS.lamp(g, M, { at: [-0.3, r - 0.03, (z0 + z1) / 2] });
   return g;
 }
 

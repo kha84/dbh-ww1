@@ -39,18 +39,18 @@ export function writeSave(data, name) {
 
 // ------------------------------------------------------------------ serialise
 const v3 = p => [+p.x.toFixed(2), +p.y.toFixed(2), +p.z.toFixed(2)];
-const partData = p => p && { kind: p.kind, key: p.key, hp: Math.round(p.hp * 10) / 10, fuel: p.fuel, paint: p.paint };
-const weaponData = w => w && { key: w.key, mag: w.mag };
-function mkPart(d) {
+export const partData = p => p && { kind: p.kind, key: p.key, hp: Math.round(p.hp * 10) / 10, fuel: p.fuel, paint: p.paint };
+export const weaponData = w => w && { key: w.key, mag: w.mag };
+export function mkPart(d) {
   if (!d) return null;
   const p = makePart(d.kind, d.key, d.hp);
   if (d.fuel !== undefined) p.fuel = d.fuel;
   if (d.paint != null) p.paint = d.paint;
   return p;
 }
-const mkWeapon = d => d && makeWeapon(d.key, d.mag);
+export const mkWeapon = d => d && makeWeapon(d.key, d.mag);
 
-function pickupData(p) {
+export function pickupData(p) {
   const d = p.data;
   switch (p.type) {
     case 'part': return partData(p.part);
@@ -69,27 +69,27 @@ function tankData(t, director) {
     hp: { hull: t.hp.hull, transmission: t.hp.transmission, ammo: t.hp.ammo },
     ammo: t.ammo, cargo: { weapons: t.cargo.weapons.map(weaponData), ammo: { ...t.cargo.ammo }, grenades: { ...t.cargo.grenades } },
     mg: weaponData(t.mg), bags: t.bags.length, extinguishers: t.extinguishers, loot: { ...t.loot }, plates: [...t.plates],
-    paint: t.paint, patches: patchData(t),
+    paint: t.paint, patches: patchData(t), troops: (t.troops || []).map(k => ({ key: k.key, grenades: { ...k.grenades } })),
     wrecked: t.wrecked, derelict: !!t.derelict, counted: !!t.counted, bayOpen: t.bayOpen, sink: t.sink,
     caponier: t.caponier ? { x: t.caponier.x, z: t.caponier.z, heading: t.caponier.heading } : null,
-    ai: ai ? { mode: ai.mode, z0: ai.z0, z1: ai.z1, dir: ai.dir, lane: ai.lane, watchZ: ai.watchZ } : null,
+    ai: ai ? { mode: ai.mode, z0: ai.z0, z1: ai.z1, dir: ai.dir, lane: ai.lane, watchZ: ai.watchZ, leash: ai.leash } : null,
     player: !!t.playerInside,
   };
 }
 
 // welded patches: the object they sit on (hull / part / second or auxiliary turret), placement, colour
 const r3 = x => Math.round(x * 1000) / 1000;
-function patchData(t) {
+export function patchData(t) {
   const res = [];
   for (const [h, obj] of t.markHosts()) {
     for (const m of obj.children) {
       if (!m.userData.patch) continue;
-      res.push({ h, p: m.position.toArray().map(r3), q: m.quaternion.toArray().map(r3), s: [r3(m.scale.x), r3(m.scale.y)], c: m.userData.color });
+      res.push({ h, p: m.position.toArray().map(r3), q: m.quaternion.toArray().map(r3), s: (m.userData.size || [m.scale.x, m.scale.y]).map(r3), c: m.userData.color });
     }
   }
   return res;
 }
-function restorePatches(t, list) {
+export function restorePatches(t, list) {
   const hosts = new Map(t.markHosts());
   for (const d of list || []) {
     const host = hosts.get(d.h);
@@ -206,7 +206,7 @@ export function restore(g, d) {
     const t = g.spawnTank(td.key, td.pos[0], td.pos[2], td.heading, {
       team: td.team, crew: td.crew, parts, ammo: td.ammo, mg: td.mg ? td.mg.key : null, mgAmmo: 0,
       cargo: { weapons: td.cargo.weapons.map(mkWeapon), ammo: { ...td.cargo.ammo }, grenades: { ...td.cargo.grenades } },
-      bags: td.bags, kits: td.loot.repair_kit, torches: td.loot.torch, plates: td.plates, sink: td.sink, paint: td.paint,
+      bags: td.bags, kits: td.loot.repair_kit, torches: td.loot.torch, plates: td.plates, sink: td.sink, paint: td.paint, troops: td.troops,
     });
     restorePatches(t, td.patches);
     if (t.mg && td.mg) t.mg.mag = td.mg.mag;

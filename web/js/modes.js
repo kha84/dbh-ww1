@@ -4,7 +4,7 @@
 //   range - a tank range: ramps, ditches, bumps, ponds, target hulks, a repair station and a village to try things
 // URL parameters (the main menu builds them): ?mode=duel&tank=t55&enemies=is2,t44 · ?mode=range&tank=bt7 · ?seed=N
 import * as THREE from 'three';
-import { HULLS, TANK_TIERS } from './parts.js';
+import { HULLS, TANK_TIERS, APC_TIERS } from './parts.js';
 import { TankAI } from './ai.js';
 
 const PI = Math.PI;
@@ -96,6 +96,8 @@ export function setupRange(ctx) {
     const t = ctx.spawnTank(TANK_TIERS[i % TANK_TIERS.length], x, z, Math.PI + (i % 3 - 1) * 0.6, { team: 'neutral', fuelFrac: 0.2 });
     t.derelict = true;
   });
+  // a personnel carrier to try (sit in the back: walk up to it from behind)
+  ctx.spawnTank(APC_TIERS[Math.floor(Math.random() * APC_TIERS.length)], -14, -262, 0, { team: 'neutral', fuelFrac: 0.6 });
   // spares at the start line
   ctx.items.add('range:plate', 'plate', 18, -262);
   ctx.items.add('range:spray1', 'spray', 19.2, -262.5, { color: 0xd8d8d0, paint: 100 });

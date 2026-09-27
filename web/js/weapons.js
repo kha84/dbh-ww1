@@ -102,6 +102,12 @@ export const WEAPONS = {
   vickers:   M('Vickers Mk I', '.303', 250, 60, 450, 1, { reload: 5, m: { len: 1.1, stock: 'none', h: 0.14 } }),
   reibel:    M('MAC 31 «Рейбель»', '7.5×54', 150, 58, 750, 2, { m: { len: 1.03, mag: 'drum', stock: 'none' } }),
   type97:    M('Тип 97 (танковый)', '7.7×58', 20, 60, 500, 2, { m: { len: 1.18, mag: 'top', stock: 'wood' } }),
+  // mounted machine guns of the personnel carriers (not carried by the infantry, not found lying about)
+  sgmb:      M('СГМБ', '7.62×54R', 250, 60, 650, 2, { mount: true, reload: 5, m: { len: 1.14, stock: 'none', h: 0.13 } }),
+  m2hb:      M('Browning M2HB', '.50 BMG', 100, 110, 500, 2, { mount: true, reload: 6, spread: 0.035, recoil: 0.03, range: 600,
+               m: { len: 1.65, bl: 0.9, stock: 'none', h: 0.16 } }),
+  kpvt:      M('КПВТ', '14.5×114', 50, 140, 600, 3, { mount: true, reload: 7, spread: 0.03, recoil: 0.04, range: 700,
+               m: { len: 2.0, bl: 1.2, stock: 'none', h: 0.17 } }),
 };
 
 // cartridge boxes found / dropped: rounds per box
@@ -123,7 +129,11 @@ export const GRENADES = {
   m67:    { name: 'M67', dmg: 120, r: 8, fuse: 4.5, era: 3, color: 0x4a5236 },
   rpg43:  { name: 'РПГ-43 (противотанковая)', dmg: 140, r: 4, fuse: 0, pen: 75, era: 2, color: 0x4b5a32, stick: true },
   rkg3:   { name: 'РКГ-3 (противотанковая)', dmg: 140, r: 4, fuse: 0, pen: 150, era: 3, color: 0x55603a, stick: true },
+  // two or three hand grenades tied together (made in the field, not found): enough for the thin roof / engine deck
+  bundle: { name: 'Связка гранат', dmg: 170, r: 6, fuse: 0, pen: 40, era: 1, color: 0x5d5a48, stick: true, craft: true },
 };
+// hand grenades that make one bundle
+export const BUNDLE_OF = 2;
 
 let WEAPON_ID = 0;
 export function makeWeapon(key, mag = WEAPONS[key].mag) {
@@ -190,11 +200,18 @@ export class Guns {
     this.tanks = [];                 // set by the game
     this.soldiers = [];              // live infantry (see infantry.js)
     this.foot = null;                // { pos, active, crouch } on-foot player
+    this.exposed = null;             // { pos } eye of the player riding exposed (troop seat of an open carrier)
+    this.remoteFoot = null;          // { pos, active, crouch } the other player on foot (network play)
+    this.remoteExposed = null;       // { pos } its eye when it rides exposed
+    this.onRemoteHit = () => {};     // (dmg, owner) a bullet struck the other player
     this.listener = new THREE.Vector3();
     this.onPlayerHit = () => {};
     this.onExplosion = () => {};     // (pos, radius, dmg, owner)
     this.onGrenadeTank = () => {};   // anti-tank grenade struck a tank: (tank, point, dir, def, owner)
     this.onShot = () => {};          // every round fired: (origin, hitPoint, owner, W) - infantry hears / is suppressed
+    this.onFired = () => {};         // (origin, dir, W, owner, muzzle, tracer): network play passes the shot on
+    this.onThrown = () => {};        // (pos, vel, key, owner)
+    this.visual = false;             // network guest: bullets only make effects (the host works out the hits)
     this.tracers = [];
     this.pool = [];
     this.grenades = [];
@@ -235,6 +252,29 @@ export class Guns {
     if (f && f.active && !(owner && owner.player)) {
       const r = this.capsule(origin, dir, f.pos, f.crouch ? 1.2 : 1.75, 0.35, best);
       if (r) { best = r.d; hit = { kind: 'player', head: r.y > f.pos.y + (f.crouch ? 1.0 : 1.5) }; }
+    }
+    // the player riding in the open back of a personnel carrier / standing in its hatch: head and shoulders
+    const ex = this.exposed;
+    if (ex && !(owner && owner.player)) {
+      const cx = ex.pos.x - origin.x, cy = ex.pos.y - 0.2 - origin.y, cz = ex.pos.z - origin.z;
+      const t = cx * dir.x + cy * dir.y + cz * dir.z;
+      if (t > 0 && t < best) {
+        const d2 = cx * cx + cy * cy + cz * cz - t * t;
+        if (d2 < 0.36 * 0.36) { best = t; hit = { kind: 'player', head: d2 < 0.02 }; }
+      }
+    }
+    // the other player (network play) riding exposed
+    const rx = this.remoteExposed;
+    if (rx && !(owner && owner.player)) {
+      const cx = rx.pos.x - origin.x, cy = rx.pos.y - 0.2 - origin.y, cz = rx.pos.z - origin.z;
+      const t = cx * dir.x + cy * dir.y + cz * dir.z;
+      if (t > 0 && t < best && cx * cx + cy * cy + cz * cz - t * t < 0.36 * 0.36) { best = t; hit = { kind: 'remote' }; }
+    }
+    // the other player (network play) on foot
+    const rf = this.remoteFoot;
+    if (rf && rf.active && !(owner && owner.player)) {
+      const r = this.capsule(origin, dir, rf.pos, rf.crouch ? 1.2 : 1.75, 0.35, best);
+      if (r) { best = r.d; hit = { kind: 'remote', head: r.y > rf.pos.y + (rf.crouch ? 1.0 : 1.5) }; }
     }
     // obstacles & trees
     _p0.copy(origin);
@@ -290,11 +330,15 @@ export class Guns {
     const hit = this.trace(origin, dir, Math.max(250, W.range * 2.2), owner);
     const dmgFall = hit.dist > W.range ? Math.max(0.35, 1 - (hit.dist - W.range) / (W.range * 1.5)) : 1;
     const dmg = W.dmg * dmgFall * (hit.head ? 2.2 : 1);
+    const real = !this.visual;
+    this.onFired(origin, dir, W, owner, muzzle, tracer);
     if (hit.kind === 'soldier') {
-      hit.soldier.hit(dmg, owner, dir);
+      if (real) hit.soldier.hit(dmg, owner, dir);
       this.fx.spawn('spark', hit.point, null, 0.25);
     } else if (hit.kind === 'player') {
-      this.onPlayerHit(dmg * 0.5, owner);
+      if (real) this.onPlayerHit(dmg * 0.5, owner);
+    } else if (hit.kind === 'remote') {
+      if (real) this.onRemoteHit(dmg * 0.5, owner);
     } else if (hit.kind === 'tank') {
       for (let i = 0; i < 3; i++) this.fx.spawn('spark', hit.point, this.fx.rnd(10), 0.4);
       if (Math.random() < 0.25) this.sfx.ping(hit.point.distanceTo(this.listener), 0.25);
@@ -308,7 +352,7 @@ export class Guns {
     this.fx.spawn('flash', muzzle, null, W.cat === 'mg' ? 0.28 : 0.18);
     this.sfx.gun(muzzle.distanceTo(this.listener), SMALL_CATS.includes(W.cat) ? 0.6 : W.cat === 'mg' ? 1.1 : 1);
     if (tracer) this.tracer(muzzle, hit.point);
-    this.onShot(origin, hit.point, owner, W);
+    if (real) this.onShot(origin, hit.point, owner, W);
     return hit;
   }
 
@@ -329,6 +373,7 @@ export class Guns {
   }
 
   throwGrenade(pos, vel, key, owner) {
+    this.onThrown(pos, vel, key, owner);
     const mesh = buildGrenadeMesh(key);
     mesh.position.copy(pos);
     this.scene.add(mesh);
@@ -367,7 +412,7 @@ export class Guns {
         const lp = t.root.worldToLocal(_c.copy(g.pos));
         if (lp.x > b.min.x - 0.1 && lp.x < b.max.x + 0.1 && lp.z > b.min.z - 0.1 && lp.z < b.max.z + 0.1 && lp.y < b.max.y + (t.vis.turretBox ? 1.0 : 0.2) && lp.y > b.min.y - 0.2) {
           if (g.D.pen) {
-            this.onGrenadeTank(t, g.pos.clone(), g.vel.clone().normalize(), g.D, g.owner);
+            if (!(g.owner && g.owner.ghost)) this.onGrenadeTank(t, g.pos.clone(), g.vel.clone().normalize(), g.D, g.owner);
             this.explode(g, i, false);
             impact = null;
             break;
@@ -396,7 +441,7 @@ export class Guns {
     this.grenades.splice(i, 1);
     this.fx.explosion(g.pos, g.D.pen ? 0.7 : 0.55, true);
     this.sfx.boom(g.pos.distanceTo(this.listener), 0.7);
-    this.onExplosion(g.pos.clone(), g.D.r, g.D.dmg, g.owner);
+    if (!(g.owner && g.owner.ghost)) this.onExplosion(g.pos.clone(), g.D.r, g.D.dmg, g.owner);
   }
 }
 
