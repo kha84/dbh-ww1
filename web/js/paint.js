@@ -3,6 +3,7 @@
 // repainting rewrites those vertex colours / swaps the materials. Welded plates stay as patches of the colour
 // the plate had until they are painted over.
 import * as THREE from 'three';
+import { spinMaterial } from './spin.js';
 import { PALETTES, rivetTexture } from './modelkit.js';
 import { TANK_DEFS } from './tankdefs/index.js';
 
@@ -86,6 +87,8 @@ export function paintObject(root, color, skip = null) {
         if (role) {
           o.userData.paintSrc = orig;
           o.material = paintedMaterial(orig, role, color);
+          // merged road wheels turn in the shader: the painted material has to turn them too (spin.js)
+          if (o.userData.spin) o.material = spinMaterial(o.material, o.userData.spin, o.userData.spinMats || (o.userData.spinMats = new Map()));
         }
       }
     }

@@ -51,6 +51,7 @@ export default defineConfig({
   build: {
     target: 'es2022',
     sourcemap: true,
+    minify: process.env.NOMINIFY ? false : 'esbuild',        // NOMINIFY=1 npm run build: readable profiles
     outDir: 'dist',
     chunkSizeWarningLimit: 2000,
     rollupOptions: { output: { manualChunks: { three: ['three'] } } },

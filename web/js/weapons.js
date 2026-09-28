@@ -1,6 +1,7 @@
 // Small arms: catalog (pistols, revolvers, compact SMGs, rifles, automatic rifles / SMGs, machine guns, grenades),
 // procedural weapon models, hitscan bullets with tracers and thrown grenades.
 import * as THREE from 'three';
+import { glowing } from './glow.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { WATER_LEVEL, segBox } from './world.js';
 import { buildWeaponModel, buildGrenadeModel } from './weaponmodels.js';
@@ -223,8 +224,8 @@ export class Guns {
     this.pool = [];
     this.grenades = [];
     this.tracerGeo = new THREE.CylinderGeometry(0.018, 0.018, 1, 4).rotateX(Math.PI / 2);
-    this.tracerMat = new THREE.MeshBasicMaterial({ color: 0xffd98a, transparent: true, opacity: 0.85,
-      blending: THREE.AdditiveBlending, depthWrite: false });
+    this.tracerMat = glowing(new THREE.MeshBasicNodeMaterial({ color: 0xffd98a, transparent: true, opacity: 0.85,
+      blending: THREE.AdditiveBlending, depthWrite: false }));
   }
 
   // hitscan: returns { point, dist, kind, soldier?, tank?, head? }

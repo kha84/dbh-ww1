@@ -1,6 +1,7 @@
 // Endless world: a road running along +Z forever, chunked procedural terrain
 // streamed around the player, lakes, forest, settlements and static obstacles.
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { makeNoise, fbm, smoothstep, hash, rng } from './noise.js';
 import { buildSettlement, SETTLEMENT_NAMES } from './settlements.js';
 import { planRiver, carve, buildBridge } from './rivers.js';
@@ -365,6 +366,22 @@ export class World {
       pine: [[this.trunkGeo, this.trunkMat], [this.coneGeo, this.coneMat], [this.cone2Geo, this.cone2Mat]],
       birch: [[this.trunkGeo, this.trunkMat], [this.birchCrownGeo, this.birchCrownMat]],
     };
+    // the standing forest of a chunk is one baked mesh (vertex colours, one material for every chunk): one draw call
+    // per chunk and one shader for all of them (an InstancedMesh per chunk and part cost a shader build each)
+    const bakedPart = (geo, mat) => {
+      const g = geo.index ? geo.toNonIndexed() : geo.clone();
+      g.deleteAttribute('uv');
+      if (mat.flatShading) g.computeVertexNormals();          // non-indexed: faceted like the flat-shaded crowns
+      const c = mat.color.clone(), n = g.attributes.position.count, col = new Float32Array(n * 3);
+      for (let i = 0; i < n; i++) c.toArray(col, i * 3);
+      g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+      return g;
+    };
+    this.treeBake = {
+      pine: mergeGeometries(this.treeParts.pine.map(([geo, mat]) => bakedPart(geo, mat))),
+      birch: mergeGeometries(this.treeParts.birch.map(([geo, mat]) => bakedPart(geo, mat))),
+    };
+    this.forestMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1 });
     // fresh cut of a broken trunk
     this.cutGeo = new THREE.CircleGeometry(1, 8);
     this.cutGeo.rotateX(-Math.PI / 2);
@@ -638,7 +655,6 @@ export class World {
       const item = { x, z, h, s, rot: r() * Math.PI * 2, sy: 0.85 + r() * 0.5 };
       const list = h < 12 && r() < 0.35 ? birch : pine;
       item.kind = list === pine ? 'pine' : 'birch';
-      item.i = list.length;                        // instance index
       item.r = 0.38 * s;                           // collision radius
       item.base = h - 0.25;
       item.top = item.base + (list === pine ? 9.2 : 7.9) * s * item.sy;
@@ -647,30 +663,40 @@ export class World {
       list.push(item);
       ch.trees.push(item);
     }
-    const m = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3(), pv = new THREE.Vector3();
+    const q = new THREE.Quaternion(), sc = new THREE.Vector3(), pv = new THREE.Vector3();
     const up = new THREE.Vector3(0, 1, 0);
-    const make = (list, parts) => {
-      if (!list.length) return;
-      for (const [geo, mat] of parts) {
-        const im = new THREE.InstancedMesh(geo, mat, list.length);
-        list.forEach((t, i) => {
-          q.setFromAxisAngle(up, t.rot);
-          sc.set(t.s, t.s * t.sy, t.s);
-          pv.set(t.x, t.base, t.z);
-          m.compose(pv, q, sc);
-          im.setMatrixAt(i, m);
-          if (!t.mat) { t.mat = m.clone(); t.ims = []; }
-          t.ims.push(im);
-        });
-        im.castShadow = true;
-        im.computeBoundingSphere();
-        im.userData.sharedGeo = true;   // geometry is shared: don't dispose on unload
-        this.scene.add(im);
-        ch.meshes.push(im);
+    const n = ch.trees.reduce((a, t) => a + this.treeBake[t.kind].attributes.position.count, 0);
+    if (n) {
+      // bake the trees of the chunk into one mesh: each tree keeps its vertex range (t.v0, t.nv) to be hidden
+      const pos = new Float32Array(n * 3), nor = new Float32Array(n * 3), col = new Float32Array(n * 3);
+      const nm = new THREE.Matrix3(), v = new THREE.Vector3();
+      let o = 0;
+      for (const t of ch.trees) {
+        q.setFromAxisAngle(up, t.rot);
+        sc.set(t.s, t.s * t.sy, t.s);
+        pv.set(t.x, t.base, t.z);
+        t.mat = new THREE.Matrix4().compose(pv, q, sc);
+        nm.getNormalMatrix(t.mat);
+        const g = this.treeBake[t.kind], gp = g.attributes.position, gn = g.attributes.normal, gc = g.attributes.color;
+        t.v0 = o; t.nv = gp.count;
+        for (let i = 0; i < gp.count; i++, o++) {
+          v.fromBufferAttribute(gp, i).applyMatrix4(t.mat).toArray(pos, o * 3);
+          v.fromBufferAttribute(gn, i).applyMatrix3(nm).normalize().toArray(nor, o * 3);
+          col[o * 3] = gc.getX(i); col[o * 3 + 1] = gc.getY(i); col[o * 3 + 2] = gc.getZ(i);
+        }
       }
-    };
-    make(pine, this.treeParts.pine);
-    make(birch, this.treeParts.birch);
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+      geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+      geo.computeBoundingSphere();
+      const forest = new THREE.Mesh(geo, this.forestMat);
+      forest.castShadow = true;
+      forest.matrixAutoUpdate = false;
+      this.scene.add(forest);
+      ch.meshes.push(forest);
+      ch.forest = forest;
+    }
     // trees broken earlier stay broken
     for (const t of ch.trees) {
       const b = this.brokenTrees.get(t.id);
@@ -682,6 +708,17 @@ export class World {
   }
 
   // ---------------------------------------------------------- broken trees
+  // take a standing tree out of the chunk's forest mesh (its triangles collapse to a point)
+  hideTree(t) {
+    const f = t.ch.forest;
+    if (!f) return;
+    const p = f.geometry.attributes.position, a = p.array;
+    const x = a[t.v0 * 3], y = a[t.v0 * 3 + 1], z = a[t.v0 * 3 + 2];
+    for (let i = t.v0; i < t.v0 + t.nv; i++) { a[i * 3] = x; a[i * 3 + 1] = y; a[i * 3 + 2] = z; }
+    p.addUpdateRange(t.v0 * 3, t.nv * 3);
+    p.needsUpdate = true;
+  }
+
   // break a tree at height y (world); the top falls towards (dx, dz)
   breakTree(t, y, dx, dz, instant = false) {
     if (!instant && this.onTreeBroken) this.onTreeBroken(t, y, dx, dz);
@@ -693,7 +730,7 @@ export class World {
     t.broken = true;
     t.stumpH = y - t.base;
     this.brokenTrees.set(t.id, { y, dx, dz });
-    for (const im of t.ims) { im.setMatrixAt(t.i, _zeroM); im.instanceMatrix.needsUpdate = true; }
+    this.hideTree(t);
 
     const parts = this.treeParts[t.kind];
     // fresh cut radius (the trunk tapers 0.32 -> 0.20 over its 2.8 m)
@@ -985,7 +1022,6 @@ export class World {
   }
 }
 
-const _zeroM = new THREE.Matrix4().makeScale(0, 0, 0);
 const _downV = new THREE.Vector3(0, -1, 0);
 const _upV = new THREE.Vector3(0, 1, 0);
 

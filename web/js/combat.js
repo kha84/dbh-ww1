@@ -1,5 +1,7 @@
 // Shells (ballistics, hit tests), armour penetration / module damage, visual effects
 import * as THREE from 'three';
+import { texture, instancedDynamicBufferAttribute } from 'three/tsl';
+import { glowing } from './glow.js';
 import { WATER_LEVEL, segBox } from './world.js';
 import { G, MODULE_NAMES } from './tanks.js';
 
@@ -29,6 +31,53 @@ const PTYPES = {
   weld:  { add: true,  color: 0x9fd0ff, life: [0.1, 0.25], size: [0.6, 0.2], rise: 0,   alpha: 1.0, grav: 1 },
 };
 
+// Particles in two instanced batches (additive: fire, flashes, sparks - they also feed the bloom; normal: smoke,
+// dust, steam): two draw calls however many particles are alive. Per particle: position, size, turn, colour + alpha.
+class ParticleBatch {
+  constructor(scene, tex, additive, max) {
+    this.max = max;
+    this.pos = new THREE.InstancedBufferAttribute(new Float32Array(max * 3), 3).setUsage(THREE.DynamicDrawUsage);
+    this.size = new THREE.InstancedBufferAttribute(new Float32Array(max), 1).setUsage(THREE.DynamicDrawUsage);
+    this.rot = new THREE.InstancedBufferAttribute(new Float32Array(max), 1).setUsage(THREE.DynamicDrawUsage);
+    this.col = new THREE.InstancedBufferAttribute(new Float32Array(max * 4), 4).setUsage(THREE.DynamicDrawUsage);
+    const m = new THREE.SpriteNodeMaterial({ transparent: true, depthWrite: false,
+      blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending });
+    m.positionNode = instancedDynamicBufferAttribute(this.pos);
+    m.scaleNode = instancedDynamicBufferAttribute(this.size);
+    m.rotationNode = instancedDynamicBufferAttribute(this.rot);
+    m.colorNode = texture(tex).mul(instancedDynamicBufferAttribute(this.col));
+    if (additive) glowing(m);
+    this.sprite = new THREE.Sprite(m);
+    this.sprite.count = 0;
+    this.sprite.frustumCulled = false;
+    this.sprite.renderOrder = additive ? 3 : 2;
+    scene.add(this.sprite);
+    this.n = 0;
+  }
+  begin() { this.n = 0; }
+  push(p) {
+    if (this.n >= this.max) return;
+    const i = this.n++;
+    const s = p.sprite;
+    this.pos.array[i * 3] = s.x; this.pos.array[i * 3 + 1] = s.y; this.pos.array[i * 3 + 2] = s.z;
+    this.size.array[i] = p.size;
+    this.rot.array[i] = p.rot;
+    this.col.array[i * 4] = p.color.r; this.col.array[i * 4 + 1] = p.color.g; this.col.array[i * 4 + 2] = p.color.b;
+    this.col.array[i * 4 + 3] = p.alpha;
+  }
+  end() {
+    const n = this.n;
+    this.sprite.count = n;
+    this.sprite.visible = n > 0;
+    if (!n) return;
+    for (const [a, k] of /** @type {[THREE.InstancedBufferAttribute, number][]} */ ([[this.pos, 3], [this.size, 1], [this.rot, 1], [this.col, 4]])) {
+      a.clearUpdateRanges();
+      a.addUpdateRange(0, n * k);
+      a.needsUpdate = true;
+    }
+  }
+}
+
 export class Effects {
   constructor(scene) {
     this.scene = scene;
@@ -36,6 +85,8 @@ export class Effects {
     this.parts = [];
     this.pool = [];
     this.MAX = 700;
+    this.add = new ParticleBatch(scene, this.tex, true, this.MAX);
+    this.norm = new ParticleBatch(scene, this.tex, false, this.MAX);
   }
 
   spawn(type, pos, vel, scale = 1) {
@@ -43,31 +94,27 @@ export class Effects {
     let p = this.pool.pop();
     if (!p) {
       if (this.parts.length >= this.MAX) return;
-      const mat = new THREE.SpriteMaterial({ map: this.tex, transparent: true, depthWrite: false });
-      p = { sprite: new THREE.Sprite(mat), vel: new THREE.Vector3() };
+      p = { sprite: new THREE.Vector3(), vel: new THREE.Vector3(), color: new THREE.Color(), size: 1, rot: 0, alpha: 1 };
     }
-    const m = p.sprite.material;
-    m.blending = T.add ? THREE.AdditiveBlending : THREE.NormalBlending;
-    m.color.setHex(T.color);
-    m.opacity = T.alpha;
-    m.rotation = Math.random() * Math.PI * 2;
+    p.color.setHex(T.color);
+    p.alpha = T.alpha;
+    p.rot = Math.random() * Math.PI * 2;
     p.type = T;
     p.life = p.max = T.life[0] + Math.random() * (T.life[1] - T.life[0]);
     p.s0 = T.size[0] * scale; p.s1 = T.size[1] * scale;
-    p.sprite.position.copy(pos);
+    p.sprite.copy(pos);
     p.vel.copy(vel || _zero);
     p.vel.y += T.rise * (0.6 + Math.random() * 0.8);
-    p.sprite.scale.setScalar(p.s0);
-    this.scene.add(p.sprite);
+    p.size = p.s0;
     this.parts.push(p);
   }
 
   update(dt) {
+    this.add.begin(); this.norm.begin();
     for (let i = this.parts.length - 1; i >= 0; i--) {
       const p = this.parts[i];
       p.life -= dt;
       if (p.life <= 0) {
-        this.scene.remove(p.sprite);
         this.parts[i] = this.parts[this.parts.length - 1];
         this.parts.pop();
         this.pool.push(p);
@@ -76,11 +123,13 @@ export class Effects {
       const k = 1 - p.life / p.max;
       if (p.type.grav) p.vel.y -= G * dt;
       else p.vel.multiplyScalar(Math.pow(0.4, dt));
-      p.sprite.position.addScaledVector(p.vel, dt);
-      p.sprite.scale.setScalar(p.s0 + (p.s1 - p.s0) * Math.sqrt(k));
-      p.sprite.material.opacity = p.type.alpha * (1 - k) * (p.type.add ? 1 : Math.min(1, k * 6));
-      if (p.type === PTYPES.fire) p.sprite.material.color.setRGB(1, 0.65 - k * 0.45, 0.25 - k * 0.2);
+      p.sprite.addScaledVector(p.vel, dt);
+      p.size = p.s0 + (p.s1 - p.s0) * Math.sqrt(k);
+      p.alpha = p.type.alpha * (1 - k) * (p.type.add ? 1 : Math.min(1, k * 6));
+      if (p.type === PTYPES.fire) p.color.setRGB(1, 0.65 - k * 0.45, 0.25 - k * 0.2);
+      (p.type.add ? this.add : this.norm).push(p);
     }
+    this.add.end(); this.norm.end();
   }
 
   rnd(s) { return _r.set((Math.random() - 0.5) * s, (Math.random() - 0.5) * s, (Math.random() - 0.5) * s); }
@@ -143,7 +192,7 @@ export class Combat {
     this.now = 0;                    // game time (set by the game each frame)
     const tg = new THREE.CylinderGeometry(0.07, 0.07, 3.0, 5);
     this.tracerGeo = tg;
-    this.tracerMat = new THREE.MeshBasicMaterial({ color: 0xffd27a, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false });
+    this.tracerMat = glowing(new THREE.MeshBasicNodeMaterial({ color: 0xffd27a, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false }));
   }
 
   fireFrom(tank) {

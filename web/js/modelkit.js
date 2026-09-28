@@ -3,6 +3,7 @@
 // generic engines and fuel tank sets. Tank-specific models live in tankdefs/<key>.js and use these.
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { spinUniform, spinMaterial } from './spin.js';
 
 export const PI = Math.PI;
 
@@ -283,7 +284,48 @@ export function runningGear(root, P, o) {
     link(root, P.track, X, o.w, zr, gy, sz - sr * 0.6, sy - sr * 0.3, t);                   // rear
     link(root, P.track, X, o.w, sz - sr * 0.6, sy - sr * 0.3, sz - sr * 0.35, sy + sr, t);
   }
-  return wheels;
+  return [mergeWheels(root, wheels)];
+}
+
+// Merge wheel groups (each already baked) into one mesh per material that turns in the vertex shader (spin.js).
+// Returns a stand-in for the wheels: its rotation.x is the angle of all of them (the tank turns it as it drives).
+export function mergeWheels(root, groups) {
+  root.updateMatrixWorld(true);
+  const inv = new THREE.Matrix4().copy(root.matrixWorld).invert();
+  const u = spinUniform();
+  const buckets = new Map();                        // material -> [{ geo, ranges }]
+  const c = new THREE.Vector3();
+  for (const g of groups) {
+    c.setFromMatrixPosition(g.matrixWorld).applyMatrix4(inv);
+    for (const m of g.children) {
+      if (!m.isMesh) continue;
+      const geo = m.geometry.clone().applyMatrix4(new THREE.Matrix4().multiplyMatrices(inv, m.matrixWorld));
+      const n = geo.attributes.position.count, cen = new Float32Array(n * 3);
+      for (let i = 0; i < n; i++) c.toArray(cen, i * 3);
+      geo.setAttribute('wheelC', new THREE.BufferAttribute(cen, 3));
+      if (!buckets.has(m.material)) buckets.set(m.material, []);
+      buckets.get(m.material).push({ geo, ranges: m.userData.paint, role: m.userData.paintRole });
+    }
+    g.removeFromParent();
+  }
+  for (const [mat, list] of buckets) {
+    const merged = new THREE.Mesh(mergeGeometries(list.map(e => e.geo), false), spinMaterial(mat, u));
+    merged.castShadow = true; merged.receiveShadow = true;
+    // painted surfaces: vertex ranges (shifted into the merged mesh) or the role of a textured material
+    let off = 0;
+    const ranges = [];
+    for (const e of list) {
+      if (e.ranges) for (const [s, n, r] of e.ranges) ranges.push([s + off, n, r]);
+      off += e.geo.attributes.position.count;
+    }
+    if (ranges.length) merged.userData.paint = ranges;
+    else if (list[0].role) merged.userData.paintRole = list[0].role;
+    merged.userData.spin = u;                          // paint.js keeps the turning when it swaps the material
+    keep(merged);
+    root.add(merged);
+  }
+  const spinner = { rotation: { get x() { return u.value; }, set x(v) { u.value = v % (Math.PI * 2); } } };
+  return spinner;
 }
 
 // return rollers above the wheels

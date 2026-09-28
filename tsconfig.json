@@ -24,7 +24,6 @@
   },
   "include": [
     "web/js/**/*.js",
-    "web/js/**/*.ts",
-    "vite.config.js"
+    "web/js/**/*.ts"
   ]
 }

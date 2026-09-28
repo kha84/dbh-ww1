@@ -19,7 +19,7 @@ import { showMenu } from './menu.js';
 import { snapshot, restore, restoreBefore, writeSave, loadSave } from './save.js';
 import { Net, NET_KEY } from './net.js';
 import { $ } from './game/dom.js';
-import { createRenderer, createSky, BASE_FOV } from './game/render.js';
+import { createRenderer, createSky, createPipeline, initialQuality, backendName, BASE_FOV } from './game/render.js';
 import { createPanels } from './game/panels.js';
 import { createStash } from './game/stash.js';
 import { createMenus } from './game/menus.js';
@@ -87,7 +87,8 @@ const TANK_REACH = 3.5;        // metres from hull surface for interactions
 // ================== renderer / scene (game/render.js) ==================
 const { renderer, scene, camera } = createRenderer(dbg, document.getElementById('app'));
 const world = new World(scene, SEED, worldOptions(MODE || 'road'));
-const sky = createSky(scene, dbg, world.VIEW * 128);
+const sky = createSky(scene, camera, dbg, world.VIEW * 128);
+const pipeline = createPipeline(renderer, scene, camera, sky, dbg);     // quality is set once the renderer is up (boot)
 
 // ================== world systems ==================
 const fx = new Effects(scene);
@@ -721,6 +722,8 @@ function exitVehicle(force = false) {
 
 // ================== main loop ==================
 const timer = new THREE.Timer();
+const HUD_DT = 1 / 15;
+let hudT = 0;
 let despawnT = 0, repairRenderT = 0, craneRenderT = 0, stashRenderT = 0, engineNoiseT = 0;
 
 function frame(dt) {
@@ -859,7 +862,7 @@ function frame(dt) {
     }
   }
 
-  sky.follow(anchor);
+  sky.update(dt, anchor);
 
   // progress
   state.maxZ = Math.max(state.maxZ, anchor.z);
@@ -893,18 +896,21 @@ function frame(dt) {
 
   if (hitTextT > 0) { hitTextT -= dt; if (hitTextT <= 0) $('hitText').style.opacity = '0'; }
 
+  markers.update(dt, { tanks, vehicle: state.vehicle, camera, world, time: state.time });
+  // the panels, prompts and the minimap are redrawn 15 times a second (DOM / canvas work is not free)
+  if ((hudT -= dt) > 0) return;
+  hudT = HUD_DT;
   updateSystemsPanel(v || state.nearTank, !!v);
   updateGauge(v);
   updateInventory();
   updateWeaponPanel();
-  markers.update(dt, { tanks, vehicle: state.vehicle, camera, world, time: state.time });
   updatePrompt();
   if (state.duel || state.netDuel) {
     const st = state.duel ? duelStatus(state) : { left: state.netDuel[0], total: state.netDuel[1] };
     topEl.innerHTML = `Дуэль &nbsp;·&nbsp; противников осталось: <b>${st.left} / ${st.total}</b>`;
   } else if (state.range) topEl.innerHTML = `Танкодром &nbsp;·&nbsp; мишеней поражено: <b>${tanks.filter(t => t.derelict && t.marks.length).length}</b>`;
   else topEl.innerHTML = `Пройдено: <b>${((state.maxZ - state.startZ) / 1000).toFixed(2)} км</b> &nbsp;·&nbsp; Танков: <b>${state.kills}</b>` +
-    ` &nbsp;·&nbsp; Пехоты: <b>${state.infKills}</b>`;
+    ` &nbsp;·&nbsp; Пехоты: <b>${state.infKills}</b> &nbsp;·&nbsp; ${sky.clock()}`;
   const heading = walking ? state.yaw : v.heading;
   minimap.draw(anchor, heading, { items, soldiers: infantry.soldiers, tanks, vehicle: state.vehicle, time: state.time });
   $('mmLabel').textContent = state.duel ? 'ДУЭЛЬ' : nextSettlementLabel(anchor);
@@ -914,8 +920,9 @@ function animate(t) {
   timer.update(t);
   const dt = Math.min(0.05, timer.getDelta());
   // network play: the world does not stop for a pause
+  if (!pipeline.quality) return;                  // the renderer is still starting up (boot)
   if ((!state.paused || (net && net.connected)) && state.started && !state.over) frame(dt);
-  renderer.render(scene, camera);
+  pipeline.render();
 }
 
 // ---- game modules (web/js/game/): each gets this context; functions of the modules are reached through
@@ -1020,6 +1027,9 @@ function restoreGame(d) {
 }
 
 async function boot() {
+  await renderer.init();
+  pipeline.set(initialQuality(dbg, renderer));
+  console.info(`DBH-WW1: ${backendName(renderer)}, графика: ${pipeline.quality}`);
   if (!MODE) {
     // no game chosen: the main menu (it reloads the page with the chosen mode)
     loaderEl.classList.add('hidden');
@@ -1097,7 +1107,7 @@ boot();
 renderer.setAnimationLoop(animate);      // (waits for the renderer to initialise)
 
 // handle for debugging / automated tests
-window.game = { renderer, scene, state, tanks, world, items, combat, director, workshop, player, camera, keys, spawnTank, fx, frame, MODE, saveGame,
+window.game = { renderer, scene, sky, pipeline, state, tanks, world, items, combat, director, workshop, player, camera, keys, spawnTank, fx, frame, MODE, saveGame,
   snapshot: () => snapshot({ state, player, items, tanks, director, world, workshop, infantry, garrisoned, SEED }),
   guns, infantry, SEED, selectWeapon, viewModel, startReload, placeSandbag, mgAction, toggleTankWeapon, updateDriveControls,
   openStash, doStash, stowPlate, loadShells,
