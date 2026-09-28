@@ -218,7 +218,7 @@ const hpOf = t => Object.fromEntries(HP_KEYS.map(k => [k, t.hp[k]]));
 
 // ===================================================================== the game side
 // G: what the game gives: { state, player, playerVel, camera, scene, world, tanks, items, combat, guns, infantry,
-//   director, fx, sfx, MODE, SEED, CFG, spawnTank, removeTank, msg, showHit, describeHit, damagePlayer,
+//   director, fx, sfx, sky, MODE, SEED, CFG, spawnTank, removeTank, msg, showHit, describeHit, damagePlayer,
 //   enterVehicle(t, passengerRole), exitVehicle(), troopSeat(), startPos(), onVictory(text), onLost(text), ui }
 export class Net {
   constructor(G, role) {
@@ -429,7 +429,7 @@ export class Net {
               (s.alive ? 1 : 0) | (s.reloadT > 0 ? 2 : 0) | (s.throwAnim > 0 ? 4 : 0) | (s.state === 'combat' || s.state === 'retreat' || s.state === 'alert' ? 8 : 0),
               r2(s.lookYaw || 0), r2(s.fallDir || 0)]);
     }
-    const m = { k: 's', T, S, P: this.mePose() };
+    const m = { k: 's', T, S, P: this.mePose(), H: r2(G.sky.time.tod) };
     if (G.state.duel) { const st = G.duelStatus(); if (st) m.D = [st.left, st.total]; }
     this.send(m, true);
     if (this.shots.length) { this.send({ k: 'sh', X: this.shots }); this.shots = []; }
@@ -654,6 +654,8 @@ export class Net {
     }
     this.setRemote(m.P);
     if (m.D) G.state.netDuel = m.D;
+    // the time of day runs on the host (the guest's clock only fills the gaps)
+    if (m.H != null && Math.abs(m.H - G.sky.time.tod) > 0.05) G.sky.setTime(m.H);
   }
   // guest: move the soldiers of the host's world
   puppets(dt) {

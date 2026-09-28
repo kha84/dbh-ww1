@@ -1,5 +1,6 @@
 // Roadside settlements: villages, towns, gas stations, tank repair stations
 import * as THREE from 'three';
+import { bakeStatic } from './bakestatic.js';
 import { rng } from './noise.js';
 import { difficultyAt, pickTankKey, lootRoll } from './loot.js';
 import { sprayColor } from './paint.js';
@@ -530,6 +531,16 @@ export function buildSettlement(world, plan) {
 
   // houses destroyed earlier stay ruined
   for (const h of houses) if (world.ruins.has(h.id)) ruinHouse(h, true);
+
+  // bake the static pieces (bakestatic.js): each standing house into its own mesh (it can be shot to pieces),
+  // everything else of the settlement together (signs keep their textured boards)
+  const inHouses = new Set();
+  for (const h of houses) {
+    if (h.ruined) continue;
+    for (const m of h.meshes) inHouses.add(m);
+    h.meshes = bakeStatic(h.meshes, group);
+  }
+  bakeStatic(group.children.filter(o => !inHouses.has(o)), group);
 
   world.scene.add(group);
   return { plan, group, obstacles, zones, items, crane, houses };

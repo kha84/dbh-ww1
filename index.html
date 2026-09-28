@@ -72,6 +72,10 @@
   #weapon .wammo small { font-size: 16px; color: #b7a97f; font-weight: 400; }
   #weapon .wsub { font-size: 11.5px; color: #9aa98c; }
   #weapon .wsub b { color: #e8c96a; font-weight: 500; }
+  #gfx { margin-top: 14px; color: #9aa98c; font-size: 13px; letter-spacing: 1px; }
+  #gfx button { margin: 0 3px; padding: 4px 12px; font-size: 13px; background: #3b4530; }
+  #gfx button.on { background: #7d8f5e; }
+  #gfxInfo { color: #7f8a70; font-size: 12px; margin-left: 6px; }
   #seedInfo { margin-top: 10px; color: #7f8a70; font-size: 12px; letter-spacing: 1px; }
   #hpbar { height: 6px; background: #333; border-radius: 3px; margin: 4px 0 8px; overflow: hidden; }
   #hpfill { height: 100%; background: #7fe07f; width: 100%; transition: width .2s; }
@@ -317,6 +321,7 @@
   <div id="netPanel" class="netbox hidden"></div>
   <div class="pbtns"><button id="bResume">Продолжить</button><button id="bSave">Сохранить игру</button><button id="bMenu">Главное меню</button></div>
   <div class="resume">ESC — продолжить · F5 — быстрое сохранение</div>
+  <div id="gfx">Графика: <span id="gfxQ"></span> <span id="gfxInfo"></span></div>
   <div id="seedInfo"></div>
 </div>
 

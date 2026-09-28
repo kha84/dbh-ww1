@@ -7,7 +7,7 @@
 //   ?noshadows=1 ?nofog=1 ?noclouds=1 ?noaa=1 ?nopost=1 ?noao=1 ?nobloom=1 ?bloomT=0.1 ?bloomS=0.9 ?logdepth=1
 import * as THREE from 'three/webgpu';
 import { pass, mrt, output, normalView, vec4, renderOutput, uniform, float, instancedBufferAttribute } from 'three/tsl';
-import { glowing } from '../glow.js';
+import { glowing, setGlow } from '../glow.js';
 import { SkyMesh } from 'three/addons/objects/SkyMesh.js';
 import { CSMShadowNode } from 'three/addons/csm/CSMShadowNode.js';
 import { ao } from 'three/addons/tsl/display/GTAONode.js';
@@ -30,7 +30,7 @@ export const QUALITY = {
  */
 export function createRenderer(dbg, app) {
   const renderer = new THREE.WebGPURenderer({
-    antialias: false,                      // FXAA in the post-processing (MSAA without it, see setQuality)
+    antialias: dbg.get('noaa') !== '1',    // MSAA when drawing straight to the screen (low); FXAA in the post-processing
     powerPreference: 'high-performance',
     logarithmicDepthBuffer: dbg.get('logdepth') === '1',
     forceWebGL: dbg.get('backend') === 'webgl',
@@ -250,15 +250,16 @@ export function createPipeline(renderer, scene, camera, sky, dbg) {
   }
 
   function buildPost(Q) {
-    if (!Q.post || dbg.get('nopost') === '1') return null;
+    if (!Q.post || dbg.get('nopost') === '1') { setGlow(false); return null; }
     const p = new THREE.RenderPipeline(renderer);
-    const scenePass = pass(scene, camera);
+    const scenePass = pass(scene, camera, { samples: 0 });          // FXAA smooths the edges (GTAO needs a plain depth)
     const useAO = Q.ao && dbg.get('noao') !== '1', useBloom = Q.bloom && dbg.get('nobloom') !== '1';
     // extra targets: view normals for the ambient occlusion, the glow mask for the bloom (glow.js)
     const targets = { output };
     if (useAO) targets.normal = normalView;
     if (useBloom) targets.bloom = float(0);
     if (useAO || useBloom) scenePass.setMRT(mrt(targets));
+    setGlow(useBloom);
     let color;
     if (useAO) {
       const base = scenePass.getTextureNode('output');

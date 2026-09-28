@@ -2,6 +2,7 @@
 // streamed around the player, lakes, forest, settlements and static obstacles.
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { ChunkBatch } from './batch.js';
 import { makeNoise, fbm, smoothstep, hash, rng } from './noise.js';
 import { buildSettlement, SETTLEMENT_NAMES } from './settlements.js';
 import { planRiver, carve, buildBridge } from './rivers.js';
@@ -382,6 +383,16 @@ export class World {
       birch: mergeGeometries(this.treeParts.birch.map(([geo, mat]) => bakedPart(geo, mat))),
     };
     this.forestMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1 });
+
+    // every loaded chunk draws its terrain / water / road / forest through one batch per kind (batch.js)
+    const nCh = (2 * this.VIEW + 1) ** 2 + 24, NV = (CSEG + 1) ** 2;
+    const treeV = Math.max(this.treeBake.pine.attributes.position.count, this.treeBake.birch.attributes.position.count);
+    this.batch = {
+      terrain: new ChunkBatch(this.scene, this.terrainMat, { instances: nCh, verts: nCh * NV, indices: nCh * CSEG * CSEG * 6, name: 'terrain' }),
+      water: new ChunkBatch(this.scene, this.waterMat, { instances: 48, verts: 60000, indices: 90000, name: 'water' }),
+      road: new ChunkBatch(this.scene, this.roadMat, { instances: 48, verts: 48 * 200, indices: 48 * 400, name: 'road' }),
+      forest: new ChunkBatch(this.scene, this.forestMat, { instances: nCh, verts: nCh * 40 * treeV, indices: 0, castShadow: true, name: 'forest' }),
+    };
     // fresh cut of a broken trunk
     this.cutGeo = new THREE.CircleGeometry(1, 8);
     this.cutGeo.rotateX(-Math.PI / 2);
@@ -452,6 +463,7 @@ export class World {
   }
 
   disposeChunk(k, ch) {
+    for (const k in ch.parts) this.batch[k].remove(ch.parts[k]);
     for (const m of ch.meshes) {
       this.scene.remove(m);
       if (m.isInstancedMesh) m.dispose();
@@ -473,7 +485,7 @@ export class World {
         hg[gz * G + gx] = this.height(x0 + (gx - 1) * CELL, wz);
       }
     }
-    const ch = { cx, cz, x0, z0, hg, meshes: [], trees: [], extra: [] };
+    const ch = { cx, cz, x0, z0, hg, meshes: [], parts: {}, trees: [], extra: [] };
 
     // ---- terrain mesh
     const pos = new Float32Array(N * N * 3);
@@ -535,11 +547,7 @@ export class World {
     geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
     geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
     geo.setIndex(new THREE.BufferAttribute(idx, 1));
-    geo.computeBoundingSphere();
-    const mesh = new THREE.Mesh(geo, this.terrainMat);
-    mesh.receiveShadow = true;
-    this.scene.add(mesh);
-    ch.meshes.push(mesh);
+    ch.parts.terrain = this.batch.terrain.add(geo);
 
     // ---- water: trimmed sub-quads over cells that are actually under water
     if (minH < WATER_LEVEL && dbg.get('nowater') !== '1') {
@@ -573,11 +581,8 @@ export class World {
         wg.setAttribute('position', new THREE.Float32BufferAttribute(wPos, 3));
         wg.setIndex(wIdx);
         wg.computeVertexNormals();
-        const wm = new THREE.Mesh(wg, this.waterMat);
-        wm.position.y = dbg.get('watery') ? parseFloat(dbg.get('watery')) : WATER_LEVEL;
-        wm.receiveShadow = true;
-        this.scene.add(wm);
-        ch.meshes.push(wm);
+        wg.translate(0, dbg.get('watery') ? parseFloat(dbg.get('watery')) : WATER_LEVEL, 0);
+        ch.parts.water = this.batch.water.add(wg);
       }
     }
 
@@ -619,10 +624,7 @@ export class World {
         // winding may face down depending on the side; force up-facing normals
         const na = rg.attributes.normal;
         for (let i = 0; i < na.count; i++) if (na.getY(i) < 0) na.setXYZ(i, -na.getX(i), -na.getY(i), -na.getZ(i));
-        const rm = new THREE.Mesh(rg, this.roadMat);
-        rm.receiveShadow = true;
-        this.scene.add(rm);
-        ch.meshes.push(rm);
+        ch.parts.road = this.batch.road.add(rg);
       }
     }
 
@@ -689,13 +691,7 @@ export class World {
       geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
       geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
       geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
-      geo.computeBoundingSphere();
-      const forest = new THREE.Mesh(geo, this.forestMat);
-      forest.castShadow = true;
-      forest.matrixAutoUpdate = false;
-      this.scene.add(forest);
-      ch.meshes.push(forest);
-      ch.forest = forest;
+      ch.parts.forest = this.batch.forest.add(geo);
     }
     // trees broken earlier stay broken
     for (const t of ch.trees) {
@@ -710,12 +706,13 @@ export class World {
   // ---------------------------------------------------------- broken trees
   // take a standing tree out of the chunk's forest mesh (its triangles collapse to a point)
   hideTree(t) {
-    const f = t.ch.forest;
-    if (!f) return;
-    const p = f.geometry.attributes.position, a = p.array;
-    const x = a[t.v0 * 3], y = a[t.v0 * 3 + 1], z = a[t.v0 * 3 + 2];
-    for (let i = t.v0; i < t.v0 + t.nv; i++) { a[i * 3] = x; a[i * 3 + 1] = y; a[i * 3 + 2] = z; }
-    p.addUpdateRange(t.v0 * 3, t.nv * 3);
+    const h = t.ch.parts.forest;
+    if (!h) return;
+    const v0 = this.batch.forest.range(h).vertexStart + t.v0;
+    const p = this.batch.forest.attribute('position'), a = p.array;
+    const x = a[v0 * 3], y = a[v0 * 3 + 1], z = a[v0 * 3 + 2];
+    for (let i = v0; i < v0 + t.nv; i++) { a[i * 3] = x; a[i * 3 + 1] = y; a[i * 3 + 2] = z; }
+    p.addUpdateRange(v0 * 3, t.nv * 3);
     p.needsUpdate = true;
   }
 

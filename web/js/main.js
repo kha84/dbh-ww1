@@ -19,7 +19,7 @@ import { showMenu } from './menu.js';
 import { snapshot, restore, restoreBefore, writeSave, loadSave } from './save.js';
 import { Net, NET_KEY } from './net.js';
 import { $ } from './game/dom.js';
-import { createRenderer, createSky, createPipeline, initialQuality, backendName, BASE_FOV } from './game/render.js';
+import { createRenderer, createSky, createPipeline, initialQuality, saveQuality, backendName, QUALITY, BASE_FOV } from './game/render.js';
 import { createPanels } from './game/panels.js';
 import { createStash } from './game/stash.js';
 import { createMenus } from './game/menus.js';
@@ -519,10 +519,20 @@ function setPause(v) {
   state.paused = v;
   if (v) for (const k in keys) keys[k] = false;       // (network play: the world goes on while paused)
   pauseEl.classList.toggle('hidden', !v);
+  if (v) renderGfxMenu();
   if (v && locked) document.exitPointerLock();
   if (!v && !locked) canvas.requestPointerLock()?.catch?.(() => {});
 }
 pauseEl.addEventListener('click', e => { if (state.paused && e.target === pauseEl) setPause(false); });
+// graphics quality (render.js presets): switched on the fly, remembered for the next games
+function renderGfxMenu() {
+  $('gfxQ').innerHTML = Object.entries(QUALITY).map(([k, Q]) =>
+    `<button data-q="${k}" class="${k === pipeline.quality ? 'on' : ''}">${Q.name}</button>`).join('');
+  $('gfxInfo').textContent = `${backendName(renderer)} · ${sky.clock()}`;
+  for (const b of $('gfxQ').querySelectorAll('button')) {
+    b.onclick = e => { e.stopPropagation(); pipeline.set(b.dataset.q); saveQuality(b.dataset.q); renderGfxMenu(); };
+  }
+}
 $('bResume').onclick = e => { e.stopPropagation(); setPause(false); };
 $('bMenu').onclick = e => { e.stopPropagation(); if (confirm('Выйти в главное меню? Несохранённый прогресс пропадёт.')) location.href = location.pathname; };
 $('bSave').onclick = e => { e.stopPropagation(); saveGame(); };
@@ -540,6 +550,7 @@ function saveGame() {
   if (state.over) return;
   try {
     const data = snapshot({ state, player, items, tanks, director, world, workshop, infantry, garrisoned, SEED });
+    data.tod = sky.time.tod;
     const where = nextSettlementLabel(state.vehicle ? state.vehicle.root.position : player.position).replace(/^Впереди: /, 'у ');
     const meta = writeSave(data, `Мир #${SEED}, ${data.km} км — ${where}`);
     msg(`Игра сохранена: ${meta.name}`, '#9fe07f');
@@ -1020,6 +1031,7 @@ function enterTank(t) {
 // continue a saved game
 function restoreGame(d) {
   const v = restore({ state, player, items, director, world, workshop, infantry, garrisoned, spawnTank, camera }, d);
+  if (d.tod != null && !dbg.has('tod')) sky.setTime(d.tod);
   if (v) enterTank(v);
   if (d.state.view === 'inside' && state.vehicle) enterInside();
   msg(`Загружена игра: мир #${SEED}, пройдено ${d.km} км`, '#e8c96a');
@@ -1082,7 +1094,7 @@ async function boot() {
 // ================== network play (net.js) ==================
 function netCtx() {
   return {
-    state, player, playerVel, camera, scene, world, tanks, items, combat, guns, infantry, director, fx, sfx, MODE, SEED, CFG,
+    state, player, playerVel, camera, scene, world, tanks, items, combat, guns, infantry, director, fx, sfx, sky, MODE, SEED, CFG,
     spawnTank, removeTank, msg, showHit, describeHit, damagePlayer, troopSeat,
     duelStatus: () => duelStatus(state),
     enterVehicle: t => enterTank(t),
