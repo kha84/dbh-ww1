@@ -273,6 +273,7 @@ export function buildSettlement(world, plan) {
     const tex = signTexture(title, sub);
     const board = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 0.9),
       new THREE.MeshStandardMaterial({ map: tex, side: THREE.DoubleSide, roughness: 0.8 }));
+    board.userData.own = 'all';                    // geometry, material and texture of its own (world.js frees them)
     board.position.set(f.x, y + 2.6, f.z);
     board.rotation.y = f.rot + (face < 0 ? Math.PI : 0);
     group.add(board);

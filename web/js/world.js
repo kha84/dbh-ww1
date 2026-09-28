@@ -103,6 +103,7 @@ export class World {
     this.chunks = new Map();
     this.obstacles = new Set();
     this.settlements = new Map();    // k -> built settlement
+    this.reveal = [];                // meshes of new settlements shown a few per frame (animate)
     this.settleInfo = new Map();     // k -> plan (or null)
     this.onSettlementBuilt = null;   // callback(s)
     this.onSettlementRemoved = null;
@@ -369,11 +370,17 @@ export class World {
     };
     // the standing forest of a chunk is one baked mesh (vertex colours, one material for every chunk): one draw call
     // per chunk and one shader for all of them (an InstancedMesh per chunk and part cost a shader build each)
+    // indexed (fewer vertices to keep in the batch), the flat-shaded crowns with their own vertices per face
     const bakedPart = (geo, mat) => {
-      const g = geo.index ? geo.toNonIndexed() : geo.clone();
+      let g = geo.clone();
       g.deleteAttribute('uv');
-      if (mat.flatShading) g.computeVertexNormals();          // non-indexed: faceted like the flat-shaded crowns
-      const c = mat.color.clone(), n = g.attributes.position.count, col = new Float32Array(n * 3);
+      if (mat.flatShading) {
+        g = g.index ? g.toNonIndexed() : g;
+        g.computeVertexNormals();
+      }
+      const n = g.attributes.position.count;
+      if (!g.index) g.setIndex([...Array(n).keys()]);
+      const c = mat.color, col = new Float32Array(n * 3);
       for (let i = 0; i < n; i++) c.toArray(col, i * 3);
       g.setAttribute('color', new THREE.BufferAttribute(col, 3));
       return g;
@@ -387,11 +394,12 @@ export class World {
     // every loaded chunk draws its terrain / water / road / forest through one batch per kind (batch.js)
     const nCh = (2 * this.VIEW + 1) ** 2 + 24, NV = (CSEG + 1) ** 2;
     const treeV = Math.max(this.treeBake.pine.attributes.position.count, this.treeBake.birch.attributes.position.count);
+    const treeI = Math.max(this.treeBake.pine.index.count, this.treeBake.birch.index.count);
     this.batch = {
-      terrain: new ChunkBatch(this.scene, this.terrainMat, { instances: nCh, verts: nCh * NV, indices: nCh * CSEG * CSEG * 6, name: 'terrain' }),
+      terrain: new ChunkBatch(this.scene, this.terrainMat, { instances: nCh, verts: Math.ceil(nCh * NV * 1.15), indices: Math.ceil(nCh * CSEG * CSEG * 6 * 1.15), name: 'terrain', step: 64 }),
       water: new ChunkBatch(this.scene, this.waterMat, { instances: 48, verts: 60000, indices: 90000, name: 'water' }),
       road: new ChunkBatch(this.scene, this.roadMat, { instances: 48, verts: 48 * 200, indices: 48 * 400, name: 'road' }),
-      forest: new ChunkBatch(this.scene, this.forestMat, { instances: nCh, verts: nCh * 40 * treeV, indices: 0, castShadow: true, name: 'forest' }),
+      forest: new ChunkBatch(this.scene, this.forestMat, { instances: nCh, verts: nCh * 55 * treeV, indices: nCh * 55 * treeI, castShadow: true, name: 'forest', step: 1024 }),
     };
     // fresh cut of a broken trunk
     this.cutGeo = new THREE.CircleGeometry(1, 8);
@@ -431,6 +439,9 @@ export class World {
       const s = this.settlementPlan(k);
       if (s && !this.settlements.has(k) && Math.abs(pos.z - s.z) < 800) {
         const built = buildSettlement(this, s);
+        // built 800 m away, far beyond the fog: its meshes appear a few per frame (their first upload to the GPU
+        // all in one frame made a long one)
+        for (const o of built.group.children) if (o.visible) { o.visible = false; this.reveal.push(o); }
         this.settlements.set(k, built);
         if (this.onSettlementBuilt) this.onSettlementBuilt(built);
       }
@@ -444,6 +455,12 @@ export class World {
     for (const [k, s] of this.settlements) {
       if (Math.abs(pos.z - s.plan.z) > 1300) {
         this.scene.remove(s.group);
+        // free what belongs to this settlement only (baked meshes, sign boards); shared geometry stays
+        s.group.traverse(o => {
+          if (!o.userData.own) return;
+          o.geometry.dispose();
+          if (o.userData.own === 'all') { if (o.material.map) o.material.map.dispose(); o.material.dispose(); }
+        });
         for (const o of s.obstacles) this.obstacles.delete(o);
         this.settlements.delete(k);
         if (this.onSettlementRemoved) this.onSettlementRemoved(s);
@@ -670,9 +687,10 @@ export class World {
     const n = ch.trees.reduce((a, t) => a + this.treeBake[t.kind].attributes.position.count, 0);
     if (n) {
       // bake the trees of the chunk into one mesh: each tree keeps its vertex range (t.v0, t.nv) to be hidden
-      const pos = new Float32Array(n * 3), nor = new Float32Array(n * 3), col = new Float32Array(n * 3);
+      const ni = ch.trees.reduce((a, t) => a + this.treeBake[t.kind].index.count, 0);
+      const pos = new Float32Array(n * 3), nor = new Float32Array(n * 3), col = new Uint8Array(n * 3), idx = new Uint32Array(ni);
       const nm = new THREE.Matrix3(), v = new THREE.Vector3();
-      let o = 0;
+      let o = 0, oi = 0;
       for (const t of ch.trees) {
         q.setFromAxisAngle(up, t.rot);
         sc.set(t.s, t.s * t.sy, t.s);
@@ -681,16 +699,19 @@ export class World {
         nm.getNormalMatrix(t.mat);
         const g = this.treeBake[t.kind], gp = g.attributes.position, gn = g.attributes.normal, gc = g.attributes.color;
         t.v0 = o; t.nv = gp.count;
+        const gi = g.index.array;
+        for (let i = 0; i < gi.length; i++) idx[oi++] = gi[i] + o;
         for (let i = 0; i < gp.count; i++, o++) {
           v.fromBufferAttribute(gp, i).applyMatrix4(t.mat).toArray(pos, o * 3);
           v.fromBufferAttribute(gn, i).applyMatrix3(nm).normalize().toArray(nor, o * 3);
-          col[o * 3] = gc.getX(i); col[o * 3 + 1] = gc.getY(i); col[o * 3 + 2] = gc.getZ(i);
+          col[o * 3] = gc.getX(i) * 255; col[o * 3 + 1] = gc.getY(i) * 255; col[o * 3 + 2] = gc.getZ(i) * 255;
         }
       }
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
       geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
-      geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+      geo.setAttribute('color', new THREE.BufferAttribute(col, 3, true));
+      geo.setIndex(new THREE.BufferAttribute(idx, 1));
       ch.parts.forest = this.batch.forest.add(geo);
     }
     // trees broken earlier stay broken
@@ -899,6 +920,7 @@ export class World {
 
   // animate falling trees
   animate(dt) {
+    for (let n = 0; n < 4 && this.reveal.length; n++) this.reveal.shift().visible = true;
     for (let i = this.logs.length - 1; i >= 0; i--) {
       const log = this.logs[i];
       if (!this.stepLog(log, dt)) {

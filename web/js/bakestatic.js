@@ -52,6 +52,7 @@ export function bakeStatic(meshes, parent) {
     merged.castShadow = k === 'cast';
     merged.receiveShadow = true;
     merged.matrixAutoUpdate = false;
+    merged.userData.own = true;                    // its geometry is its own: dispose it with the scenery
     parent.add(merged);
     out.push(merged);
   }

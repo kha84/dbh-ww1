@@ -48,7 +48,16 @@ const mats = {
   can: new THREE.MeshStandardMaterial({ color: 0x55602f, roughness: 0.6, metalness: 0.35 }),
 };
 
+// the halo of a pickup: one material per colour for all of them (a canvas texture each cost an upload)
+const GLOW_MATS = new Map();
 function glowSprite(color) {
+  let mat = GLOW_MATS.get(color);
+  if (!mat) { mat = glowMaterial(color); GLOW_MATS.set(color, mat); }
+  const s = new THREE.Sprite(mat);
+  s.scale.setScalar(2.2);
+  return s;
+}
+function glowMaterial(color) {
   const c = document.createElement('canvas');
   c.width = c.height = 64;
   const g = c.getContext('2d');
@@ -57,11 +66,9 @@ function glowSprite(color) {
   gr.addColorStop(1, 'rgba(0,0,0,0)');
   g.fillStyle = gr;
   g.fillRect(0, 0, 64, 64);
-  const s = new THREE.Sprite(new THREE.SpriteMaterial({
+  return new THREE.SpriteMaterial({
     map: new THREE.CanvasTexture(c), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
-  }));
-  s.scale.setScalar(2.2);
-  return s;
+  });
 }
 
 export function buildItemMesh(type, data = null) {

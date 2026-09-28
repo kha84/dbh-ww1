@@ -29,6 +29,7 @@ import { createInside } from './game/inside.js';
 import { createInteract } from './game/interact.js';
 import { createMotion } from './game/motion.js';
 import { createNetUI } from './game/netui.js';
+import { warmUp } from './game/warmup.js';
 
 // debug flags: ?nowater=1 ?noclouds=1 ?notrees=1 ?notanks=1 ?noenemies=1 ?noinfantry=1 ?noshadows=1 ?nofog=1
 //              ?waterred=1 ?watery=N ?noaa=1 ?logdepth=1 ?seed=N ?god=1 ?start=Z ?view=N
@@ -151,7 +152,11 @@ function garrison(s) {
 }
 
 world.onSettlementBuilt = s => {
-  for (const it of s.items) items.add(it.id, it.type, it.x, it.z, itemData(it));
+  for (const it of s.items) {
+    items.add(it.id, it.type, it.x, it.z, itemData(it));
+    const p = items.pickups.get(it.id);                 // shown a few per frame, like the settlement (world.reveal)
+    if (p && p.mesh.visible) { p.mesh.visible = false; world.reveal.push(p.mesh); }
+  }
   workshop.onBuilt(s);
   garrison(s);
 };
@@ -1060,6 +1065,9 @@ async function boot() {
     barFill.style.width = `${(1 - left / total) * 60}%`;
     await new Promise(r => setTimeout(r, 0));
   }
+  loadText.textContent = 'Подготовка шейдеров...';
+  barFill.style.width = '70%';
+  if (dbg.get('nowarm') !== '1') await warmUp({ scene, camera, world, at: p0 });
   if (NET === 'guest') {
     // the second player: the same world from the seed, the rest comes from the host (net.js)
     $('bSave').style.display = 'none';
