@@ -281,7 +281,9 @@ export function createPipeline(renderer, scene, camera, sky, dbg) {
   }
 
   let lastFov = 0, lastAspect = 0, lastNear = 0;
-  return {
+  const api = {
+    /** @type {((Q: any) => void) | null} called with the new preset (the game switches the grass) */
+    onQuality: null,
     get quality() { return q; },
     set(name) {
       const Q = QUALITY[name] || QUALITY.medium;
@@ -290,6 +292,7 @@ export function createPipeline(renderer, scene, camera, sky, dbg) {
       if (renderer.shadowMap.enabled) setShadows(Q);
       const k = `${Q.post}${Q.ao}${Q.bloom}`;
       if (k !== key) { if (pipeline) pipeline.dispose(); pipeline = buildPost(Q); key = k; }
+      if (api.onQuality) api.onQuality(Q);
     },
     render() {
       sky.place();
@@ -303,4 +306,5 @@ export function createPipeline(renderer, scene, camera, sky, dbg) {
       else renderer.render(scene, camera);
     },
   };
+  return api;
 }

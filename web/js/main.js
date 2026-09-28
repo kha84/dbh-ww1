@@ -30,6 +30,7 @@ import { createInteract } from './game/interact.js';
 import { createMotion } from './game/motion.js';
 import { createNetUI } from './game/netui.js';
 import { warmUp } from './game/warmup.js';
+import { createGrass } from './game/grass.js';
 
 // debug flags: ?nowater=1 ?noclouds=1 ?notrees=1 ?notanks=1 ?noenemies=1 ?noinfantry=1 ?noshadows=1 ?nofog=1
 //              ?waterred=1 ?watery=N ?noaa=1 ?logdepth=1 ?seed=N ?god=1 ?start=Z ?view=N
@@ -90,6 +91,8 @@ const { renderer, scene, camera } = createRenderer(dbg, document.getElementById(
 const world = new World(scene, SEED, worldOptions(MODE || 'road'));
 const sky = createSky(scene, camera, dbg, world.VIEW * 128);
 const pipeline = createPipeline(renderer, scene, camera, sky, dbg);     // quality is set once the renderer is up (boot)
+const grass = createGrass(scene, world);
+pipeline.onQuality = Q => grass.setLevel(dbg.get('nograss') === '1' ? 0 : Q.grass);
 
 // ================== world systems ==================
 const fx = new Effects(scene);
@@ -879,6 +882,7 @@ function frame(dt) {
   }
 
   sky.update(dt, anchor);
+  grass.update(anchor);
 
   // progress
   state.maxZ = Math.max(state.maxZ, anchor.z);
@@ -1127,7 +1131,7 @@ boot();
 renderer.setAnimationLoop(animate);      // (waits for the renderer to initialise)
 
 // handle for debugging / automated tests
-window.game = { renderer, scene, sky, pipeline, state, tanks, world, items, combat, director, workshop, player, camera, keys, spawnTank, fx, frame, MODE, saveGame,
+window.game = { renderer, scene, sky, pipeline, grass, state, tanks, world, items, combat, director, workshop, player, camera, keys, spawnTank, fx, frame, MODE, saveGame,
   snapshot: () => snapshot({ state, player, items, tanks, director, world, workshop, infantry, garrisoned, SEED }),
   guns, infantry, SEED, selectWeapon, viewModel, startReload, placeSandbag, mgAction, toggleTankWeapon, updateDriveControls,
   openStash, doStash, stowPlate, loadShells,
