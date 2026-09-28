@@ -53,15 +53,32 @@ The game features:
 
 ## Run the web game
 ```bash
-python3 server.py 8000          # static files + the room mailbox of the network game
-# or: python3 -m http.server 8000 (network play then works with invitation / answer codes)
+npm install                     # once: three.js, Vite, TypeScript
+npm run dev                     # Vite dev server on :8000 (hot reload + the room mailbox of the network game)
+npm run build                   # production build into dist/ (NOMINIFY=1 for readable profiles)
+python3 server.py 8000          # serves dist/ + the room mailbox (npm start = build + this)
+npm run typecheck               # tsc --noEmit over web/js (checkJs, must stay at 0 errors)
 # open http://localhost:8000/index.html
 ```
-Server is required for ES modules (file:// won't work).
+Stack: three.js 0.186 (WebGPU build: `three` is aliased to `three/webgpu` in vite.config.js, TSL / node materials),
+WebGPURenderer - WebGPU where the browser has it, otherwise its WebGL 2 backend (`?backend=webgl` forces it).
+Plain JS checked by TypeScript (JSDoc where inference needs help, ambient types in web/js/globals.d.ts).
 
 ## Web project structure
 ```
-index.html              # page, HUD markup/CSS, main menu / pause / victory overlays, import map (three from unpkg CDN)
+index.html              # page, HUD markup/CSS, main menu / pause (graphics quality) / victory overlays
+web/js/game/            # parts of the game loop taken out of main.js, each `createX(ctx)` over the shared context:
+                        #   render.js (renderer, quality presets, sky / sun / moon / stars / time of day, CSM, post:
+                        #   GTAO + selective bloom + FXAA), grass.js, warmup.js (shader warm-up under the loading
+                        #   screen), panels.js (HUD panels, prompts), stash.js (tank stowage, hold actions), menus.js
+                        #   (repair kit / crane), service.js (service zones), smallarms.js, inside.js (crew
+                        #   compartment), interact.js (F / looking at parts), motion.js (walking, driving, cameras),
+                        #   netui.js, dom.js
+web/js/batch.js         # ChunkBatch: all chunks of a kind (terrain / forest / water / road) in one BatchedMesh
+web/js/bakestatic.js    # static scenery (houses, settlement props) baked into one mesh (colour + roughness/metalness
+                        #   per vertex, node material)
+web/js/spin.js          # merged road wheels turned in the vertex shader (one uniform per tank)
+web/js/glow.js          # materials that feed the selective bloom (MRT mask), switched with the post-processing
 web/js/main.js          # orchestrator: config (mode / seed / load), input, camera modes (walk / 3rd person / gunner sight),
                         #   interactions, repair menu, service zones, HUD panels, game loop, game over / victory
 web/js/menu.js          # main menu (reloads the page with ?mode=... / ?load=...)
@@ -134,11 +151,20 @@ takes what it joins from sessionStorage `dbh-ww1-net`, written by the menu), `&e
 Without `mode` / `load` the main menu is shown; `?seed=N` or `?start=Z` alone start the road directly.
 URL params: `?nowater=1&noclouds=1&notrees=1&notanks=1&noenemies=1&noinfantry=1&noshadows=1&nofog=1&waterred=1&watery=N&noaa=1&logdepth=1`
 `?seed=N` world seed (random without it; shown in the pause menu), `?start=Z` start further down the road, `?god=1`
-invulnerable player, `?view=N` chunk radius, `?shot=1` preserveDrawingBuffer (canvas screenshots).
-`window.game` exposes state/tanks/world/items/combat/guns/infantry; `game.frame(dt)` advances the simulation without
+invulnerable player, `?view=N` chunk radius.
+Graphics: `?backend=webgl`, `?q=low|medium|high` (else the one chosen in the pause menu, else high on WebGPU / medium
+on WebGL 2), `?tod=H` time of day, `?daylen=M` minutes per day (0 = the clock stands), `?nopost=1 ?noao=1 ?nobloom=1
+?bloomT=0.1 ?bloomS=0.9 ?nograss=1 ?nowarm=1`.
+`window.game` exposes renderer/scene/sky/pipeline/grass/state/tanks/world/items/combat/guns/infantry; `game.frame(dt)` advances the simulation without
 rendering (handy for headless tests; `game.state.noLock = true` lets small arms fire without pointer lock).
 
 ## Web notes
+- Rendering / performance rules (WebGPURenderer): every InstancedMesh gets its own shader build and every object costs
+  a draw with per-object uniforms - prefer merging (bakestatic.js, modelkit bake, spin.js) and batches (batch.js) over
+  many small meshes; share materials (a canvas texture per object is an upload each). A material with `mrtNode` breaks
+  when no MRT is bound - use glow.js. `material.clippingPlanes` does not work: clip with THREE.ClippingGroup
+  (broken trees). Points are always 1 px on WebGPU (stars are instanced sprites).
+- Time of day: `sky.time.tod` (hours), saved with the game, the host sends it to the guest.
 - Tank types live in `web/js/tankdefs/<key>.js` (data + models); add a tank = add a file and list it in
   `tankdefs/index.js`. `models.hull()` returns `hullResult(...)` (root, wheels, ring, bay, box, fuelAt...),
   `models.turret()` returns { group, gunPos, sightY, mgPos, box, second? }, `models.gun()` { group, muzzleLen },
