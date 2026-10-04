@@ -180,12 +180,15 @@ export class Items {
     this.grenadeKey = null;
     this.dropN = 0;
     this.dropPrefix = 'drop:';     // ids of dropped things (network guest: 'drop:g')
+    this.refY = null;              // height of the player's feet (things dropped inside a house land on its floor)
     this.t = 0;
     /** @type {(...a: any[]) => void} */
     this.onTaken = () => {};       // (pickup) after something was picked up
   }
 
-  add(id, type, x, z, part = null) {     // part: the tank part ('part'), shells box / weapon / ammo / grenade / can data
+  // part: the tank part ('part'), shells box / weapon / ammo / grenade / can data; y: the floor it lies on (else the
+  // ground, or the floor of a house the player stands at - `refY`)
+  add(id, type, x, z, part = null, y = null) {
     if (this.taken.has(id) || this.pickups.has(id)) return;
     let mesh;
     if (type === 'part') {
@@ -202,8 +205,7 @@ export class Items {
       mesh.add(glow);
       mesh.userData.glow = glow;
     } else mesh = buildItemMesh(type, part);
-    const y = this.world.heightAt(x, z);
-    mesh.position.set(x, y, z);
+    mesh.position.set(x, y ?? this.world.groundAt(x, z, this.refY), z);
     mesh.rotation.y = Math.random() * Math.PI * 2;
     // laid in place (bags of a sandbag wall)
     const place = part && part.place;
@@ -213,8 +215,8 @@ export class Items {
                            shells: type === 'shells' ? part : null, data: part });
   }
 
-  drop(type, x, z, part = null) {
-    this.add(`${this.dropPrefix}${this.dropN++}`, type, x, z, part);
+  drop(type, x, z, part = null, y = null) {
+    this.add(`${this.dropPrefix}${this.dropN++}`, type, x, z, part, y);
   }
 
   label(p) {

@@ -16,6 +16,7 @@ import { Soldier } from './infantry.js';
 import { WEAPONS } from './weapons.js';
 import { HULLS } from './parts.js';
 import { buildCaponier } from './ai.js';
+import { Tank } from './tanks.js';
 import { paintObject } from './paint.js';
 import { partData, weaponData, mkPart, mkWeapon, pickupData, patchData, restorePatches } from './save.js';
 
@@ -234,6 +235,7 @@ export class Net {
     this.avatar = null;             // Soldier model of the other player
     this.puppetMap = new Map();     // guest: soldiers of the host's world
     this.shots = [];                // shots to pass on (batched)
+    this.pushes = new Map();        // nid -> [dx, dz, dheading]: pushes of the other machine's tanks to pass on
     this.snapT = 0; this.stateT = 0; this.ownT = 0;
     this.applying = false;
     this.ui = G.ui;
@@ -319,6 +321,13 @@ export class Net {
   // ------------------------------------------------ hooks into the game
   hook() {
     const G = this.G, { combat, guns, items, world } = G;
+    // a tank driven on the other machine was pushed by one of ours: the pushes are summed up and sent to its owner
+    Tank.onPush = (t, dx, dz, dh) => {
+      if (!this.connected || !t.nid) return;
+      const a = this.pushes.get(t.nid) || [0, 0, 0];
+      a[0] += dx; a[1] += dz; a[2] += dh;
+      this.pushes.set(t.nid, a);
+    };
     // shells: the host sends the shells it fires, the guest sends its own (and flies a ghost of it)
     combat.onFired = (s, tank) => {
       if (!this.connected) return;
@@ -347,11 +356,12 @@ export class Net {
     };
     // pickups: added (dropped) / taken on one side appear / vanish on the other
     const add0 = items.add.bind(items), rm0 = items.remove.bind(items);
-    items.add = (id, type, x, z, data = null) => {
+    items.add = (id, type, x, z, data = null, y = null) => {
       const had = items.pickups.has(id) || items.taken.has(id);
-      add0(id, type, x, z, data);
+      add0(id, type, x, z, data, y);
       if (this.connected && !this.applying && !had && items.pickups.has(id) && !/^s\d+:/.test(id)) {
-        this.send({ k: 'drop', id, type, x: r2(x), z: r2(z), d: pickupData(items.pickups.get(id)) });
+        const p = items.pickups.get(id);
+        this.send({ k: 'drop', id, type, x: r2(x), y: r2(p.pos.y), z: r2(z), d: pickupData(p) });
       }
     };
     items.remove = (id, taken = true) => {
@@ -389,6 +399,8 @@ export class Net {
     if (this.host) for (const t of G.tanks) if (!t.nid) this.register(t);
     this.updateAvatar(dt);
     if (!this.connected) return;
+    for (const [n, a] of this.pushes) this.send({ k: 'push', n, d: [r3(a[0]), r3(a[1]), r3(a[2])] });
+    this.pushes.clear();
     this.snapT -= dt;
     if (this.snapT <= 0) {
       this.snapT = SNAP_DT;
@@ -524,7 +536,7 @@ export class Net {
       k: 'world',
       taken: [...items.taken].filter(id => /^s\d+:/.test(id)),
       pickups: [...items.pickups.values()].filter(p => !/^s\d+:/.test(p.id) && near(p.pos))
-        .map(p => ({ id: p.id, type: p.type, x: r2(p.pos.x), z: r2(p.pos.z), d: pickupData(p) })),
+        .map(p => ({ id: p.id, type: p.type, x: r2(p.pos.x), y: r2(p.pos.y), z: r2(p.pos.z), d: pickupData(p) })),
       ruins: [...G.world.ruins], trees: [...G.world.brokenTrees.entries()], time: G.state.time,
     });
     for (const t of G.tanks) { this.register(t); if (near(t.root.position)) { t.netSent = false; this.sendState(t, true); } }
@@ -594,7 +606,7 @@ export class Net {
   on_world(m) {
     const G = this.G, { items, world } = G;
     for (const id of m.taken) { items.taken.add(id); items.remove(id, true); }
-    for (const p of m.pickups) items.add(p.id, p.type, p.x, p.z, this.pickupFrom(p.type, p.d));
+    for (const p of m.pickups) items.add(p.id, p.type, p.x, p.z, this.pickupFrom(p.type, p.d), p.y ?? null);
     for (const id of m.ruins) {
       world.ruins.add(id);
       const rec = this.houseById(id);
@@ -689,6 +701,14 @@ export class Net {
     }
     if (G.state.stash === t) G.closeMenus();
   }
+  // our tank was pushed by one driven on the other machine
+  on_push(m) {
+    const t = this.byNid.get(m.n);
+    if (!t || t.remote) return;
+    t.root.position.x += m.d[0]; t.root.position.z += m.d[1];
+    t.heading += m.d[2];
+    this.G.world.collideObstacles(t.root.position, t.def.radius * 0.8, null, 2.6);
+  }
   on_hurt(m) { this.G.damagePlayer(m.n, !!m.b); }
   on_kill(m) {
     const G = this.G;
@@ -747,7 +767,7 @@ export class Net {
   }
   on_drop(m) {
     if (this.G.items.pickups.has(m.id)) return;
-    this.G.items.add(m.id, m.type, m.x, m.z, this.pickupFrom(m.type, m.d));
+    this.G.items.add(m.id, m.type, m.x, m.z, this.pickupFrom(m.type, m.d), m.y ?? null);
   }
   on_take(m) {
     const items = this.G.items;

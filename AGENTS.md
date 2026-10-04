@@ -50,6 +50,11 @@ The game features:
   repair and stowed in tanks, shells taken out of one tank's ammo rack and loaded into another in the field
 - Destructible environment: trees stop shells and break at the hit point, tanks knock them down;
   village / town houses collapse from shell hits or when rammed by a tank
+- Houses can be entered: doors and real window openings (walk / look / shoot through them), furniture (stoves, beds,
+  tables, wardrobes...), town houses of 2-3 storeys with stairs; loot lies on the floors too
+- Tanks push each other: a tank driving into another shoves it if its tractive force (engine power, the grip of its
+  weight) beats the other's hold on the ground (weight, braked or free tracks, pushed along or across them) - burnt-out
+  wrecks too (e.g. off a bridge)
 
 ## Run the web game
 ```bash
@@ -90,8 +95,13 @@ web/js/hud.js           # tank markers over the view, minimap
 web/js/world.js         # endless world: road centreline roadX(z)/roadH(z), chunked terrain streamed around
                         #   the player, lakes, rivers + bridges, forest, obstacle boxes (OBB push-out + shell raycast),
                         #   arenas (opts.arena: 'duel' | 'range', features, bounds)
-web/js/rivers.js        # river plans (between settlements), channel carving, bridge models / decks / railings
-web/js/settlements.js   # roadside villages / towns / gas stations / repair stations (+ items, service zones)
+web/js/rivers.js        # river plans (between settlements), channel carving
+web/js/settlements.js   # roadside villages / towns / gas stations / repair stations: layout, loot, service zones
+web/js/obstacles.js     # obstacle boxes: pushOut (circle + height), segBox / segObstacle, compound obstacles (sub)
+web/js/structures/      # ONE FILE PER WORLD OBJECT: kit.js (settlement builder context K: frame / part / obstacle /
+                        #   addItem, shared geometry + MAT), house.js (enterable houses), church.js, depot.js, well.js,
+                        #   gasstation.js, repairstation.js, props.js (fence, crates, barrels, tyres, signs),
+                        #   bridge.js, caponier.js, trees.js (Forest: baked chunk trees, broken trees, falling tops)
 web/js/tankdefs/apckit.js  # shared pieces of the personnel carriers (wheels that steer, open troop boxes, benches,
                         #   troop seats, MG shield)
 web/js/tankdefs/        # ONE FILE PER TANK TYPE: gameplay data (hull / turret / gun / engine / fuel / drive, seats,
@@ -225,6 +235,13 @@ rendering (handy for headless tests; `game.state.noLock = true` lets small arms 
   `collideTrees(pos, r, ram)` knocks trees down for a fast tank. Broken trees (`world.brokenTrees`) and ruined houses
   (`world.ruins`) persist across chunk / settlement reloads.
 - Houses: obstacle.house = record with `hit(point, dir, dmg)` (hp, hole decals, collapse into rubble) and `ram(speed)`.
+  A house is a compound obstacle: the bounding box with `sub` pieces (wall segments around the door / window openings,
+  furniture; `noPush` floor slabs / roof stop rays only) - `pushOut(o, pos, r, h)` skips boxes above the head (lintels),
+  `collideObstacles(pos, r, breakFn, h)` (tanks h 2.6, grenades 0.15). Walkable surfaces: `house.floors` (rects / stair
+  ramps in house-local axes), `world.groundAt(x, z, y)` = the terrain or the highest floor up to `STEP_UP` above y
+  (player, soldiers, grenades, dropped things; `world.houses` = standing houses). `house.spots` free floor points
+  (loot inside: item `y`; `items.add(..., y)`, `items.refY` = player's feet for drops). Village houses: 1 storey,
+  maybe 2 rooms, a Russian stove with the chimney; town: 1-3 storeys, switch-back flights along the back wall.
 - Tools: `items.charge[tool]` is the gas left in the tool in use; `items.useTool` switches to a spare when it runs dry.
 - Enemy fuel/ammo hit kills the crew (tank stops, can be captured); for the player's tank it starts a fire
   that must be put out with F before the timer runs out, otherwise game over.
@@ -241,6 +258,12 @@ rendering (handy for headless tests; `game.state.noLock = true` lets small arms 
   trees, terrain. Player takes 50% bullet damage. Shells and grenades call `onExplosion` -> `Infantry.explosion`.
 - Soldiers are culled beyond 700 m, bodies after ~2 min; dropped loot (`drop:*` pickups) beyond 1.2 km.
 - Tanks lose speed when knocking down a tree / ramming a house (`tank.bump` slows them for a moment), more for light ones.
+- Tank vs tank (`Tank.collideTank`): `pushDrive(n)` = tractive force (kN) towards n (power hp*0.7355*eff / speed, at most
+  0.75 * weight * g, x throttle x alignment); resistance = (mu * weight_other + 0.05 * own weight) * g, mu 0.1 along
+  free tracks / 0.4 braked (crewed, not driving) / 0.45 across, + the other's own drive against. Stronger: the pair moves
+  (speed <= power / resistance, momentum shared at the first contact), the pushed tank is shoved (obstacles / trees /
+  deep water stop it) and turned when pushed off-centre; weaker: stopped. Only the driving tank resolves the contact.
+  Network: a pushed remote tank -> `Tank.onPush` -> 'push' message to its owner.
 - Personnel carriers: `hull.apc`, `hull.wheeled` (steering: turn rate grows with speed, `hull.steer` wheel pivots turn),
   `hull.troops` [{ pos, eye, ry, fire }] -> seats with roles `troop0..N` (`seat.troop`), no gun (`gun: null`,
   `canMountGun()` false), `hull.mgAmmo`, `hull.mgShield` (goes onto the MG pivot), `hull.noPost`, turret

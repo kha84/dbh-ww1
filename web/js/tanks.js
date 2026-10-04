@@ -243,6 +243,9 @@ const _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _v = new THREE.
 const UP = new THREE.Vector3(0, 1, 0), AX = new THREE.Vector3(1, 0, 0), AZ = new THREE.Vector3(0, 0, 1);
 
 export class Tank {
+  /** @type {((t: any, dx: number, dz: number, dh: number) => void) | null} a tank driven on the other machine was pushed (net.js) */
+  static onPush = null;
+
   constructor(scene, key, pos, heading, opts = {}) {
     this.id = ++TANK_ID;
     this.scene = scene;
@@ -289,6 +292,7 @@ export class Tank {
     this.mgYaw = 0; this.mgPitch = 0;
     this.bags = [];                              // sandbags heaped on the hull: [{ face, mesh }]
     this.bump = 0;                               // slowed down after ramming a tree / house
+    this.pushT = 0;                              // pushing another tank (since the last frames)
     this.vis = { hullBox: this.hull.box, turretBox: null, muzzleLen: 1.2, sightY: 0.5,
                  wheels: this.hull.wheels, wheelR: this.hull.wheelR };
     this.root.position.copy(pos);
@@ -645,6 +649,7 @@ export class Tank {
     if (!this.operated || this.craneLock) { c.throttle = 0; c.steer = 0; c.brake = 1; }
 
     if (dt > 0 && world) {
+      const s0 = this.speed;
       const maxS = this.maxSpeedEff;
       if (this.bump > 0) this.bump -= dt;
       if (c.throttle !== 0 && maxS > 0) this.speed += c.throttle * this.accelEff * (this.bump > 0 ? 0.3 : 1) * dt;
@@ -687,27 +692,15 @@ export class Tank {
       }
       let rammed = false;
       const breakFn = o => { const b = o.house.ram(Math.abs(this.speed)); if (b) rammed = true; return b; };
-      if (world.collideObstacles(p, r, breakFn)) this.speed *= Math.pow(0.02, dt);
+      if (world.collideObstacles(p, r, breakFn, 2.6)) this.speed *= Math.pow(0.02, dt);
       if (rammed) {
         this.speed *= 1 - THREE.MathUtils.clamp(0.85 - W / 140, 0.35, 0.8);
         this.bump = 1.4;
         this.rammedT = 0.6;
         this.damage('hull', 1);
       }
-      if (others) {
-        for (const o of others) {
-          if (o === this) continue;
-          const dx = p.x - o.root.position.x, dz = p.z - o.root.position.z;
-          const rr = (this.def.radius + o.def.radius) * 0.75;
-          const d2 = dx * dx + dz * dz;
-          if (d2 < rr * rr && d2 > 1e-6) {
-            const d = Math.sqrt(d2);
-            p.x = o.root.position.x + dx / d * rr;
-            p.z = o.root.position.z + dz / d * rr;
-            this.speed *= Math.pow(0.05, dt);
-          }
-        }
-      }
+      if (others) for (const o of others) if (o !== this) this.collideTank(o, dt, world, s0);
+      if (this.pushT > 0) this.pushT -= dt;
       this.velocity.set((p.x - ox) / dt, 0, (p.z - oz) / dt);
 
       // fuel
@@ -769,6 +762,81 @@ export class Tank {
       if (this.rammedT > 0) this.rammedT -= dt;
       this.updateFire(dt);
     }
+  }
+
+  // ------------------------------------------------ tanks pushing tanks
+  // contact with another tank. A tank driving into another pushes it when its tractive force (engine power, at most
+  // the grip of its own weight) beats the other's hold on the ground: its weight, braked tracks of a crewed tank, tracks
+  // turned across the push holding harder than rolling ones (a crewless or burnt-out tank rolls on free tracks). The
+  // pushed tank turns when pushed off its centre. Not driving into it (or too weak) - this tank is stopped by it.
+  collideTank(o, dt, world, s0) {
+    const p = this.root.position, q = o.root.position;
+    const rr = (this.def.radius + o.def.radius) * 0.75;
+    let nx = q.x - p.x, nz = q.z - p.z;
+    const d2 = nx * nx + nz * nz;
+    if (d2 >= rr * rr || d2 < 1e-6) return;
+    const d = Math.sqrt(d2);
+    nx /= d; nz /= d;
+    const drive = this.pushDrive(nx, nz);
+    if (!drive.F) {
+      // the other one drives into this one: its own update does the pushing
+      const into = o.remote ? (Math.sin(o.heading) * -nx + Math.cos(o.heading) * -nz) * o.speed > 0.3 : o.pushDrive(-nx, -nz).F > 0;
+      if (into) return;
+    } else if (!o.remote || o.net) {
+      const g = 9.81, mA = this.def.weight, mB = o.def.weight;
+      const a2 = (nx * Math.sin(o.heading) + nz * Math.cos(o.heading)) ** 2;     // pushed along its tracks: 1
+      const held = o.operated && !o.remote && (o.controls.brake || !o.controls.throttle);
+      const mu = a2 * (held ? 0.4 : 0.1) + (1 - a2) * 0.45;
+      let res = (mu * mB + 0.05 * mA) * g;
+      if (o.operated && !o.remote) res += o.pushDrive(-nx, -nz).F;               // it drives against this one
+      if (drive.F > res) {
+        // the pair moves: the speed is what the power gives against the resistance, gained with the inertia of both
+        // (the first contact shares the momentum)
+        const vCap = Math.min(this.maxSpeedEff, this.def.power * 0.7355 * drive.eff / res);
+        let v = Math.min(Math.abs(this.speed), Math.abs(s0) + (drive.F - res) / (mA + mB) * dt, vCap);
+        if (this.pushT <= 0) v = Math.min(v, Math.abs(s0) * mA / (mA + mB));
+        this.speed = drive.sg * v;
+        this.pushT = 0.2;
+        // the other tank is shoved out of the way, turned when pushed off its centre
+        const pen = rr - d;
+        const fx = Math.sin(this.heading) * drive.sg, fz = Math.cos(this.heading) * drive.sg;
+        const turn = -(nz * fx - nx * fz) * pen / (o.def.radius * 0.75) * 0.6;
+        const ox = q.x, oz = q.z;
+        q.x += nx * pen; q.z += nz * pen;
+        if (!o.remote) {
+          world.collideObstacles(q, o.def.radius * 0.8, null, 2.6);
+          world.collideTrees(q, o.def.radius * 0.8);
+          if (world.heightAt(q.x, q.z) < WATER_LEVEL - 1.4) { q.x = ox; q.z = oz; }
+          else o.heading += turn;
+        }
+        const mx = q.x - ox, mz = q.z - oz;
+        if (o.remote) {
+          o.net.x += mx; o.net.z += mz;
+          if (Tank.onPush) Tank.onPush(o, mx, mz, turn);
+        }
+        // what it could not give way (against a wall, a railing): this one stays out of it
+        const ex = q.x - p.x, ez = q.z - p.z, e = Math.hypot(ex, ez);
+        if (e < rr && e > 1e-6) { p.x = q.x - ex / e * rr; p.z = q.z - ez / e * rr; }
+        return;
+      }
+    }
+    p.x = q.x - nx * rr;
+    p.z = q.z - nz * rr;
+    this.speed *= Math.pow(0.05, dt);
+  }
+
+  // tractive force (kN) this tank drives with towards the unit direction (nx, nz): 0 unless it is under way to it.
+  // { F, sg (forward 1 / reverse -1), eff (share of the engine power left) }
+  pushDrive(nx, nz) {
+    const c = this.controls;
+    if (!this.operated || this.remote || !c.throttle || this.maxSpeedEff <= 0) return { F: 0, sg: 1, eff: 0 };
+    const sg = Math.sign(c.throttle);
+    const into = (Math.sin(this.heading) * nx + Math.cos(this.heading) * nz) * sg;
+    if (into < 0.3) return { F: 0, sg, eff: 0 };
+    const eff = this.maxSpeedEff / Math.max(0.1, this.def.maxSpeed);
+    const P = this.def.power * 0.7355 * eff;                                       // hp -> kW
+    const F = Math.min(0.75 * this.def.weight * 9.81, P / Math.max(Math.abs(this.speed), 0.8)) * Math.abs(c.throttle) * into;
+    return { F, sg, eff };
   }
 
   // ------------------------------------------------ network play

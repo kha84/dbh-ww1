@@ -651,7 +651,7 @@ export class Soldier {
     if (w.heightAt(p.x, p.z) < WATER_LEVEL - 0.4) { p.x = ox; p.z = oz; }
     w.collideTrees(p, 0.3);
     w.collideObstacles(p, 0.35);
-    p.y = w.heightAt(p.x, p.z);
+    p.y = w.groundAt(p.x, p.z, p.y);
     this.speedNow = Math.hypot(p.x - ox, p.z - oz) / Math.max(dt, 1e-4);
     // stuck against something: walk around it for a moment
     const want = Math.hypot(vx, vz);

@@ -156,7 +156,7 @@ function garrison(s) {
 
 world.onSettlementBuilt = s => {
   for (const it of s.items) {
-    items.add(it.id, it.type, it.x, it.z, itemData(it));
+    items.add(it.id, it.type, it.x, it.z, itemData(it), it.y ?? null);
     const p = items.pickups.get(it.id);                 // shown a few per frame, like the settlement (world.reveal)
     if (p && p.mesh.visible) { p.mesh.visible = false; world.reveal.push(p.mesh); }
   }
@@ -170,6 +170,12 @@ world.onHouseRuined = (x, y, z, size) => {
     fx.spawn('dust', q, new THREE.Vector3((Math.random() - 0.5) * 3, 1 + Math.random() * 2, (Math.random() - 0.5) * 3), 1.6);
   }
   sfx.boom(p.distanceTo(camera.position), 0.8);
+  // caught inside: the floors come down
+  const pp = player.position;
+  if (state.mode === 'walk' && Math.hypot(pp.x - x, pp.z - z) < size / 2 && pp.y < y + 8) {
+    damagePlayer(35);
+    msg('Дом обрушился!', '#ff9a7a');
+  }
 };
 world.onSettlementRemoved = s => {
   for (const it of s.items) items.remove(it.id, false);
@@ -342,10 +348,15 @@ guns.onGrenadeTank = (t, point, dir, D, owner) => {
 infantry.onDeath = (s, owner) => {
   const p = s.pos;
   const a = Math.random() * 6.28;
-  items.drop('weapon', p.x + Math.sin(a) * 0.7, p.z + Math.cos(a) * 0.7, s.weapon);
+  // his things fall around him (on the floor he stood on)
+  const drop = (type, da, r, data) => {
+    const x = p.x + Math.sin(a + da) * r, z = p.z + Math.cos(a + da) * r;
+    items.drop(type, x, z, data, world.groundAt(x, z, p.y));
+  };
+  drop('weapon', 0, 0.7, s.weapon);
   const W = WEAPONS[s.weapon.key];
-  if (Math.random() < 0.8) items.drop('ammo', p.x + Math.sin(a + 2) * 0.8, p.z + Math.cos(a + 2) * 0.8, { cal: W.cal, n: Math.round(Math.max(10, W.mag) * (0.6 + Math.random())) });
-  for (const [k, n] of Object.entries(s.grenades)) if (n > 0) items.drop('grenade', p.x + Math.sin(a + 4) * 0.8, p.z + Math.cos(a + 4) * 0.8, { key: k, n });
+  if (Math.random() < 0.8) drop('ammo', 2, 0.8, { cal: W.cal, n: Math.round(Math.max(10, W.mag) * (0.6 + Math.random())) });
+  for (const [k, n] of Object.entries(s.grenades)) if (n > 0) drop('grenade', 4, 0.8, { key: k, n });
   if (net && net.infantryKilled(owner)) return;                 // the other player's kill
   if (owner && (owner.player || (owner.tank && owner.tank === state.vehicle))) {
     state.infKills++;

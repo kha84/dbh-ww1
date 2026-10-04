@@ -1,0 +1,25 @@
+{
+  "hash": "ec562d59",
+  "configHash": "861a3a93",
+  "lockfileHash": "5840dfb5",
+  "browserHash": "8b2bc94e",
+  "optimized": {
+    "three": {
+      "src": "../../node_modules/three/build/three.module.js",
+      "file": "three.js",
+      "fileHash": "c422114c",
+      "needsInterop": false
+    },
+    "three/addons/utils/BufferGeometryUtils.js": {
+      "src": "../../node_modules/three/examples/jsm/utils/BufferGeometryUtils.js",
+      "file": "three_addons_utils_BufferGeometryUtils__js.js",
+      "fileHash": "b9a81227",
+      "needsInterop": false
+    }
+  },
+  "chunks": {
+    "chunk-AYIMDMH6": {
+      "file": "chunk-AYIMDMH6.js"
+    }
+  }
+}

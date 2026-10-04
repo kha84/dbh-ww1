@@ -47,11 +47,13 @@ export function createMotion(ctx) {
       if (td < 1.5) pushOut(tankObstacle(t), p, 0.4);
     }
 
-    const ground = world.heightAt(p.x, p.z);
+    // the terrain, or a floor / stair of a house (stepping up a little, down the stairs without a jump)
+    const ground = world.groundAt(p.x, p.z, p.y);
     state.velY -= GRAVITY * dt;
     p.y += state.velY * dt;
-    if (p.y <= ground) { p.y = ground; state.velY = 0; state.onGround = true; }
+    if (p.y <= ground || (state.onGround && state.velY <= 0 && p.y - ground < 0.4)) { p.y = ground; state.velY = 0; state.onGround = true; }
     else state.onGround = false;
+    items.refY = p.y;
     if (keys['Space'] && state.onGround && !carrying) { state.velY = JUMP_V; state.onGround = false; }
     playerVel.set((p.x - ox) / dt, 0, (p.z - oz) / dt);
 

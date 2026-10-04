@@ -1,11 +1,15 @@
 // Endless world: a road running along +Z forever, chunked procedural terrain
 // streamed around the player, lakes, forest, settlements and static obstacles.
 import * as THREE from 'three';
-import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { ChunkBatch } from './batch.js';
 import { makeNoise, fbm, smoothstep, hash, rng } from './noise.js';
 import { buildSettlement, SETTLEMENT_NAMES } from './settlements.js';
-import { planRiver, carve, buildBridge } from './rivers.js';
+import { planRiver, carve } from './rivers.js';
+import { buildBridge } from './structures/bridge.js';
+import { Forest } from './structures/trees.js';
+import { prepObstacle, pushOut, segObstacle } from './obstacles.js';
+
+export { segBox, pushOut } from './obstacles.js';
 
 export const WATER_LEVEL = 2.0;
 export const CHUNK = 128;          // chunk size (m)
@@ -17,6 +21,8 @@ const SETTLE_OFS = 380;
 
 const dbg = new URLSearchParams(location.search);
 const ARENA_H = WATER_LEVEL + 8;         // ground level of the arenas
+export const STEP_UP = 0.55;             // a walker steps up onto a floor / stair this much higher
+const INSIDE_R = 90;                     // the insides of the houses are drawn this close
 
 // analytic terrain features of the tank range: { type, x, z, rot, ... } -> height offset at (x, z)
 function feature(f, x, z) {
@@ -54,21 +60,6 @@ const SETTLE_SIZE = {
   village: { halfLen: 120, halfW: 60 },
   town:    { halfLen: 190, halfW: 85 },
 };
-
-// broken trees: the tree meshes go into a group clipped by world-space planes (stump below the break, the falling
-// top above it); the cut shows the inside of the trunk, so the materials are double-sided copies (one per material)
-function clipGroup(planes) {
-  const g = new THREE.ClippingGroup();
-  g.clippingPlanes = planes;
-  g.clipShadows = true;
-  return g;
-}
-const CUT_MATS = new Map();
-function cutMaterial(mat) {
-  let m = CUT_MATS.get(mat);
-  if (!m) { m = mat.clone(); m.side = THREE.DoubleSide; CUT_MATS.set(mat, m); }
-  return m;
-}
 
 /**
  * @typedef {object} WorldOptions
@@ -112,9 +103,11 @@ export class World {
     this.onHouse = null;             // (kind 'hit' | 'ruin', house record, point, dmg): network play
     this.ruins = new Set();          // ids of destroyed houses (kept across settlement reloads)
     this.brokenTrees = new Map();    // tree id -> { y, dx, dz } (kept across chunk reloads)
-    this.logs = [];                  // falling tree tops being animated
     this.riverInfo = new Map();      // gap k -> river plan (or null)
     this.bridges = new Map();        // gap k -> built bridge
+
+    this.houses = new Set();         // standing houses of the built settlements (their floors: groundAt)
+    this.forest = new Forest(this);  // trees (structures/trees.js)
 
     this.makeMaterials();
   }
@@ -350,61 +343,17 @@ export class World {
       map: roadTex, roughness: 1, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2
     });
 
-    // trees
-    this.trunkGeo = new THREE.CylinderGeometry(0.20, 0.32, 2.8, 6);
-    this.trunkGeo.translate(0, 1.4, 0);
-    this.trunkMat = new THREE.MeshStandardMaterial({ color: 0x5b4327, roughness: 1 });
-    this.coneGeo = new THREE.ConeGeometry(1.9, 5.0, 7);
-    this.coneGeo.translate(0, 4.9, 0);
-    this.coneMat = new THREE.MeshStandardMaterial({ color: 0x2e5c2e, roughness: 1 });
-    this.cone2Geo = new THREE.ConeGeometry(1.35, 3.4, 7);
-    this.cone2Geo.translate(0, 7.5, 0);
-    this.cone2Mat = new THREE.MeshStandardMaterial({ color: 0x376b37, roughness: 1 });
-    this.birchCrownGeo = new THREE.IcosahedronGeometry(2.1, 0);
-    this.birchCrownGeo.scale(1, 1.3, 1);
-    this.birchCrownGeo.translate(0, 5.2, 0);
-    this.birchCrownMat = new THREE.MeshStandardMaterial({ color: 0x5f8a3a, roughness: 1, flatShading: true });
-    this.treeParts = {
-      pine: [[this.trunkGeo, this.trunkMat], [this.coneGeo, this.coneMat], [this.cone2Geo, this.cone2Mat]],
-      birch: [[this.trunkGeo, this.trunkMat], [this.birchCrownGeo, this.birchCrownMat]],
-    };
-    // the standing forest of a chunk is one baked mesh (vertex colours, one material for every chunk): one draw call
-    // per chunk and one shader for all of them (an InstancedMesh per chunk and part cost a shader build each)
-    // indexed (fewer vertices to keep in the batch), the flat-shaded crowns with their own vertices per face
-    const bakedPart = (geo, mat) => {
-      let g = geo.clone();
-      g.deleteAttribute('uv');
-      if (mat.flatShading) {
-        g = g.index ? g.toNonIndexed() : g;
-        g.computeVertexNormals();
-      }
-      const n = g.attributes.position.count;
-      if (!g.index) g.setIndex([...Array(n).keys()]);
-      const c = mat.color, col = new Float32Array(n * 3);
-      for (let i = 0; i < n; i++) c.toArray(col, i * 3);
-      g.setAttribute('color', new THREE.BufferAttribute(col, 3));
-      return g;
-    };
-    this.treeBake = {
-      pine: mergeGeometries(this.treeParts.pine.map(([geo, mat]) => bakedPart(geo, mat))),
-      birch: mergeGeometries(this.treeParts.birch.map(([geo, mat]) => bakedPart(geo, mat))),
-    };
-    this.forestMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1 });
-
     // every loaded chunk draws its terrain / water / road / forest through one batch per kind (batch.js)
     const nCh = (2 * this.VIEW + 1) ** 2 + 24, NV = (CSEG + 1) ** 2;
-    const treeV = Math.max(this.treeBake.pine.attributes.position.count, this.treeBake.birch.attributes.position.count);
-    const treeI = Math.max(this.treeBake.pine.index.count, this.treeBake.birch.index.count);
+    const tb = this.forest.treeBake;
+    const treeV = Math.max(tb.pine.attributes.position.count, tb.birch.attributes.position.count);
+    const treeI = Math.max(tb.pine.index.count, tb.birch.index.count);
     this.batch = {
       terrain: new ChunkBatch(this.scene, this.terrainMat, { instances: nCh, verts: Math.ceil(nCh * NV * 1.15), indices: Math.ceil(nCh * CSEG * CSEG * 6 * 1.15), name: 'terrain', step: 64 }),
       water: new ChunkBatch(this.scene, this.waterMat, { instances: 48, verts: 60000, indices: 90000, name: 'water' }),
       road: new ChunkBatch(this.scene, this.roadMat, { instances: 48, verts: 48 * 200, indices: 48 * 400, name: 'road' }),
-      forest: new ChunkBatch(this.scene, this.forestMat, { instances: nCh, verts: nCh * 55 * treeV, indices: nCh * 55 * treeI, castShadow: true, name: 'forest', step: 1024 }),
+      forest: new ChunkBatch(this.scene, this.forest.forestMat, { instances: nCh, verts: nCh * 55 * treeV, indices: nCh * 55 * treeI, castShadow: true, name: 'forest', step: 1024 }),
     };
-    // fresh cut of a broken trunk
-    this.cutGeo = new THREE.CircleGeometry(1, 8);
-    this.cutGeo.rotateX(-Math.PI / 2);
-    this.cutMat = new THREE.MeshStandardMaterial({ color: 0xc9a46a, roughness: 1, side: THREE.DoubleSide });
   }
 
   // --------------------------------------------------------------- chunks
@@ -446,6 +395,11 @@ export class World {
         if (this.onSettlementBuilt) this.onSettlementBuilt(built);
       }
     }
+    // the insides of the houses are drawn only near them
+    for (const h of this.houses) {
+      const near = (pos.x - h.f.x) ** 2 + (pos.z - h.f.z) ** 2 < INSIDE_R * INSIDE_R;
+      if (near !== h.shown) { h.shown = near; for (const m of h.inner) m.visible = near; }
+    }
     // bridges
     for (let k = k0 - 1; k <= k0 + 1; k++) {
       const r = this.riverPlan(k);
@@ -462,6 +416,7 @@ export class World {
           if (o.userData.own === 'all') { if (o.material.map) o.material.map.dispose(); o.material.dispose(); }
         });
         for (const o of s.obstacles) this.obstacles.delete(o);
+        for (const h of s.houses) this.houses.delete(h);
         this.settlements.delete(k);
         if (this.onSettlementRemoved) this.onSettlementRemoved(s);
       }
@@ -488,7 +443,7 @@ export class World {
     }
     // broken trees: stumps and logs (clipping groups sharing the double-sided tree materials)
     for (const g of ch.extra) this.scene.remove(g);
-    if (ch.extra.length) this.logs = this.logs.filter(l => l.ch !== ch);
+    if (ch.extra.length) this.forest.logs = this.forest.logs.filter(l => l.ch !== ch);
     this.chunks.delete(k);
   }
 
@@ -646,382 +601,50 @@ export class World {
     }
 
     // ---- forest
-    if (dbg.get('notrees') !== '1') this.buildTrees(ch);
+    if (dbg.get('notrees') !== '1') this.forest.buildTrees(ch);
 
     this.chunks.set(ckey(cx, cz), ch);
     return ch;
   }
 
-  buildTrees(ch) {
-    const r = rng(Math.floor(hash(this.seed, ch.cx, ch.cz, 31) * 4294967296));
-    const MAX = 90;
-    const pine = [], birch = [];
-    for (let t = 0; t < 260 && pine.length + birch.length < MAX; t++) {
-      const x = ch.x0 + r() * CHUNK, z = ch.z0 + r() * CHUNK;
-      const rx = this.roadX(z);
-      const dr = Math.abs(x - rx);
-      if (this.opts.road && dr < 14) continue;
-      if (!this.opts.arena && Math.abs(z) < 70 && dr < 60) continue;       // spawn area clear
-      if (this.opts.clear && this.opts.clear.some(c => Math.hypot(x - c.x, z - c.z) < c.r)) continue;
-      if (this.opts.arena && this.opts.treeDensity !== undefined && r() > this.opts.treeDensity) continue;
-      const h = this.heightAt(x, z);
-      if (h < WATER_LEVEL + 1.2 || h > 30) continue;
-      if (this.slopeAt(x, z) > 0.7) continue;
-      if (this.settlementWeight(x, z, rx) > 0.02) continue;
-      const density = fbm(this.nTree, x * 0.006, z * 0.006, 3) * 0.5 + 0.5;
-      if (r() > density * density * 1.7) continue;
-      const s = 0.75 + r() * 0.95;
-      const item = { x, z, h, s, rot: r() * Math.PI * 2, sy: 0.85 + r() * 0.5 };
-      const list = h < 12 && r() < 0.35 ? birch : pine;
-      item.kind = list === pine ? 'pine' : 'birch';
-      item.r = 0.38 * s;                           // collision radius
-      item.base = h - 0.25;
-      item.top = item.base + (list === pine ? 9.2 : 7.9) * s * item.sy;
-      item.id = `${ch.cx},${ch.cz},${ch.trees.length}`;
-      item.ch = ch;
-      list.push(item);
-      ch.trees.push(item);
-    }
-    const q = new THREE.Quaternion(), sc = new THREE.Vector3(), pv = new THREE.Vector3();
-    const up = new THREE.Vector3(0, 1, 0);
-    const n = ch.trees.reduce((a, t) => a + this.treeBake[t.kind].attributes.position.count, 0);
-    if (n) {
-      // bake the trees of the chunk into one mesh: each tree keeps its vertex range (t.v0, t.nv) to be hidden
-      const ni = ch.trees.reduce((a, t) => a + this.treeBake[t.kind].index.count, 0);
-      const pos = new Float32Array(n * 3), nor = new Float32Array(n * 3), col = new Uint8Array(n * 3), idx = new Uint32Array(ni);
-      const nm = new THREE.Matrix3(), v = new THREE.Vector3();
-      let o = 0, oi = 0;
-      for (const t of ch.trees) {
-        q.setFromAxisAngle(up, t.rot);
-        sc.set(t.s, t.s * t.sy, t.s);
-        pv.set(t.x, t.base, t.z);
-        t.mat = new THREE.Matrix4().compose(pv, q, sc);
-        nm.getNormalMatrix(t.mat);
-        const g = this.treeBake[t.kind], gp = g.attributes.position, gn = g.attributes.normal, gc = g.attributes.color;
-        t.v0 = o; t.nv = gp.count;
-        const gi = g.index.array;
-        for (let i = 0; i < gi.length; i++) idx[oi++] = gi[i] + o;
-        for (let i = 0; i < gp.count; i++, o++) {
-          v.fromBufferAttribute(gp, i).applyMatrix4(t.mat).toArray(pos, o * 3);
-          v.fromBufferAttribute(gn, i).applyMatrix3(nm).normalize().toArray(nor, o * 3);
-          col[o * 3] = gc.getX(i) * 255; col[o * 3 + 1] = gc.getY(i) * 255; col[o * 3 + 2] = gc.getZ(i) * 255;
-        }
-      }
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-      geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
-      geo.setAttribute('color', new THREE.BufferAttribute(col, 3, true));
-      geo.setIndex(new THREE.BufferAttribute(idx, 1));
-      ch.parts.forest = this.batch.forest.add(geo);
-    }
-    // trees broken earlier stay broken
-    for (const t of ch.trees) {
-      const b = this.brokenTrees.get(t.id);
-      if (b) {
-        this.breakTree(t, b.y, b.dx, b.dz, true);
-        if (b.y2 != null) this.cutStump(t, b.y2, b.dx2, b.dz2, true);
-      }
-    }
-  }
+  // ------------------------------------------------------------- forest (structures/trees.js)
+  breakTree(t, y, dx, dz, instant = false) { return this.forest.breakTree(t, y, dx, dz, instant); }
+  cutStump(t, y, dx, dz, instant = false) { return this.forest.cutStump(t, y, dx, dz, instant); }
+  raycastTrees(p0, p1) { return this.forest.raycastTrees(p0, p1); }
+  treeById(id) { return this.forest.treeById(id); }
+  forTreesNear(x, z, fn) { this.forest.forTreesNear(x, z, fn); }
+  collideTrees(pos, r, ram = null) { return this.forest.collideTrees(pos, r, ram); }
 
-  // ---------------------------------------------------------- broken trees
-  // take a standing tree out of the chunk's forest mesh (its triangles collapse to a point)
-  hideTree(t) {
-    const h = t.ch.parts.forest;
-    if (!h) return;
-    const v0 = this.batch.forest.range(h).vertexStart + t.v0;
-    const p = this.batch.forest.attribute('position'), a = p.array;
-    const x = a[v0 * 3], y = a[v0 * 3 + 1], z = a[v0 * 3 + 2];
-    for (let i = v0; i < v0 + t.nv; i++) { a[i * 3] = x; a[i * 3 + 1] = y; a[i * 3 + 2] = z; }
-    p.addUpdateRange(v0 * 3, t.nv * 3);
-    p.needsUpdate = true;
-  }
-
-  // break a tree at height y (world); the top falls towards (dx, dz)
-  breakTree(t, y, dx, dz, instant = false) {
-    if (!instant && this.onTreeBroken) this.onTreeBroken(t, y, dx, dz);
-    if (t.broken) return instant ? undefined : this.cutStump(t, y, dx, dz);
-    const ch = t.ch;
-    y = Math.max(t.base + 0.3, Math.min(t.top - 1.2, y));
-    const l = Math.hypot(dx, dz) || 1;
-    dx /= l; dz /= l;
-    t.broken = true;
-    t.stumpH = y - t.base;
-    this.brokenTrees.set(t.id, { y, dx, dz });
-    this.hideTree(t);
-
-    const parts = this.treeParts[t.kind];
-    // fresh cut radius (the trunk tapers 0.32 -> 0.20 over its 2.8 m)
-    const ly = t.stumpH / (t.s * t.sy);
-    const cutR = ly < 2.8 ? (0.32 - 0.12 * ly / 2.8) * t.s : 0;
-
-    // stump: the whole tree clipped below y
-    const stump = new THREE.Group();
-    const body = clipGroup([new THREE.Plane(new THREE.Vector3(0, -1, 0), y)]);
-    stump.add(body);
-    for (const [geo, mat] of parts) {
-      const m = new THREE.Mesh(geo, cutMaterial(mat));
-      m.matrixAutoUpdate = false;
-      m.matrix.copy(t.mat);
-      m.castShadow = true;
-      body.add(m);
-    }
-    if (cutR) {
-      const c = new THREE.Mesh(this.cutGeo, this.cutMat);
-      c.position.set(t.x, y + 0.005, t.z);
-      c.scale.set(cutR, 1, cutR);
-      stump.add(c);
-    }
-    this.scene.add(stump);
-    ch.extra.push(stump);
-    t.stumpObj = stump;
-
-    // top: pivots around the break point, clipped above it (plane follows the pivot)
-    const top = new THREE.Group();
-    top.position.set(t.x, y, t.z);
-    const inner = new THREE.Group();
-    inner.position.set(-t.x, -y, -t.z);
-    top.add(inner);
-    const plane = new THREE.Plane();
-    inner.add(clipGroup([plane]));
-    for (const [geo, mat] of parts) {
-      const m = new THREE.Mesh(geo, cutMaterial(mat));
-      m.matrixAutoUpdate = false;
-      m.matrix.copy(t.mat);
-      m.castShadow = true;
-      inner.children[0].add(m);
-    }
-    if (cutR) {
-      const c = new THREE.Mesh(this.cutGeo, this.cutMat);
-      c.position.y = 0.005;
-      c.scale.set(cutR, 1, cutR);
-      top.add(c);
-    }
-    this.scene.add(top);
-    ch.extra.push(top);
-    const log = { ch, group: top, plane, axis: new THREE.Vector3(dz, 0, -dx), dx, dz,
-                  len: t.top - y, ang: 0.04, w: 0.15 };
-    if (instant) {
-      while (this.stepLog(log, 0.02, true)) { /* settle */ }
-    } else this.logs.push(log);
-    this.poseLog(log);
-    return log;
-  }
-
-  // a shot into the stump of a broken tree cuts it lower: the piece between the two cuts is knocked over
-  cutStump(t, y, dx, dz, instant = false) {
-    const ch = t.ch, oldY = t.base + t.stumpH;
-    y = Math.max(t.base + 0.12, Math.min(oldY - 0.25, y));
-    if (oldY - y < 0.15 || !t.stumpObj) return null;
-    const l = Math.hypot(dx, dz) || 1;
-    dx /= l; dz /= l;
-    t.stumpH = y - t.base;
-    const b = this.brokenTrees.get(t.id);
-    if (b) Object.assign(b, { y2: y, dx2: dx, dz2: dz });
-    // the old stump goes, a lower one takes its place
-    const old = t.stumpObj;
-    this.scene.remove(old);
-    ch.extra.splice(ch.extra.indexOf(old), 1);
-    const parts = this.treeParts[t.kind];
-    const ly = t.stumpH / (t.s * t.sy);
-    const cutR = ly < 2.8 ? (0.32 - 0.12 * ly / 2.8) * t.s : 0;
-    const stump = new THREE.Group();
-    const body = clipGroup([new THREE.Plane(new THREE.Vector3(0, -1, 0), y)]);
-    stump.add(body);
-    for (const [geo, mat] of parts) {
-      const m = new THREE.Mesh(geo, cutMaterial(mat));
-      m.matrixAutoUpdate = false;
-      m.matrix.copy(t.mat);
-      m.castShadow = true;
-      body.add(m);
-    }
-    const disc = (grp, py) => {
-      if (!cutR) return;
-      const c = new THREE.Mesh(this.cutGeo, this.cutMat);
-      c.position.set(grp === stump ? t.x : 0, py, grp === stump ? t.z : 0);
-      c.scale.set(cutR, 1, cutR);
-      grp.add(c);
-    };
-    disc(stump, y + 0.005);
-    this.scene.add(stump);
-    ch.extra.push(stump);
-    t.stumpObj = stump;
-    // the piece that was shot out: between the two cuts, it topples over (a short piece is blown away)
-    const len = oldY - y;
-    if (instant || len < 0.35) return null;
-    const top = new THREE.Group();
-    top.position.set(t.x, y, t.z);
-    const inner = new THREE.Group();
-    inner.position.set(-t.x, -y, -t.z);
-    top.add(inner);
-    const plane = new THREE.Plane(), plane2 = new THREE.Plane();
-    const piece = clipGroup([plane, plane2]);
-    inner.add(piece);
-    for (const [geo, mat] of parts) {
-      const m = new THREE.Mesh(geo, cutMaterial(mat));
-      m.matrixAutoUpdate = false;
-      m.matrix.copy(t.mat);
-      m.castShadow = true;
-      piece.add(m);
-    }
-    disc(top, 0.005);
-    this.scene.add(top);
-    ch.extra.push(top);
-    const log = { ch, group: top, plane, plane2, axis: new THREE.Vector3(dz, 0, -dx), dx, dz,
-                  len, ang: 0.08, w: 0.6, drop: true };
-    this.logs.push(log);
-    this.poseLog(log);
-    return log;
-  }
-
-  poseLog(log) {
-    log.group.quaternion.setFromAxisAngle(log.axis, log.ang);
-    log.group.updateMatrixWorld(true);
-    log.plane.set(_upV, 0).applyMatrix4(log.group.matrixWorld);
-    if (log.plane2) log.plane2.set(_downV, log.len).applyMatrix4(log.group.matrixWorld);
-  }
-
-  // advance a falling top; returns false when it lies on the ground
-  stepLog(log, dt, quiet = false) {
-    if (log.falling) {
-      // a piece shot out of a stump: after toppling it drops off the stump onto the ground
-      const p = log.group.position;
-      log.vy += 9.81 * dt;
-      p.y -= log.vy * dt;
-      const g = this.heightAt(p.x + log.dx * log.len * 0.5, p.z + log.dz * log.len * 0.5) + 0.22;
-      if (p.y <= g) { p.y = g; this.poseLog(log); return false; }
-      if (!quiet) this.poseLog(log);
-      return true;
-    }
-    log.w += 1.5 * 9.81 / Math.max(2, log.len) * Math.sin(log.ang) * dt;
-    log.ang += log.w * dt;
-    const p = log.group.position;
-    // tip (and the middle) must stay above the ground
-    for (const k of [1, 0.5]) {
-      const d = log.len * k * Math.sin(log.ang);
-      const tx = p.x + log.dx * d, tz = p.z + log.dz * d;
-      const ty = p.y + log.len * k * Math.cos(log.ang);
-      if (ty < this.heightAt(tx, tz) + 0.35 * k + 0.2 || log.ang > Math.PI / 2 + 0.25) {
-        log.ang -= log.w * dt;
-        if (log.drop) {
-          log.drop = false;
-          log.falling = true;
-          log.vy = 0;
-          log.ang = Math.PI / 2;
-          p.x += log.dx * 0.35; p.z += log.dz * 0.35;
-          return true;
-        }
-        return false;
-      }
-    }
-    if (!quiet) this.poseLog(log);
-    return true;
-  }
-
-  // animate falling trees
+  // newly built settlements appear a few meshes per frame; falling trees
   animate(dt) {
     for (let n = 0; n < 4 && this.reveal.length; n++) this.reveal.shift().visible = true;
-    for (let i = this.logs.length - 1; i >= 0; i--) {
-      const log = this.logs[i];
-      if (!this.stepLog(log, dt)) {
-        this.poseLog(log);
-        this.logs.splice(i, 1);
-      }
-    }
+    this.forest.animate(dt);
   }
 
-  // segment p0->p1 vs tree trunks (stumps when broken); returns {t, tree} of the nearest hit or null
-  raycastTrees(p0, p1) {
-    let best = null;
-    const dx = p1.x - p0.x, dz = p1.z - p0.z;
-    const a = dx * dx + dz * dz;
-    if (a < 1e-9) return null;
-    this.forTreesNear((p0.x + p1.x) / 2, (p0.z + p1.z) / 2, t => {
-      if (t.broken && t.stumpH < 0.6) return;
-      const R = 0.45 * t.s;
-      const fx = p0.x - t.x, fz = p0.z - t.z;
-      const b = fx * dx + fz * dz;
-      const c = fx * fx + fz * fz - R * R;
-      const disc = b * b - a * c;
-      if (disc < 0) return;
-      const tt = (-b - Math.sqrt(disc)) / a;
-      if (tt < 0 || tt > 1 || (best && tt > best.t)) return;
-      const y = p0.y + (p1.y - p0.y) * tt;
-      const yTop = t.broken ? t.base + t.stumpH : t.base + (t.top - t.base) * 0.88;
-      if (y < t.base || y > yTop) return;
-      best = { t: tt, tree: t };
-    });
-    return best;
-  }
-
-  // a tree of a loaded chunk by its id ("cx,cz,i")
-  treeById(id) {
-    const [cx, cz, i] = id.split(',').map(Number);
-    const ch = this.chunks.get(ckey(cx, cz));
-    return ch ? ch.trees[i] || null : null;
-  }
-
-  // iterate trees around a point
-  forTreesNear(x, z, fn) {
-    const cx = Math.floor(x / CHUNK), cz = Math.floor(z / CHUNK);
-    const fx = x / CHUNK - cx, fz = z / CHUNK - cz;
-    const xs = [cx, fx < 0.5 ? cx - 1 : cx + 1], zs = [cz, fz < 0.5 ? cz - 1 : cz + 1];
-    for (const a of xs) for (const b of zs) {
-      const ch = this.chunks.get(ckey(a, b));
-      if (ch) for (const t of ch.trees) fn(t);
-    }
-  }
-
-  // push a circle (radius r) out of trees; returns true if it touched any.
-  // ram = { speed, dx, dz } for a tank: fast enough, it knocks the tree down (sets ram.broke)
-  collideTrees(pos, r, ram = null) {
-    let hit = false;
-    this.forTreesNear(pos.x, pos.z, t => {
-      if (t.broken && (ram || t.stumpH < 0.6)) return;     // tanks roll over stumps
-      const dx = pos.x - t.x, dz = pos.z - t.z;
-      const rr = t.r + r;
-      const d2 = dx * dx + dz * dz;
-      if (d2 < rr * rr && d2 > 1e-6) {
-        if (ram && Math.abs(ram.speed) > 1.2 + t.s * 1.3) {
-          this.breakTree(t, t.base + 0.35 + Math.random() * 0.3, ram.dx, ram.dz);
-          ram.broke = true;
-          ram.size = Math.max(ram.size || 0, t.s);
-          return;
-        }
-        const d = Math.sqrt(d2);
-        pos.x = t.x + dx / d * rr;
-        pos.z = t.z + dz / d * rr;
-        hit = true;
-      }
-    });
-    return hit;
-  }
-
-  // ------------------------------------------------------------ obstacles
-  // oriented box: centre x,z, half extents hx (local X) / hz (local Z), rotation rot (Y), y0..y1
+  // ------------------------------------------------------------ obstacles (obstacles.js)
+  // oriented box: centre x,z, half extents hx (local X) / hz (local Z), rotation rot (Y), y0..y1; `sub`: pieces
   addObstacle(o) {
-    o.cos = Math.cos(o.rot || 0);
-    o.sin = Math.sin(o.rot || 0);
-    o.rad = Math.hypot(o.hx, o.hz);
+    prepObstacle(o);
     this.obstacles.add(o);
     return o;
   }
   removeObstacle(o) { this.obstacles.delete(o); }
 
-  // breakFn(o): called on contact with a breakable obstacle (o.house); returns true if it gave way
-  collideObstacles(pos, r, breakFn = null) {
+  // push a circle (feet pos, radius r, height h) out of the obstacles. breakFn(o): called on contact with a
+  // breakable obstacle (o.house); returns true if it gave way
+  collideObstacles(pos, r, breakFn = null, h = 1.8) {
     let hit = false;
     for (const o of this.obstacles) {
       if (breakFn && o.house) {
         const tmp = { x: pos.x, y: pos.y, z: pos.z };
-        if (pushOut(o, tmp, r) && breakFn(o)) continue;
+        if (pushOut(o, tmp, r, h) && breakFn(o)) continue;
       }
-      if (pushOut(o, pos, r)) hit = true;
+      if (pushOut(o, pos, r, h)) hit = true;
     }
     return hit;
   }
 
-  // segment p0->p1 vs obstacle boxes; returns {t, obstacle} of nearest hit or null
+  // segment p0->p1 vs obstacle boxes (the pieces of compound ones); returns {t, obstacle} of nearest hit or null
   raycastObstacles(p0, p1) {
     let best = null;
     const mx = (p0.x + p1.x) / 2, mz = (p0.z + p1.z) / 2;
@@ -1030,64 +653,30 @@ export class World {
       const dx = mx - o.x, dz = mz - o.z;
       const lim = o.rad + half;
       if (dx * dx + dz * dz > lim * lim) continue;
-      const ax = p0.x - o.x, az = p0.z - o.z;
-      const bx = p1.x - o.x, bz = p1.z - o.z;
-      const l0x = ax * o.cos - az * o.sin, l0z = ax * o.sin + az * o.cos;
-      const l1x = bx * o.cos - bz * o.sin, l1z = bx * o.sin + bz * o.cos;
-      const t = segBox(l0x, p0.y, l0z, l1x, p1.y, l1z, -o.hx, o.y0, -o.hz, o.hx, o.y1, o.hz);
-      if (t !== null && (!best || t < best.t)) best = { t, obstacle: o };
+      const t = segObstacle(o, p0, p1);
+      if (t === null || (best && t >= best.t)) continue;
+      if (!o.sub) { best = { t, obstacle: o }; continue; }
+      for (const s of o.sub) {
+        const ts = segObstacle(s, p0, p1);
+        if (ts !== null && (!best || ts < best.t)) best = { t: ts, obstacle: s };
+      }
     }
     return best;
   }
-}
 
-const _downV = new THREE.Vector3(0, -1, 0);
-const _upV = new THREE.Vector3(0, 1, 0);
-
-// slab test: segment (a->b) vs AABB; returns entry t in [0,1] or null
-export function segBox(ax, ay, az, bx, by, bz, minx, miny, minz, maxx, maxy, maxz) {
-  let t0 = 0, t1 = 1;
-  const d = [bx - ax, by - ay, bz - az];
-  const o = [ax, ay, az];
-  const mn = [minx, miny, minz], mx = [maxx, maxy, maxz];
-  for (let i = 0; i < 3; i++) {
-    if (Math.abs(d[i]) < 1e-9) {
-      if (o[i] < mn[i] || o[i] > mx[i]) return null;
-    } else {
-      let ta = (mn[i] - o[i]) / d[i], tb = (mx[i] - o[i]) / d[i];
-      if (ta > tb) { const t = ta; ta = tb; tb = t; }
-      if (ta > t0) t0 = ta;
-      if (tb < t1) t1 = tb;
-      if (t0 > t1) return null;
+  // ---------------------------------------------------------------- ground
+  // what a walker at height y stands on at (x, z): the terrain or a floor / stair of a house up to a step above y
+  // (y omitted: the ground floor where there is a house)
+  groundAt(x, z, y = null) {
+    let g = this.heightAt(x, z);
+    if (!this.houses.size) return g;
+    const lim = (y === null ? g : y) + STEP_UP;
+    for (const h of this.houses) {
+      const dx = x - h.f.x, dz = z - h.f.z;
+      if (dx * dx + dz * dz > h.rad2) continue;
+      const f = h.floorAt(dx, dz, lim);
+      if (f > g) g = f;
     }
+    return g;
   }
-  return t0;
-}
-
-// push a circle (pos, radius r) out of an oriented box obstacle; returns true on contact
-export function pushOut(o, pos, r) {
-  const dx = pos.x - o.x, dz = pos.z - o.z;
-  const lim = o.rad + r;
-  if (dx * dx + dz * dz > lim * lim) return false;
-  if (o.y1 !== undefined && pos.y > o.y1 + 0.3) return false;
-  const lx = dx * o.cos - dz * o.sin;
-  const lz = dx * o.sin + dz * o.cos;
-  const cx = Math.max(-o.hx, Math.min(o.hx, lx));
-  const cz = Math.max(-o.hz, Math.min(o.hz, lz));
-  const ddx = lx - cx, ddz = lz - cz;
-  const d2 = ddx * ddx + ddz * ddz;
-  let nlx, nlz;
-  if (d2 === 0) {
-    // centre inside: push out along the axis of least penetration
-    const px = o.hx - Math.abs(lx), pz = o.hz - Math.abs(lz);
-    if (px < pz) { nlx = Math.sign(lx || 1) * (o.hx + r); nlz = lz; }
-    else { nlx = lx; nlz = Math.sign(lz || 1) * (o.hz + r); }
-  } else if (d2 < r * r) {
-    const d = Math.sqrt(d2);
-    nlx = cx + ddx / d * r;
-    nlz = cz + ddz / d * r;
-  } else return false;
-  pos.x = o.x + nlx * o.cos + nlz * o.sin;
-  pos.z = o.z - nlx * o.sin + nlz * o.cos;
-  return true;
 }

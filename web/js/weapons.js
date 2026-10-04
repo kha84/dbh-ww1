@@ -413,7 +413,7 @@ export class Guns {
       let impact = false;
       // obstacles
       const tmp = { x: g.pos.x, y: g.pos.y, z: g.pos.z };
-      if (this.world.collideObstacles(tmp, 0.1)) { g.pos.x = ox; g.pos.z = oz; g.vel.x *= -0.35; g.vel.z *= -0.35; impact = true; }
+      if (this.world.collideObstacles(tmp, 0.1, null, 0.15)) { g.pos.x = ox; g.pos.z = oz; g.vel.x *= -0.35; g.vel.z *= -0.35; impact = true; }
       // tanks
       for (const t of this.tanks) {
         const b = t.vis.hullBox;
@@ -431,7 +431,7 @@ export class Guns {
         }
       }
       if (impact === null) continue;
-      const gh = Math.max(this.world.heightAt(g.pos.x, g.pos.z), WATER_LEVEL);
+      const gh = Math.max(this.world.groundAt(g.pos.x, g.pos.z, g.pos.y), WATER_LEVEL);
       if (g.pos.y < gh + 0.05) {
         g.pos.y = gh + 0.05;
         if (gh <= WATER_LEVEL + 0.01 && this.world.heightAt(g.pos.x, g.pos.z) < WATER_LEVEL) { g.t = Math.min(g.t, 0.5); g.vel.set(0, 0, 0); }

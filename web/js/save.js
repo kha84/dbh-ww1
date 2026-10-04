@@ -104,7 +104,7 @@ export function snapshot(g) {
   const near = p => Math.hypot(p.x - anchor.x, p.z - anchor.z) < 1500;
   const keptTanks = tanks.filter(t => near(t.root.position));
   const pickups = [...items.pickups.values()].filter(p => !/^s\d+:/.test(p.id) && near(p.pos))
-    .map(p => ({ id: p.id, type: p.type, x: +p.pos.x.toFixed(2), z: +p.pos.z.toFixed(2), data: pickupData(p) }));
+    .map(p => ({ id: p.id, type: p.type, x: +p.pos.x.toFixed(2), y: +p.pos.y.toFixed(2), z: +p.pos.z.toFixed(2), data: pickupData(p) }));
   return {
     version: VERSION, mode: 'road', seed: g.SEED, km: +((state.maxZ - state.startZ) / 1000).toFixed(2),
     state: {
@@ -197,7 +197,7 @@ export function restore(g, d) {
       const wall = walls.get(data.wall);
       data = wall ? { place: data.place, wall, col: wall.cols[data.col] } : null;
     }
-    items.add(p.id, p.type, p.x, p.z, data);
+    items.add(p.id, p.type, p.x, p.z, data, p.y ?? null);
   }
   // tanks
   let vehicle = null;
