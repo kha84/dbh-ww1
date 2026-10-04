@@ -5,6 +5,7 @@ import { ChunkBatch } from './batch.js';
 import { makeNoise, fbm, smoothstep, hash, rng } from './noise.js';
 import { buildSettlement, SETTLEMENT_NAMES } from './settlements.js';
 import { planRiver, carve } from './rivers.js';
+import { Biomes, BIOMES, CROPS } from './biomes.js';
 import { buildBridge } from './structures/bridge.js';
 import { Forest } from './structures/trees.js';
 import { prepObstacle, pushOut, segObstacle } from './obstacles.js';
@@ -90,6 +91,10 @@ export class World {
     this.nTint = makeNoise(seed + 200);
     this.nRoad = makeNoise(seed + 501);
     this.nRoadH = makeNoise(seed + 777);
+    this.nHill = makeNoise(seed + 911);
+    this.nWet = makeNoise(seed + 1213);
+    this._rxZ = this._rhZ = NaN; this._rxV = this._rhV = 0;   // roadX / roadH of the last z
+    this.biomes = new Biomes(seed, makeNoise(seed + 1301), dbg.get('biome'));
 
     this.chunks = new Map();
     this.obstacles = new Set();
@@ -113,15 +118,35 @@ export class World {
   }
 
   // ---------------------------------------------------------------- road
+  // (both remember the last z: the terrain is sampled row by row)
   roadX(z) {
     if (this.opts.arena) return 0;                     // arenas: a straight track along the Z axis
-    return 130 * fbm(this.nRoad, z * 0.0011 + 0.37, 3.1, 3) + 12 * this.nRoad(z * 0.005 + 11.3, 7.7);
+    if (z === this._rxZ) return this._rxV;
+    this._rxZ = z;
+    return (this._rxV = 130 * fbm(this.nRoad, z * 0.0011 + 0.37, 3.1, 3) + 12 * this.nRoad(z * 0.005 + 11.3, 7.7));
   }
   roadSlope(z) { return (this.roadX(z + 1) - this.roadX(z - 1)) / 2; }   // dx/dz
   roadHeading(z) { return Math.atan2(this.roadSlope(z), 1); }            // heading (0 = +Z)
   roadH(z) {
     if (this.opts.arena) return ARENA_H;
-    return WATER_LEVEL + 6 + 9 * (fbm(this.nRoadH, z * 0.0016 + 2.2, 1.3, 3) + 0.6);
+    if (z === this._rhZ) return this._rhV;
+    const B = this.biomeAt(this.roadX(z), z);
+    const h = WATER_LEVEL + 6 + 9 * (1 + 0.5 * B.hills) * (fbm(this.nRoadH, z * 0.0016 + 2.2, 1.3, 3) + 0.6);
+    this._rhZ = z;
+    return (this._rhV = h + (WATER_LEVEL + 2.3 - h) * B.wet);   // swamps: a low causeway
+  }
+
+  // ---------------------------------------------------------------- biomes (biomes.js)
+  /** the land's parameters at (x, z) (shared objects: read only) */
+  biomeAt(x, z) { return this.opts.arena ? BIOMES.arena : this.biomes.at(x, z); }
+  // field patchwork at (x, z) (rx = roadX(z)), share = biome fields
+  fieldAt(x, z, rx, share) { return this.biomes.fieldAt(x - rx, z, this.opts.arena ? 0 : share); }
+  // ground speed factor for vehicles: water to wade through, swamp mud
+  going(x, z) {
+    const h = this.heightAt(x, z);
+    let k = h < WATER_LEVEL - 0.25 ? 0.55 : 1;
+    if (!this.opts.arena && h < WATER_LEVEL + 1.4) k *= 1 - 0.35 * this.biomeAt(x, z).wet;
+    return k;
   }
 
   // ---------------------------------------------------------- settlements
@@ -211,15 +236,22 @@ export class World {
   }
 
   // -------------------------------------------------------------- heights
-  naturalHeight(x, z, dr) {
+  naturalHeight(x, z, dr, B = this.biomeAt(x, z)) {
     const nx = x / 800, nz = z / 800;
-    let h = 30.0 * fbm(this.nBase, nx * 2.2 + 100, nz * 2.2 + 100, 5) + 14.0;
+    let h = 30.0 * fbm(this.nBase, nx * 2.2 + 100, nz * 2.2 + 100, 5);
     h += 18.0 * fbm(this.nDetail, nx * 7.0, nz * 7.0, 4);
     h += 4.0 * fbm(this.nDetail, nx * 18.0 + 7, nz * 18.0 + 7, 3);
+    h = 14.0 + h * B.relief;                                     // flat steppe .. rough hills
+    if (B.hills > 0) h += B.hills * 26 * (fbm(this.nHill, nx * 3.4 + 3, nz * 3.4 + 3, 3) + 0.3) * (0.35 + 0.65 * smoothstep(20, 160, dr));
     // valley around the road, mountains far away from it
     h *= 0.55 + 0.45 * smoothstep(0, 220, dr);
-    const m = smoothstep(240, 560, dr);
+    const m = smoothstep(240, 560, dr) * B.mount;
     if (m > 0) h += m * (55 + 40 * fbm(this.nMount, nx * 5, nz * 5, 3));
+    // swamps: the valley sinks to the water - shallow pools between hummocks
+    if (B.wet > 0) {
+      const sw = WATER_LEVEL + 0.3 + 1.7 * fbm(this.nWet, x / 75, z / 75, 3) + 0.5 * this.nWet(x / 17 + 31, z / 17);
+      h += (Math.max(WATER_LEVEL - 0.7, sw) - h) * B.wet * (1 - smoothstep(260, 520, dr));
+    }
     return Math.max(h, WATER_LEVEL - 3.2);
   }
 
@@ -299,7 +331,8 @@ export class World {
 
   // ------------------------------------------------------------ materials
   makeMaterials() {
-    const grassTex = new THREE.TextureLoader().load(new URL('../../assets/grass.jpg', import.meta.url).href);
+    // the detail of grass.jpg with its green taken out (the colour comes from the vertices: biomes, fields)
+    const grassTex = new THREE.TextureLoader().load(new URL('../../assets/ground.jpg', import.meta.url).href);
     grassTex.wrapS = grassTex.wrapT = THREE.RepeatWrapping;
     grassTex.colorSpace = THREE.SRGBColorSpace;
     this.terrainMat = new THREE.MeshStandardMaterial({
@@ -346,8 +379,8 @@ export class World {
     // every loaded chunk draws its terrain / water / road / forest through one batch per kind (batch.js)
     const nCh = (2 * this.VIEW + 1) ** 2 + 24, NV = (CSEG + 1) ** 2;
     const tb = this.forest.treeBake;
-    const treeV = Math.max(tb.pine.attributes.position.count, tb.birch.attributes.position.count);
-    const treeI = Math.max(tb.pine.index.count, tb.birch.index.count);
+    const treeV = Math.max(...Object.values(tb).map(g => g.attributes.position.count));
+    const treeI = Math.max(...Object.values(tb).map(g => g.index.count));
     this.batch = {
       terrain: new ChunkBatch(this.scene, this.terrainMat, { instances: nCh, verts: Math.ceil(nCh * NV * 1.15), indices: Math.ceil(nCh * CSEG * CSEG * 6 * 1.15), name: 'terrain', step: 64 }),
       water: new ChunkBatch(this.scene, this.waterMat, { instances: 48, verts: 60000, indices: 90000, name: 'water' }),
@@ -465,12 +498,10 @@ export class World {
     const col = new Float32Array(N * N * 3);
     const uv = new Float32Array(N * N * 2);
     const c = new THREE.Color();
-    const grass = new THREE.Color(0x7aa653);
-    const grassDark = new THREE.Color(0x5c8040);
-    const dirt = new THREE.Color(0x8a6f47);
-    const rock = new THREE.Color(0x8d8d85);
-    const snow = new THREE.Color(0xe9edee);
-    const sand = new THREE.Color(0xc9bb8a);
+    const grass = new THREE.Color(), grassDark = new THREE.Color(), sand = new THREE.Color(), crop = new THREE.Color();
+    const dirt = new THREE.Color(0x7e6c44);
+    const rock = new THREE.Color(0x868a78);
+    const snow = new THREE.Color(0xe4eae6);
     let minH = 1e9;
     for (let iz = 0; iz < N; iz++) {
       const wz = z0 + iz * CELL;
@@ -490,13 +521,20 @@ export class World {
 
         const slope = Math.hypot(hr - hl, hu - hd) / (2 * CELL);
         const tint = 0.92 + 0.16 * (fbm(this.nTint, wx * 0.02, wz * 0.02, 2) * 0.5 + 0.5);
+        const B = this.biomeAt(wx, wz);
+        grass.fromArray(B.grass); grassDark.fromArray(B.grassDark); sand.fromArray(B.shore);
+        const rockH = 22 + 14 * B.hills, wetH = 5 - 1.5 * B.wet;    // grassy hills; swamp: mud only at the water
         if (h < WATER_LEVEL + 0.5) c.copy(sand);
-        else if (h < 5) c.lerpColors(sand, grassDark, (h - WATER_LEVEL - 0.5) / 2.5);
-        else if (h < 22) c.lerpColors(grassDark, grass, (h - 5) / 17);
-        else if (h < 34) c.lerpColors(grass, rock, (h - 22) / 12);
-        else c.lerpColors(rock, snow, Math.min(1, (h - 34) / 22));
+        else if (h < wetH) c.lerpColors(sand, grassDark, (h - WATER_LEVEL - 0.5) / (wetH - WATER_LEVEL - 0.5));
+        else if (h < rockH) c.lerpColors(grassDark, grass, (h - wetH) / (rockH - wetH));
+        else if (h < rockH + 12) c.lerpColors(grass, rock, (h - rockH) / 12);
+        else c.lerpColors(rock, snow, Math.min(1, (h - rockH - 12) / 22));
         if (slope > 0.6 && h > WATER_LEVEL + 0.6) c.lerp(rock, Math.min(1, (slope - 0.6) * 2.2));
         const dr = Math.abs(wx - rx);
+        if (B.fields > 0 && h > WATER_LEVEL + 0.8) {                // the field patchwork beside the road
+          const f = this.fieldAt(wx, wz, rx, B.fields);
+          if (f.crop >= 0) c.lerp(crop.fromArray(CROPS[f.crop].col), 0.85 * (1 - smoothstep(0.2, 0.45, slope)));
+        }
         if (dr < 10) c.lerp(dirt, 0.55 * (1 - dr / 10));
         const sw = this.settlementWeight(wx, wz, rx);
         if (sw > 0.2) c.lerp(dirt, 0.18 * sw);

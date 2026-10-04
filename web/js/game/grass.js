@@ -2,10 +2,13 @@
 // the 5 x 5 tiles around the player are filled (deterministically, from the world seed) when the player moves on to
 // another tile. Every tuft carries its world position, size, turn and tint; the vertex shader places it, sways the
 // blades in the wind (tips move, roots stay) and shrinks the tufts towards the edge of the grass so they fade in.
+// The biome (biomes.js) tints them (yellow steppe, dark swamp sedge) and sets their size / density; on the fields
+// they are the crop (ripe wheat, rye, shoots), the ploughland is bare.
 import * as THREE from 'three/webgpu';
-import { attribute, positionLocal, vec3, float, sin, cos, time, instanceIndex, cameraPosition, smoothstep, mix, uniform, transformNormalToView } from 'three/tsl';
+import { attribute, positionLocal, vec3, float, sin, cos, time, instanceIndex, cameraPosition, smoothstep, uniform, transformNormalToView } from 'three/tsl';
 import { hash } from '../noise.js';
 import { WATER_LEVEL } from '../world.js';
+import { CROPS } from '../biomes.js';
 
 const TILE = 32, SPAN = 2;                    // tiles of 32 m, 2 around the player's tile
 const PER_TILE = [0, 420, 900];               // tufts per tile by level (quality: none / medium / high)
@@ -38,14 +41,14 @@ export function createGrass(scene, world) {
   const MAX = PER_TILE[2] * (2 * SPAN + 1) ** 2;
   const geo = tuftGeometry();
   const at = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 4), 4);     // x, y, z, size
-  const tw = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 2), 2);     // turn, tint
+  const tw = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 4), 4);     // turn, tint rgb
   geo.setAttribute('tuft', at);
   geo.setAttribute('turn', tw);
   const radius = uniform(TILE * (SPAN + 0.5));
 
   const mat = new THREE.MeshStandardNodeMaterial({ roughness: 1, side: THREE.DoubleSide });   // colour: colorNode
   {
-    const p = attribute('tuft', 'vec4'), t = attribute('turn', 'vec2');
+    const p = attribute('tuft', 'vec4'), t = attribute('turn', 'vec4');
     const lp = positionLocal;
     // fade in: tufts shrink towards the edge of the grass around the player
     const d = cameraPosition.xz.sub(p.xz).length();
@@ -57,7 +60,7 @@ export function createGrass(scene, world) {
     const ph = time.mul(1.9).add(float(instanceIndex).mul(0.61)).add(p.x.mul(0.07));
     const sway = vec3(sin(ph).mul(0.09), float(0), cos(ph.mul(0.8)).mul(0.06)).mul(k).mul(size);
     mat.positionNode = p.xyz.add(local).add(sway);
-    mat.colorNode = attribute('color', 'vec3').mul(mix(float(0.8), float(1.15), t.y));
+    mat.colorNode = attribute('color', 'vec3').mul(t.yzw);
     mat.normalNode = transformNormalToView(vec3(0, 1, 0));     // both faces lit like the ground under the tuft
   }
   const mesh = new THREE.InstancedMesh(geo, mat, MAX);
@@ -82,14 +85,21 @@ export function createGrass(scene, world) {
       const x = (X + hash(world.seed, X * 7 + i, Z, 71)) * TILE, z = (Z + hash(world.seed, X, Z * 7 + i, 73)) * TILE;
       const rx = world.roadX(z);
       const h = world.heightAt(x, z);
-      const bare = (world.opts.road && Math.abs(x - rx) < 5.5) || h < WATER_LEVEL + 0.35 || h > 26 ||
-        world.settlementWeight(x, z, rx) > 0.4;
+      const B = world.biomeAt(x, z);
+      let tint = B.tuft, size = B.tuftS;
       const r = hash(world.seed, i, X * 31 + Z, 79);
-      at.setXYZW(base + i, x, h - 0.03, z, bare ? 0 : 0.45 + r * 0.5);
-      tw.setXY(base + i, r * 6.283, hash(world.seed, i, Z * 17 + X, 83));
+      let bare = (world.opts.road && Math.abs(x - rx) < 5.5) || h < WATER_LEVEL + 0.35 - 0.25 * B.wet || h > 26 + 10 * B.hills ||
+        world.settlementWeight(x, z, rx) > 0.4 || hash(world.seed, i, X, Z * 5 + 3, 89) > B.tuftN;
+      if (!bare && B.fields > 0) {
+        const f = world.fieldAt(x, z, rx, B.fields);
+        if (f.crop >= 0) { const c = CROPS[f.crop]; tint = c.tuft; size = c.tuftS; bare = !tint; }
+      }
+      const v = 0.8 + 0.35 * hash(world.seed, i, Z * 17 + X, 83);
+      at.setXYZW(base + i, x, h - 0.03, z, bare ? 0 : (0.45 + r * 0.5) * size);
+      if (!bare) tw.setXYZW(base + i, r * 6.283, tint[0] * v, tint[1] * v, tint[2] * v);
     }
     at.addUpdateRange(base * 4, per * 4);
-    tw.addUpdateRange(base * 2, per * 2);
+    tw.addUpdateRange(base * 4, per * 4);
     return true;
   }
   function fill() {

@@ -9,8 +9,11 @@ The game features:
   game (two players, host / join by code), loading a saved game. Saving: pause menu or F5 (road mode only, localStorage)
 - Network play for two players (net.js, WebRTC): co-op on the road / in a duel / on the range; the host runs the world
 - An endless road ("drive beyond horizons") through procedurally streamed terrain, with villages, towns,
-  gas stations and tank repair stations along it, rivers crossing it (bridges: timber trestle / steel / stone; some
-  shallow ones are fords); every game gets a random world seed (`?seed=N` replays one)
+  gas stations and tank repair stations along it, rivers crossing it (brooks, rivers, broad rivers; bridges: timber
+  trestle / steel / stone; some shallow ones are fords); every game gets a random world seed (`?seed=N` replays one)
+- Biomes change along the road every 1.3-3 km with smooth transitions: copses, dense forest, birch groves, fields
+  (patchwork of crops, tree lines), steppe, swamps (pools, mud slows the tanks, a low causeway), hills; the HUD names
+  the land and tells when it changes
 - First-person on foot; in tanks (Renault FT, Mark V, Vickers 6-ton (twin turrets), T-26, T-28 (three turrets),
   T-35 (five turrets), Type 89, Pz.II, BT-7, Char B1 bis, Sherman, Pz.IV, T-44, IS-2, T-55, Chieftain AVRE, Leopard 2,
   Abrams) third-person / gunner-sight, or first person inside
@@ -95,7 +98,9 @@ web/js/hud.js           # tank markers over the view, minimap
 web/js/world.js         # endless world: road centreline roadX(z)/roadH(z), chunked terrain streamed around
                         #   the player, lakes, rivers + bridges, forest, obstacle boxes (OBB push-out + shell raycast),
                         #   arenas (opts.arena: 'duel' | 'range', features, bounds)
-web/js/rivers.js        # river plans (between settlements), channel carving
+web/js/biomes.js        # biomes along the road: segments, blended parameters (relief, swamp, fields, trees, colours,
+                        #   grass, rivers), field patchwork (fieldAt, CROPS)
+web/js/rivers.js        # river plans (between settlements; brook / river / broad, width along the course), carving
 web/js/settlements.js   # roadside villages / towns / gas stations / repair stations: layout, loot, service zones
 web/js/obstacles.js     # obstacle boxes: pushOut (circle + height), segBox / segObstacle, compound obstacles (sub)
 web/js/structures/      # ONE FILE PER WORLD OBJECT: kit.js (settlement builder context K: frame / part / obstacle /
@@ -160,7 +165,8 @@ Game: `?mode=road|duel|range`, `&tank=KEY` (duel / range, APC keys too), `&net=h
 takes what it joins from sessionStorage `dbh-ww1-net`, written by the menu), `&enemies=K1,K2,...` (duel, `random` allowed), `?load=SAVE_ID`.
 Without `mode` / `load` the main menu is shown; `?seed=N` or `?start=Z` alone start the road directly.
 URL params: `?nowater=1&noclouds=1&notrees=1&notanks=1&noenemies=1&noinfantry=1&noshadows=1&nofog=1&waterred=1&watery=N&noaa=1&logdepth=1`
-`?seed=N` world seed (random without it; shown in the pause menu), `?start=Z` start further down the road, `?god=1`
+`?seed=N` world seed (random without it; shown in the pause menu), `?start=Z` start further down the road,
+`?biome=KEY` one biome everywhere (mixed | forest | birch | fields | steppe | swamp | hills), `?god=1`
 invulnerable player, `?view=N` chunk radius.
 Graphics: `?backend=webgl`, `?q=low|medium|high` (else the one chosen in the pause menu, else high on WebGPU / medium
 on WebGL 2), `?tod=H` time of day, `?daylen=M` minutes per day (0 = the clock stands), `?nopost=1 ?noao=1 ?nobloom=1
@@ -197,7 +203,16 @@ rendering (handy for headless tests; `game.state.noLock = true` lets small arms 
   the stowed plates, `items.plateColor` = the plate in hands, `items.sprays` [{ color, paint % }] / `sprayIdx`.
 - Patches: `tank.patchMarks(color, at)` turns hole / dent marks into patch meshes (userData.patch, also `mark`) on the
   same host (they travel with the parts); `clearMarks` (repair station) keeps them; saved per host (`markHosts()`).
-- Rivers: `world.riverPlan(k)` for the gap after settlement k (null or plan), carved in `world.height`; bridges are
+- Biomes (biomes.js): `world.biomeAt(x, z)` = a `BIOMES` entry or a cached blend of two (read only); used by
+  `naturalHeight` (relief, hills, mount, wet), `roadH` (swamps: low causeway), terrain colours, trees (treeFill /
+  trees / kind shares pine / birch / oak / bush, treeS), grass (tuft tint / size / share), rivers (chance, width).
+  `world.fieldAt(x, z, rx, share)` -> { crop (CROPS index or -1), edge, line (a tree line on that strip) }.
+  `world.going(x, z)` = vehicle speed factor (wading, swamp mud) -> `tank.goingK`. Tree kinds (trees.js `KINDS`):
+  `t.g` = trunk thickness (collisions / shell hits / ramming).
+  The terrain texture `assets/ground.jpg` is grass.jpg with its green taken out: the ground colour comes only from
+  the vertex colours (biome colours are the colours as seen); the minimap tints the lowland by biome / crop too.
+- Rivers: `world.riverPlan(k)` for the gap after settlement k (null or plan: size brook | river | broad, `w` half
+  width at the road, `widthAt(p, x)` along the course, `title` for the signs), carved in `world.height`; bridges are
   built / disposed by distance (`world.bridges`), `world.bridgeAt(x, z)` gives the deck height and `heightAt` uses it
   (tanks / soldiers / shells walk on the deck); the road ribbon dips into fords.
 - Arenas: `new World(scene, seed, worldOptions(mode))` - opts { arena, road, settlements, rivers, bounds, plans

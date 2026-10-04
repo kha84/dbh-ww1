@@ -1,6 +1,7 @@
 // HUD pieces with no game logic in them: the tank markers over the view and the minimap.
 import * as THREE from 'three';
 import { WATER_LEVEL } from './world.js';
+import { CROPS } from './biomes.js';
 
 // enemy / tank markers
 export class Markers {
@@ -68,7 +69,14 @@ export class Minimap {
         const h = world.heightAt(wx, wz);
         let r, g, b;
         if (h < WATER_LEVEL) { r = 45; g = 90; b = 130; }
-        else if (h < 22) { const t = (h - WATER_LEVEL) / 20; r = 60 + t * 50; g = 105 + t * 45; b = 50 + t * 25; }
+        else if (h < 22) {
+          // the land's colour (biome, fields), darker in the lowland
+          const B = world.biomeAt(wx, wz);
+          let col = B.grass;
+          if (B.fields > 0) { const f = world.fieldAt(wx, wz, world.roadX(wz), B.fields); if (f.crop >= 0) col = CROPS[f.crop].col; }
+          const t = 0.72 + 0.28 * (h - WATER_LEVEL) / 20;
+          r = 255 * Math.sqrt(col[0]) * t; g = 255 * Math.sqrt(col[1]) * t; b = 255 * Math.sqrt(col[2]) * t;
+        }
         else if (h < 40) { r = 120 + (h - 22) * 3; g = 115 + (h - 22) * 2.5; b = 105; }
         else { const t = Math.min(1, (h - 40) / 30); r = 175 + t * 70; g = 170 + t * 75; b = 175 + t * 70; }
         const i = (py * R + px) * 4;

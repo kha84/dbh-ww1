@@ -15,6 +15,20 @@ const _upV = new THREE.Vector3(0, 1, 0);
 
 // broken trees: the tree meshes go into a group clipped by world-space planes (stump below the break, the falling
 // top above it); the cut shows the inside of the trunk, so the materials are double-sided copies (one per material)
+// tree kinds: height of the top (x size), trunk thickness (x size: collisions, shell hits, ramming), trunk taper
+// r0 -> r1 over th (the fresh cut)
+const KINDS = {
+  pine:  { top: 9.2, girth: 1,    r0: 0.32, r1: 0.20, th: 2.8 },
+  birch: { top: 7.9, girth: 1,    r0: 0.32, r1: 0.20, th: 2.8 },
+  oak:   { top: 7.9, girth: 1.35, r0: 0.42, r1: 0.26, th: 3.4 },
+  bush:  { top: 2.2, girth: 0.3,  r0: 0.10, r1: 0.06, th: 0.9 },
+};
+// radius of the cut through the trunk of tree t at height ly above its base (0 above the trunk)
+function cutRadius(t, stumpH) {
+  const k = KINDS[t.kind], ly = stumpH / (t.s * t.sy);
+  return ly < k.th ? (k.r0 - (k.r0 - k.r1) * ly / k.th) * t.s : 0;
+}
+
 function clipGroup(planes) {
   const g = new THREE.ClippingGroup();
   g.clippingPlanes = planes;
@@ -47,9 +61,22 @@ export class Forest {
     this.birchCrownGeo.scale(1, 1.3, 1);
     this.birchCrownGeo.translate(0, 5.2, 0);
     this.birchCrownMat = new THREE.MeshStandardMaterial({ color: 0x5f8a3a, roughness: 1, flatShading: true });
+    // oak: a thick short trunk under a wide lumpy crown; bush: a few twigs under low round leaf clumps
+    const oakTrunk = new THREE.CylinderGeometry(0.26, 0.42, 3.4, 6);
+    oakTrunk.translate(0, 1.7, 0);
+    const oakCrown = mergeGeometries([[2.7, 1.15, 0.85, 0, 5.6, 0], [1.9, 1, 0.9, 1.3, 4.8, -0.7], [1.7, 1, 0.9, -1.1, 5.0, 0.9]]
+      .map(([r, sxz, sy, x, y, z]) => new THREE.IcosahedronGeometry(r, 0).scale(sxz, sy, sxz).translate(x, y, z)));
+    this.oakCrownMat = new THREE.MeshStandardMaterial({ color: 0x4d7531, roughness: 1, flatShading: true });
+    const bushTrunk = new THREE.CylinderGeometry(0.06, 0.1, 0.9, 5);
+    bushTrunk.translate(0, 0.45, 0);
+    const bushCrown = mergeGeometries([[1.0, 1.25, 0.8, 0, 1.4, 0], [0.75, 1.2, 0.85, 0.7, 1.1, 0.4], [0.7, 1.2, 0.8, -0.5, 1.15, -0.55]]
+      .map(([r, sxz, sy, x, y, z]) => new THREE.IcosahedronGeometry(r, 0).scale(sxz, sy, sxz).translate(x, y, z)));
+    this.bushMat = new THREE.MeshStandardMaterial({ color: 0x557a36, roughness: 1, flatShading: true });
     this.treeParts = {
       pine: [[this.trunkGeo, this.trunkMat], [this.coneGeo, this.coneMat], [this.cone2Geo, this.cone2Mat]],
       birch: [[this.trunkGeo, this.trunkMat], [this.birchCrownGeo, this.birchCrownMat]],
+      oak: [[oakTrunk, this.trunkMat], [oakCrown, this.oakCrownMat]],
+      bush: [[bushTrunk, this.trunkMat], [bushCrown, this.bushMat]],
     };
     // the standing forest of a chunk is one baked mesh (vertex colours, one material for every chunk): one draw call
     // per chunk and one shader for all of them (an InstancedMesh per chunk and part cost a shader build each)
@@ -68,10 +95,9 @@ export class Forest {
       g.setAttribute('color', new THREE.BufferAttribute(col, 3));
       return g;
     };
-    this.treeBake = {
-      pine: mergeGeometries(this.treeParts.pine.map(([geo, mat]) => bakedPart(geo, mat))),
-      birch: mergeGeometries(this.treeParts.birch.map(([geo, mat]) => bakedPart(geo, mat))),
-    };
+    /** @type {Record<string, THREE.BufferGeometry>} */
+    this.treeBake = {};
+    for (const [k, parts] of Object.entries(this.treeParts)) this.treeBake[k] = mergeGeometries(parts.map(([geo, mat]) => bakedPart(geo, mat)));
     this.forestMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1 });
     // fresh cut of a broken trunk
     this.cutGeo = new THREE.CircleGeometry(1, 8);
@@ -79,34 +105,45 @@ export class Forest {
     this.cutMat = new THREE.MeshStandardMaterial({ color: 0xc9a46a, roughness: 1, side: THREE.DoubleSide });
   }
 
+  // the trees of a chunk: the forest noise thinned / filled by the biome (biomes.js), kinds by its shares; in the
+  // fields only along some of the strips between them (tree lines) and in the copses
   buildTrees(ch) {
-    const r = rng(Math.floor(hash(this.world.seed, ch.cx, ch.cz, 31) * 4294967296));
-    const MAX = 90;
-    const pine = [], birch = [];
-    for (let t = 0; t < 260 && pine.length + birch.length < MAX; t++) {
+    const W = this.world;
+    const r = rng(Math.floor(hash(W.seed, ch.cx, ch.cz, 31) * 4294967296));
+    const MAX = 150;
+    for (let t = 0; t < 400 && ch.trees.length < MAX; t++) {
       const x = ch.x0 + r() * CHUNK, z = ch.z0 + r() * CHUNK;
-      const rx = this.world.roadX(z);
+      const rx = W.roadX(z);
       const dr = Math.abs(x - rx);
-      if (this.world.opts.road && dr < 14) continue;
-      if (!this.world.opts.arena && Math.abs(z) < 70 && dr < 60) continue;       // spawn area clear
-      if (this.world.opts.clear && this.world.opts.clear.some(c => Math.hypot(x - c.x, z - c.z) < c.r)) continue;
-      if (this.world.opts.arena && this.world.opts.treeDensity !== undefined && r() > this.world.opts.treeDensity) continue;
-      const h = this.world.heightAt(x, z);
-      if (h < WATER_LEVEL + 1.2 || h > 30) continue;
-      if (this.world.slopeAt(x, z) > 0.7) continue;
-      if (this.world.settlementWeight(x, z, rx) > 0.02) continue;
-      const density = fbm(this.world.nTree, x * 0.006, z * 0.006, 3) * 0.5 + 0.5;
-      if (r() > density * density * 1.7) continue;
-      const s = 0.75 + r() * 0.95;
+      if (W.opts.road && dr < 14) continue;
+      if (!W.opts.arena && Math.abs(z) < 70 && dr < 60) continue;       // spawn area clear
+      if (W.opts.clear && W.opts.clear.some(c => Math.hypot(x - c.x, z - c.z) < c.r)) continue;
+      if (W.opts.arena && W.opts.treeDensity !== undefined && r() > W.opts.treeDensity) continue;
+      const h = W.heightAt(x, z);
+      const B = W.biomeAt(x, z);
+      if (h < WATER_LEVEL + 1.2 - 0.9 * B.wet || h > 36) continue;    // swamp birches stand on the hummocks
+      if (W.slopeAt(x, z) > 0.7) continue;
+      if (W.settlementWeight(x, z, rx) > 0.02) continue;
+      const density = Math.min(1, fbm(W.nTree, x * 0.006, z * 0.006, 3) * 0.5 + 0.5 + B.treeFill);
+      let p = density * density * 1.7 * B.trees;
+      if (B.fields > 0) {
+        const f = W.fieldAt(x, z, rx, B.fields);
+        if (f.crop >= 0) continue;
+        if (f.line) p = Math.max(p, 0.8);
+      }
+      if (r() > p) continue;
+      const kr = r() * (B.pine + B.birch + B.oak + B.bush);
+      const kind = kr < B.pine ? 'pine' : kr < B.pine + B.birch ? 'birch' : kr < B.pine + B.birch + B.oak ? 'oak' : 'bush';
+      const K = KINDS[kind];
+      const s = (kind === 'bush' ? 0.7 + r() * 0.6 : 0.75 + r() * 0.95) * (kind === 'bush' ? 1 : B.treeS);
       const item = { x, z, h, s, rot: r() * Math.PI * 2, sy: 0.85 + r() * 0.5 };
-      const list = h < 12 && r() < 0.35 ? birch : pine;
-      item.kind = list === pine ? 'pine' : 'birch';
-      item.r = 0.38 * s;                           // collision radius
+      item.kind = kind;
+      item.g = s * K.girth;                        // trunk thickness
+      item.r = 0.38 * item.g;                      // collision radius
       item.base = h - 0.25;
-      item.top = item.base + (list === pine ? 9.2 : 7.9) * s * item.sy;
+      item.top = item.base + K.top * s * item.sy;
       item.id = `${ch.cx},${ch.cz},${ch.trees.length}`;
       item.ch = ch;
-      list.push(item);
       ch.trees.push(item);
     }
     const q = new THREE.Quaternion(), sc = new THREE.Vector3(), pv = new THREE.Vector3();
@@ -178,9 +215,7 @@ export class Forest {
     this.hideTree(t);
 
     const parts = this.treeParts[t.kind];
-    // fresh cut radius (the trunk tapers 0.32 -> 0.20 over its 2.8 m)
-    const ly = t.stumpH / (t.s * t.sy);
-    const cutR = ly < 2.8 ? (0.32 - 0.12 * ly / 2.8) * t.s : 0;
+    const cutR = cutRadius(t, t.stumpH);               // fresh cut (the trunk tapers)
 
     // stump: the whole tree clipped below y
     const stump = new THREE.Group();
@@ -250,8 +285,7 @@ export class Forest {
     this.world.scene.remove(old);
     ch.extra.splice(ch.extra.indexOf(old), 1);
     const parts = this.treeParts[t.kind];
-    const ly = t.stumpH / (t.s * t.sy);
-    const cutR = ly < 2.8 ? (0.32 - 0.12 * ly / 2.8) * t.s : 0;
+    const cutR = cutRadius(t, t.stumpH);
     const stump = new THREE.Group();
     const body = clipGroup([new THREE.Plane(new THREE.Vector3(0, -1, 0), y)]);
     stump.add(body);
@@ -364,7 +398,7 @@ export class Forest {
     if (a < 1e-9) return null;
     this.forTreesNear((p0.x + p1.x) / 2, (p0.z + p1.z) / 2, t => {
       if (t.broken && t.stumpH < 0.6) return;
-      const R = 0.45 * t.s;
+      const R = 0.45 * t.g;
       const fx = p0.x - t.x, fz = p0.z - t.z;
       const b = fx * dx + fz * dz;
       const c = fx * fx + fz * fz - R * R;
@@ -408,10 +442,10 @@ export class Forest {
       const rr = t.r + r;
       const d2 = dx * dx + dz * dz;
       if (d2 < rr * rr && d2 > 1e-6) {
-        if (ram && Math.abs(ram.speed) > 1.2 + t.s * 1.3) {
+        if (ram && Math.abs(ram.speed) > 1.2 + t.g * 1.3) {
           this.breakTree(t, t.base + 0.35 + Math.random() * 0.3, ram.dx, ram.dz);
           ram.broke = true;
-          ram.size = Math.max(ram.size || 0, t.s);
+          ram.size = Math.max(ram.size || 0, t.g);
           return;
         }
         const d = Math.sqrt(d2);

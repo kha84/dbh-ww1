@@ -292,6 +292,7 @@ export class Tank {
     this.mgYaw = 0; this.mgPitch = 0;
     this.bags = [];                              // sandbags heaped on the hull: [{ face, mesh }]
     this.bump = 0;                               // slowed down after ramming a tree / house
+    this.goingK = 1;                             // ground speed factor (world.going: water, swamp mud), eased
     this.pushT = 0;                              // pushing another tank (since the last frames)
     this.vis = { hullBox: this.hull.box, turretBox: null, muzzleLen: 1.2, sightY: 0.5,
                  wheels: this.hull.wheels, wheelR: this.hull.wheelR };
@@ -650,7 +651,10 @@ export class Tank {
 
     if (dt > 0 && world) {
       const s0 = this.speed;
-      const maxS = this.maxSpeedEff;
+      // wading through water / swamp mud slows the tank down (eased: no sudden stop at the water's edge)
+      const go = world.going ? world.going(p.x, p.z) : 1;
+      this.goingK += (go - this.goingK) * Math.min(1, dt * 1.5);
+      const maxS = this.maxSpeedEff * this.goingK;
       if (this.bump > 0) this.bump -= dt;
       if (c.throttle !== 0 && maxS > 0) this.speed += c.throttle * this.accelEff * (this.bump > 0 ? 0.3 : 1) * dt;
       else this.speed *= Math.pow(0.25, dt);

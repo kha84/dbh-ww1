@@ -117,7 +117,7 @@ export function buildBridge(world, p) {
     obstacles.push(o);
   }
   // name boards at both ends
-  const tex = signTexture(`р. ${p.name}`, 'мост');
+  const tex = signTexture(p.title, 'мост');
   for (const u of [-L - 3, L + 3]) {
     const q = at(u, HW + 1.5), y = world.roadH(q.z);
     put(BOX, MAT.timberDark, q.x, y + 1.1, q.z, 0.1, 2.2, 0.1);

@@ -754,6 +754,7 @@ function exitVehicle(force = false) {
 const timer = new THREE.Timer();
 const HUD_DT = 1 / 15;
 let hudT = 0;
+let lastLand = null;                 // name of the biome the player is in (told when it changes)
 let despawnT = 0, repairRenderT = 0, craneRenderT = 0, stashRenderT = 0, engineNoiseT = 0;
 
 function frame(dt) {
@@ -940,8 +941,14 @@ function frame(dt) {
     const st = state.duel ? duelStatus(state) : { left: state.netDuel[0], total: state.netDuel[1] };
     topEl.innerHTML = `Дуэль &nbsp;·&nbsp; противников осталось: <b>${st.left} / ${st.total}</b>`;
   } else if (state.range) topEl.innerHTML = `Танкодром &nbsp;·&nbsp; мишеней поражено: <b>${tanks.filter(t => t.derelict && t.marks.length).length}</b>`;
-  else topEl.innerHTML = `Пройдено: <b>${((state.maxZ - state.startZ) / 1000).toFixed(2)} км</b> &nbsp;·&nbsp; Танков: <b>${state.kills}</b>` +
-    ` &nbsp;·&nbsp; Пехоты: <b>${state.infKills}</b> &nbsp;·&nbsp; ${sky.clock()}`;
+  else {
+    // the land around (biomes.js): told when it changes
+    const ap = walking ? player.position : v.root.position;
+    const land = world.biomeAt(ap.x, ap.z).name;
+    if (land !== lastLand) { if (lastLand) msg(`Местность: ${land}`, '#cfe3a8'); lastLand = land; }
+    topEl.innerHTML = `Пройдено: <b>${((state.maxZ - state.startZ) / 1000).toFixed(2)} км</b> &nbsp;·&nbsp; Танков: <b>${state.kills}</b>` +
+      ` &nbsp;·&nbsp; Пехоты: <b>${state.infKills}</b> &nbsp;·&nbsp; ${land} &nbsp;·&nbsp; ${sky.clock()}`;
+  }
   const heading = walking ? state.yaw : v.heading;
   minimap.draw(anchor, heading, { items, soldiers: infantry.soldiers, tanks, vehicle: state.vehicle, time: state.time });
   $('mmLabel').textContent = state.duel ? 'ДУЭЛЬ' : nextSettlementLabel(anchor);

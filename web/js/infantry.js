@@ -899,7 +899,7 @@ export class Infantry {
       if (Math.hypot(t.x - P.x, t.z - P.z) > R) return;
       let tx = t.x - threat.x, tz = t.z - threat.z;
       const tl = Math.hypot(tx, tz) || 1;
-      push(t.x + tx / tl * (t.r + 0.45), t.z + tz / tl * (t.r + 0.45), 0.55, 'tree');
+      push(t.x + tx / tl * (t.r + 0.45), t.z + tz / tl * (t.r + 0.45), t.kind === 'bush' ? 0.4 : 0.55, 'tree');
     });
     // knocked-out / abandoned tanks
     for (const t of this.tanks) {
