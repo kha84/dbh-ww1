@@ -157,7 +157,9 @@ web/js/noise.js         # perlin/fbm, hash, seeded rng
   (hold LMB for bursts),
   F fire extinguisher, R repair kit menu (digits choose the system), V third person / inside view, ESC pause
   (pause menu: resume / save / main menu), F5 quick save (road mode).
-  Inside: Q stand up / sit at the nearest station, 1/2/3 commander / gunner / driver. Commander = full control,
+  Inside: Q stand up / sit at the nearest station, 1/2/3 commander / gunner / driver.
+- Any mode: ` (Backquote) opens the spawn menu: any tank / APC in front of the player, an enemy with its crew (TankAI
+  'hunt', in a duel it joins the foes) or a free one without crew (`spawnVehicle`; the guest sends 'spawn' to the host). Commander = full control,
   gunner = gun only, driver = driving only; standing up = WASD moves around the compartment.
 
 ## Web debugging

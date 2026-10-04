@@ -172,6 +172,18 @@
   #pause button { font-size: 14px; padding: 8px 20px; }
   #victory h2 { font-size: 40px; letter-spacing: 4px; color: #9fe07f; margin-bottom: 18px; }
   #victory p { font-size: 16px; margin-bottom: 8px; }
+  /* ---------- Spawn menu (` key) ---------- */
+  #spawn { justify-content: flex-start; padding: 40px 16px; overflow-y: auto; }
+  #spawn h2 { font-size: 24px; letter-spacing: 4px; color: #c9b48a; margin-bottom: 12px; }
+  #spawn .h { color: #c9b48a; letter-spacing: 2px; font-size: 12px; margin: 14px 0 6px; }
+  #spawn .grid { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; max-width: 900px; }
+  #spawn button { padding: 7px 14px; font-size: 14px; background: #3f4a33; color: #eee; border: 1px solid #7d8b6d;
+    border-radius: 5px; cursor: pointer; }
+  #spawn button:hover { background: #5c6b4a; }
+  #spawn button small { color: #a9b59a; margin-left: 5px; }
+  #spawn .team button.on { background: #6f8058; border-color: #e8c96a; color: #e8c96a; }
+  #spawn .team button.on.foe { background: #6b3a30; border-color: #ff9a7a; color: #ffb59a; }
+  #spawn .foot { margin-top: 16px; font-size: 12px; color: #9aa98c; }
 
   /* ---------- Main menu ---------- */
   #menu { position: fixed; inset: 0; z-index: 120; background: radial-gradient(ellipse at 50% 30%, #2c3324, #121410 70%);
@@ -284,6 +296,14 @@
 
 <div id="repair"></div>
 
+<div id="spawn" class="overlay hidden">
+  <h2>ТЕХНИКА</h2>
+  <div class="team"><button id="spFoe">Противник (экипаж)</button><button id="spFree">Свободная (без экипажа)</button></div>
+  <div class="h">ТАНКИ</div><div class="grid" id="spTanks"></div>
+  <div class="h">БРОНЕТРАНСПОРТЁРЫ</div><div class="grid" id="spApcs"></div>
+  <div class="foot">Клик — заспавнить перед собой · ` или ESC — закрыть</div>
+</div>
+
 <div id="pause" class="overlay hidden">
   <h2>ПАУЗА</h2>
   <table>
@@ -316,6 +336,7 @@
     <tr><td></td><td class="h">БРОНЕТРАНСПОРТЁР</td></tr>
     <tr><td class="k">E спереди / сзади</td><td>сесть за управление / в десантное отделение</td></tr>
     <tr><td class="k">десант: 1 2 3, ЛКМ, R</td><td>своё оружие: выбрать, стрелять через борт / из люка, перезарядить; Q — встать, пересесть</td></tr>
+    <tr><td class="k">` (Ё)</td><td>заспавнить любую технику — противника или свободную</td></tr>
     <tr><td class="k">ESC</td><td>пауза</td></tr>
   </table>
   <div id="netPanel" class="netbox hidden"></div>

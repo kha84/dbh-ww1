@@ -2,7 +2,8 @@
 import * as THREE from 'three';
 import { World, WATER_LEVEL, segBox } from './world.js';
 import { Tank, MODULE_NAMES, G } from './tanks.js';
-import { HULLS, STARTER_TANK, makePart } from './parts.js';
+import { HULLS, STARTER_TANK, TANK_TIERS, APC_TIERS, makePart } from './parts.js';
+import { DEFS } from './tankdefs/index.js';
 import { Combat, Effects, describeHit } from './combat.js';
 import { EnemyDirector, TankAI } from './ai.js';
 import { Items, CANISTER_L, buildItemMesh } from './items.js';
@@ -74,6 +75,7 @@ const state = {
   stashPage: 'main',
   hold: null,
   repairOpen: false, repairTarget: null,
+  spawnOpen: false,              // the vehicle spawn menu (` key)
   nearTank: null, nearItem: null,
   zone: null,
   time: 0,
@@ -228,6 +230,64 @@ function spawnTank(key, x, z, heading, opts) {
   tanks.push(t);
   if (net && net.host) net.register(t);
   return t;
+}
+
+// debug / sandbox spawn (` key): any vehicle in front of the player - an enemy with its crew (hunts the player) or
+// a free one without crew. The guest asks the host (the host runs the world and the AI).
+function spawnVehicle(key, foe, x, z, heading) {
+  if (!HULLS[key]) return null;
+  const p = new THREE.Vector3(x, 0, z);
+  clampToBounds(world, p, 12);
+  let t;
+  if (foe) {
+    const seats = (HULLS[key].troops || []).length;
+    const d = difficultyAt(p.z);
+    const troops = [];
+    if (dbg.get('noinfantry') !== '1') for (let i = 0; i < seats; i++) troops.push(soldierKit(Math.random, d));
+    t = director.makeTank(key, p, heading, Math.random, seats ? { troops, bags: 0 } : {});
+    tanks.push(t);
+    if (net && net.host) net.register(t);
+    director.ais.push(new TankAI(t, 'hunt', world, {}));
+    if (state.duel && !state.duel.over) state.duel.foes.push(t);
+  } else t = spawnTank(key, p.x, p.z, heading, { team: 'neutral' });
+  msg(`${foe ? 'Противник' : 'Свободная техника'}: ${t.def.name}`, foe ? '#ff9a7a' : '#9fe07f');
+  return t;
+}
+
+const spawnEl = $('spawn');
+let spawnFoe = true;
+function renderSpawnMenu() {
+  const btn = k => `<button data-k="${k}">${HULLS[k].name}<small>${DEFS[k] && DEFS[k].year || ''}</small></button>`;
+  $('spTanks').innerHTML = TANK_TIERS.map(btn).join('');
+  $('spApcs').innerHTML = APC_TIERS.map(btn).join('');
+  $('spFoe').className = spawnFoe ? 'on foe' : '';
+  $('spFree').className = spawnFoe ? '' : 'on';
+  for (const b of spawnEl.querySelectorAll('.grid button')) {
+    b.onclick = e => { e.stopPropagation(); setSpawnMenu(false); spawnAhead(b.dataset.k, spawnFoe); };
+  }
+}
+$('spFoe').onclick = e => { e.stopPropagation(); spawnFoe = true; renderSpawnMenu(); };
+$('spFree').onclick = e => { e.stopPropagation(); spawnFoe = false; renderSpawnMenu(); };
+spawnEl.addEventListener('click', e => { if (e.target === spawnEl) setSpawnMenu(false); });
+function setSpawnMenu(v) {
+  state.spawnOpen = v;
+  spawnEl.classList.toggle('hidden', !v);
+  if (v) { for (const k in keys) keys[k] = false; state.fireHeld = state.mgHeld = false; renderSpawnMenu(); }
+  if (v && locked) document.exitPointerLock();
+  if (!v && !locked) canvas.requestPointerLock()?.catch?.(() => {});
+}
+// in front of the player (along the look): a free vehicle close by, an enemy further off, facing the player
+function spawnAhead(key, foe) {
+  const d = camera.getWorldDirection(new THREE.Vector3());
+  d.y = 0;
+  if (d.lengthSq() < 1e-6) d.set(0, 0, 1);
+  d.normalize();
+  const from = state.vehicle ? state.vehicle.root.position : player.position;
+  const dist = foe ? 90 : (state.vehicle ? 16 : 11);
+  const x = from.x + d.x * dist, z = from.z + d.z * dist;
+  const heading = foe ? Math.atan2(-d.x, -d.z) : Math.atan2(d.x, d.z) + Math.PI / 2;
+  if (net && net.connected && !net.host) { net.send({ k: 'spawn', key, foe, x, z, h: heading }); msg(`${HULLS[key].name}: запрос хозяину игры`); return; }
+  spawnVehicle(key, foe, x, z, heading);
 }
 
 function removeTank(t) {
@@ -429,12 +489,19 @@ document.addEventListener('keydown', e => {
   if (e.code === 'Space' || e.code === 'Tab') e.preventDefault();
   if (e.code === 'F5') { e.preventDefault(); if (state.started && !e.repeat) saveGame(); return; }
   if (e.code === 'Escape') {
+    if (state.spawnOpen) { setSpawnMenu(false); return; }
     if (state.repairOpen) { closeRepair(); return; }
     if (state.crane) { closeCrane(); return; }
     if (state.stash) { closeStash(); return; }
     togglePause();
     return;
   }
+  if (e.code === 'Backquote' && !e.repeat && state.started && !state.over && (state.spawnOpen || !state.paused)) {
+    e.preventDefault();
+    setSpawnMenu(!state.spawnOpen);
+    return;
+  }
+  if (state.spawnOpen) return;
   if (e.repeat) { keys[e.code] = true; return; }
   keys[e.code] = true;
   if (!state.started || state.paused || state.over) return;
@@ -511,7 +578,7 @@ canvas.addEventListener('click', () => {
 });
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 document.addEventListener('mousedown', e => {
-  if (!state.started || state.paused || state.over) return;
+  if (!state.started || state.paused || state.over || state.spawnOpen) return;
   sfx.resume();
   if (e.button === 0 && locked && troopShoot()) state.fireHeld = true;
   else if (e.button === 0 && locked && state.mode === 'drive') { if (state.wsel === 'mg') state.mgHeld = true; else state.fireReq = true; }
@@ -526,7 +593,7 @@ document.addEventListener('mouseup', e => {
 });
 document.addEventListener('pointerlockchange', () => {
   locked = document.pointerLockElement === canvas;
-  if (!locked && state.started && !state.paused && !state.over) setPause(true);
+  if (!locked && state.started && !state.paused && !state.over && !state.spawnOpen) setPause(true);
 });
 
 const pauseEl = $('pause');
@@ -959,7 +1026,7 @@ function animate(t) {
   const dt = Math.min(0.05, timer.getDelta());
   // network play: the world does not stop for a pause
   if (!pipeline.quality) return;                  // the renderer is still starting up (boot)
-  if ((!state.paused || (net && net.connected)) && state.started && !state.over) frame(dt);
+  if ((!(state.paused || state.spawnOpen) || (net && net.connected)) && state.started && !state.over) frame(dt);
   pipeline.render();
 }
 
@@ -1125,7 +1192,7 @@ async function boot() {
 function netCtx() {
   return {
     state, player, playerVel, camera, scene, world, tanks, items, combat, guns, infantry, director, fx, sfx, sky, MODE, SEED, CFG,
-    spawnTank, removeTank, msg, showHit, describeHit, damagePlayer, troopSeat,
+    spawnTank, spawnVehicle, removeTank, msg, showHit, describeHit, damagePlayer, troopSeat,
     duelStatus: () => duelStatus(state),
     enterVehicle: t => enterTank(t),
     exitVehicle: () => { if (state.mode === 'drive') exitVehicle(true); },

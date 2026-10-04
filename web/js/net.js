@@ -219,7 +219,7 @@ const hpOf = t => Object.fromEntries(HP_KEYS.map(k => [k, t.hp[k]]));
 
 // ===================================================================== the game side
 // G: what the game gives: { state, player, playerVel, camera, scene, world, tanks, items, combat, guns, infantry,
-//   director, fx, sfx, sky, MODE, SEED, CFG, spawnTank, removeTank, msg, showHit, describeHit, damagePlayer,
+//   director, fx, sfx, sky, MODE, SEED, CFG, spawnTank, spawnVehicle, removeTank, msg, showHit, describeHit, damagePlayer,
 //   enterVehicle(t, passengerRole), exitVehicle(), troopSeat(), startPos(), onVictory(text), onLost(text), ui }
 export class Net {
   constructor(G, role) {
@@ -545,6 +545,8 @@ export class Net {
     this.ui.status('Сеть: второй игрок в игре');
     this.ui.connected();
   }
+  // the guest spawns a vehicle (` menu): the host makes it (and its AI)
+  on_spawn(m) { this.G.spawnVehicle(m.key, !!m.foe, m.x, m.z, m.h); }
   on_m(m) {
     const G = this.G;
     this.setRemote(m.P);
