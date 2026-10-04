@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { World, WATER_LEVEL, segBox } from './world.js';
 import { Tank, MODULE_NAMES, G } from './tanks.js';
-import { HULLS, STARTER_TANK, TANK_TIERS, APC_TIERS, makePart } from './parts.js';
+import { HULLS, STARTER_TANK, TANK_TIERS, APC_TIERS, CAR_TIERS, MOTO_TIERS, makePart } from './parts.js';
 import { DEFS } from './tankdefs/index.js';
 import { Combat, Effects, describeHit } from './combat.js';
 import { EnemyDirector, TankAI } from './ai.js';
@@ -13,7 +13,7 @@ import { Sfx } from './audio.js';
 import { Guns, WEAPONS, makeWeapon } from './weapons.js';
 import { Infantry } from './infantry.js';
 import { ViewModel } from './viewmodel.js';
-import { difficultyAt, soldierKit } from './loot.js';
+import { difficultyAt, soldierKit, pickCarKey, pickMotoKey } from './loot.js';
 import { rng } from './noise.js';
 import { worldOptions, setupDuel, setupRange, duelStatus, clampToBounds, MODE_NAMES } from './modes.js';
 import { showMenu } from './menu.js';
@@ -32,6 +32,9 @@ import { createMotion } from './game/motion.js';
 import { createNetUI } from './game/netui.js';
 import { warmUp } from './game/warmup.js';
 import { createGrass } from './game/grass.js';
+import { createFlight } from './game/flight.js';
+import { Plane } from './planes.js';
+import { PLANES, PLANE_TIERS } from './planedefs/index.js';
 
 // debug flags: ?nowater=1 ?noclouds=1 ?notrees=1 ?notanks=1 ?noenemies=1 ?noinfantry=1 ?noshadows=1 ?nofog=1
 //              ?waterred=1 ?watery=N ?noaa=1 ?logdepth=1 ?seed=N ?god=1 ?start=Z ?view=N
@@ -95,6 +98,7 @@ const sky = createSky(scene, camera, dbg, world.VIEW * 128);
 const pipeline = createPipeline(renderer, scene, camera, sky, dbg);     // quality is set once the renderer is up (boot)
 const grass = createGrass(scene, world);
 pipeline.onQuality = Q => grass.setLevel(dbg.get('nograss') === '1' ? 0 : Q.grass);
+world.craters.onAdded = c => grass.refresh(c.x, c.z, c.r * 1.6);     // no grass in the fresh pits
 
 // ================== world systems ==================
 const fx = new Effects(scene);
@@ -112,6 +116,7 @@ director.items = items;
 items.onTaken = p => director.bagTaken(p);
 const workshop = new Workshop(scene, world);
 const tanks = [];
+const planes = [];                   // aeroplanes (planes.js): parked on the airfields, flown, crashed
 
 // data of a loot item (settlements, wrecks) -> the object the pickup carries
 function itemData(it) {
@@ -156,6 +161,37 @@ function garrison(s) {
   infantry.spawnSquad(h.x + side * 7 * Math.cos(h.rot), h.z - side * 7 * Math.sin(h.rot), kits, h.rot, r, { patrol, guardDir: h.rot + (side > 0 ? Math.PI / 2 : -Math.PI / 2) });
 }
 
+// free cars / motorcycles left in the settlements (once per game; the host's world in network play)
+function parkCars(s) {
+  const plan = s.plan;
+  if (NET === 'guest' || parked.has(plan.k) || dbg.get('notanks') === '1' || MODE !== 'road') return;
+  parked.add(plan.k);
+  const r = rng((plan.seed ^ 0x5bd1e995) >>> 0);
+  const d = difficultyAt(plan.z);
+  const n = plan.type === 'town' ? 1 + Math.floor(r() * 2.2) : plan.type === 'village' ? (r() < 0.55 ? 1 : 0)
+    : plan.type === 'gas' ? (r() < 0.65 ? 1 : 0) : r() < 0.4 ? 1 : 0;
+  for (let i = 0; i < n; i++) {
+    const key = r() < 0.6 ? pickCarKey(r, d) : pickMotoKey(r, d);
+    let x, z, hd;
+    if (s.houses.length) {
+      const h = s.houses[Math.floor(r() * s.houses.length)].f;
+      const side = h.x > world.roadX(h.z) ? -1 : 1;                 // between the house and the road
+      x = h.x + side * 8 * Math.cos(h.rot) + Math.sin(h.rot) * (r() - 0.5) * 6;
+      z = h.z - side * 8 * Math.sin(h.rot) + Math.cos(h.rot) * (r() - 0.5) * 6;
+      hd = h.rot + (r() < 0.5 ? 0 : Math.PI);
+    } else {
+      const zz = plan.z + (r() - 0.5) * plan.halfLen;
+      const side = r() < 0.5 ? -1 : 1, hd0 = world.roadHeading(zz);
+      x = world.roadX(zz) + Math.cos(hd0) * side * 11; z = zz - Math.sin(hd0) * side * 11;
+      hd = hd0 + (r() - 0.5) * 0.6;
+    }
+    const p = new THREE.Vector3(x, world.heightAt(x, z), z);
+    world.collideObstacles(p, 2.2, null, 2);
+    if (world.heightAt(p.x, p.z) < WATER_LEVEL + 0.5) continue;
+    spawnTank(key, p.x, p.z, hd, { team: 'neutral', fuelFrac: 0.25 + r() * 0.6, kits: r() < 0.2 ? 1 : 0 });
+  }
+}
+
 world.onSettlementBuilt = s => {
   for (const it of s.items) {
     items.add(it.id, it.type, it.x, it.z, itemData(it), it.y ?? null);
@@ -164,7 +200,17 @@ world.onSettlementBuilt = s => {
   }
   workshop.onBuilt(s);
   garrison(s);
+  parkCars(s);
+  // the planes parked on an airfield (those flown away / saved elsewhere are not set out again)
+  for (const sp of s.planes || []) {
+    if (planesGone.has(sp.id) || planes.some(p => p.id === sp.id)) continue;
+    flight.spawnPlane(sp.key, sp.x, sp.z, sp.heading, { id: sp.id, home: s.plan.k, fuel: PLANES[sp.key].fuel * 0.8 });
+  }
 };
+// planes of the airfields that were taken away (flown, wrecked): ids
+const planesGone = new Set();
+// settlements whose parked cars / motorcycles were set out already (once per game, like the garrisons)
+const parked = new Set();
 world.onHouseRuined = (x, y, z, size) => {
   const p = new THREE.Vector3(x, y, z);
   for (let i = 0; i < 14; i++) {
@@ -182,6 +228,8 @@ world.onHouseRuined = (x, y, z, size) => {
 world.onSettlementRemoved = s => {
   for (const it of s.items) items.remove(it.id, false);
   workshop.onRemoved(s);
+  // the planes still parked there go with it (a flown one stays where it was left)
+  for (const p of [...planes]) if (p.home === s.plan.k && !p.used && !p.wrecked && p !== state.plane) flight.removePlane(p);
 };
 
 // warm light inside the crew compartment (always in the scene so the light count never changes)
@@ -260,10 +308,13 @@ function renderSpawnMenu() {
   const btn = k => `<button data-k="${k}">${HULLS[k].name}<small>${DEFS[k] && DEFS[k].year || ''}</small></button>`;
   $('spTanks').innerHTML = TANK_TIERS.map(btn).join('');
   $('spApcs').innerHTML = APC_TIERS.map(btn).join('');
+  $('spCars').innerHTML = CAR_TIERS.map(btn).join('');
+  $('spMotos').innerHTML = MOTO_TIERS.map(btn).join('');
+  $('spPlanes').innerHTML = PLANE_TIERS.map(k => `<button data-k="${k}" data-plane="1">${PLANES[k].name}<small>${PLANES[k].year}</small></button>`).join('');
   $('spFoe').className = spawnFoe ? 'on foe' : '';
   $('spFree').className = spawnFoe ? '' : 'on';
   for (const b of spawnEl.querySelectorAll('.grid button')) {
-    b.onclick = e => { e.stopPropagation(); setSpawnMenu(false); spawnAhead(b.dataset.k, spawnFoe); };
+    b.onclick = e => { e.stopPropagation(); setSpawnMenu(false); if (b.dataset.plane) spawnPlaneAhead(b.dataset.k); else spawnAhead(b.dataset.k, spawnFoe); };
   }
 }
 $('spFoe').onclick = e => { e.stopPropagation(); spawnFoe = true; renderSpawnMenu(); };
@@ -288,6 +339,18 @@ function spawnAhead(key, foe) {
   const heading = foe ? Math.atan2(-d.x, -d.z) : Math.atan2(d.x, d.z) + Math.PI / 2;
   if (net && net.connected && !net.host) { net.send({ k: 'spawn', key, foe, x, z, h: heading }); msg(`${HULLS[key].name}: запрос хозяину игры`); return; }
   spawnVehicle(key, foe, x, z, heading);
+}
+
+// a free plane on the ground in front of the player, nose along the look (for a take-off run)
+function spawnPlaneAhead(key) {
+  const d = camera.getWorldDirection(new THREE.Vector3()).setY(0);
+  if (d.lengthSq() < 1e-6) d.set(0, 0, 1);
+  d.normalize();
+  const from = state.mode === 'fly' ? state.plane.root.position : state.vehicle ? state.vehicle.root.position : player.position;
+  const dist = 8 + PLANES[key].span * 0.6;
+  const x = from.x + d.x * dist, z = from.z + d.z * dist;
+  const p = flight.spawnPlane(key, x, z, Math.atan2(d.x, d.z), { id: `sp${net && !net.host ? 'g' : ''}${Date.now() % 1e7}` });
+  if (p) { p.used = true; msg(`Самолёт: ${PLANES[key].name} — E рядом с кабиной, чтобы сесть`, '#9fe07f'); }
 }
 
 function removeTank(t) {
@@ -353,7 +416,7 @@ function ownHitMsg(res) {
   if (res.fire) msg(res.fire === 'ammo' ? 'Боеукладка горит! Туши — F!' : 'Бензобак горит! Туши — F!', '#ff5a3a');
 }
 combat.onPlayerDamage = (amount) => damagePlayer(amount);
-combat.onExplosion = (pos, r, dmg, owner) => { infantry.explosion(pos, r, dmg, owner); if (net) net.explosion(pos, r, dmg); };
+combat.onExplosion = (pos, r, dmg, owner) => { infantry.explosion(pos, r, dmg, owner); blastVehicles(pos, r, dmg, owner); if (net) net.explosion(pos, r, dmg); };
 
 // crew of a burning enemy tank jumps out and fights on foot (soldiers who took the tank over keep their own kit)
 function bailOut(t) {
@@ -392,6 +455,7 @@ infantry.onBoard = (s, t, first) => {
 guns.onPlayerHit = (amount) => damagePlayer(amount, true);
 guns.onExplosion = (pos, r, dmg, owner) => {
   infantry.explosion(pos, r, dmg, owner);
+  blastVehicles(pos, r, dmg, owner);
   if (net) net.explosion(pos, r, dmg);
   if (troopShoot() && !combat.god) {
     const d = pos.distanceTo(camera.position);
@@ -401,6 +465,59 @@ guns.onExplosion = (pos, r, dmg, owner) => {
     if (d < r) damagePlayer(dmg * (1 - d / r) * 0.9);
   }
 };
+// cars and motorcycles: bullets go through the thin sheet metal (the engine, the tank, the men in it)
+guns.onSoftHit = (t, point, dmg, owner) => {
+  if (t.wrecked) return;
+  t.lastHitT = state.time;
+  const r = Math.random();
+  t.damage('hull', dmg * 0.12);
+  if (r < 0.25) t.damage('engine', dmg * 0.5);
+  else if (r < 0.4 && t.parts.fuel) { t.damage('fuel', dmg * 0.6); if (Math.random() < 0.08) t.startFire('fuel', t.team !== 'player'); }
+  if (t.playerInside && Math.random() < (t.car === 'moto' ? 0.5 : 0.3)) damagePlayer(dmg * 0.5, true);
+  else if (t.crew && Math.random() < (t.car === 'moto' ? 0.4 : 0.22)) {
+    t.crewHp -= dmg;
+    if (t.crewHp <= 0) softCrewKilled(t, owner);
+  }
+  if (t.troops && t.troops.length && t.team === 'enemy' && Math.random() < 0.3) director.dismount(t);
+  softWrecked(t, owner);
+};
+// a bullet in a plane (the plane the other player flies: told to its machine)
+guns.onPlaneHit = (p, point, dmg) => p.damage(dmg, point);
+Plane.onRemoteDamage = (p, dmg) => { if (net && net.connected) net.send({ k: 'phit', n: Math.round(dmg) }); };
+
+// a blast next to a car / motorcycle: the car is torn up, the men in it hurt
+function blastVehicles(pos, r, dmg, owner) {
+  for (const t of tanks) {
+    if (!t.soft || t.wrecked) continue;
+    const d = t.root.position.distanceTo(pos), R = r * 0.7;
+    if (d > R) continue;
+    const k = 1 - d / R;
+    t.damage('hull', dmg * k * 0.6);
+    t.damage('engine', dmg * k * 0.4);
+    if (t.playerInside && !combat.god) damagePlayer(dmg * k * 0.45);
+    if (t.crew && Math.random() < k * 1.4) softCrewKilled(t, owner);
+    if (t.troops && t.troops.length && t.team === 'enemy') { if (Math.random() < k) t.troops = []; else director.dismount(t); }
+    softWrecked(t, owner);
+  }
+}
+function softCrewKilled(t, owner) {
+  if (!t.crew) return;
+  t.killCrew();
+  director.release(t);
+  if (t.troops && t.troops.length && t.team === 'enemy') director.dismount(t);
+  if (t.team === 'enemy' && !t.counted && owner && (owner.player || (owner.tank && owner.tank === state.vehicle))) {
+    t.counted = true;
+    state.kills++;
+    msg(`Экипаж ${t.def.name} уничтожен — машину можно забрать`, '#9fe07f');
+  }
+}
+function softWrecked(t, owner) {
+  if (t.hp.hull > 0 || t.wrecked) return;
+  if (t.crew) softCrewKilled(t, owner);
+  fx.explosion(t.root.position.clone().setY(t.root.position.y + 1), 1, false);
+  t.makeWreck();
+}
+
 guns.onGrenadeTank = (t, point, dir, D, owner) => {
   const vol = t.hitVolumes()[0];
   combat.hitTank(t, vol, point, dir, { pen: D.pen, dmg: 0.8, owner });
@@ -469,6 +586,8 @@ function netDeath(reason) {
   state.hp = 0;
   msg(`${reason} Возрождение через 10 с рядом с напарником.`, '#ff9a7a');
   if (state.mode === 'drive') exitVehicle(true);
+  if (state.mode === 'fly') flight.abandon();
+  if (state.para) flight.cutPara();
   state.fireHeld = false; state.aim = false;
 }
 function netRespawn() {
@@ -506,6 +625,8 @@ document.addEventListener('keydown', e => {
   keys[e.code] = true;
   if (!state.started || state.paused || state.over) return;
   sfx.resume();
+  if (state.mode === 'fly') { flight.key(e.code); return; }       // flying: game/flight.js
+  if (state.para) return;                                          // under the parachute
   if (e.code === 'KeyE') tryToggleVehicle();
   if (e.code === 'KeyC' && state.mode === 'walk') state.crouch = !state.crouch;
   if (e.code === 'KeyF') pressF();
@@ -550,6 +671,7 @@ document.addEventListener('keyup', e => { keys[e.code] = false; });
 
 document.addEventListener('mousemove', e => {
   if (!locked || state.paused || !state.started || state.over) return;
+  if (state.mode === 'fly') { flight.mouse(e.movementX, e.movementY); return; }
   if (state.mode === 'walk') {
     state.yaw -= e.movementX * MOUSE_SENS;
     state.pitch -= e.movementY * MOUSE_SENS;
@@ -580,6 +702,7 @@ canvas.addEventListener('contextmenu', e => e.preventDefault());
 document.addEventListener('mousedown', e => {
   if (!state.started || state.paused || state.over || state.spawnOpen) return;
   sfx.resume();
+  if (state.mode === 'fly') { if (e.button === 0 && locked) state.fireHeld = true; if (e.button === 2) state.aim = true; return; }
   if (e.button === 0 && locked && troopShoot()) state.fireHeld = true;
   else if (e.button === 0 && locked && state.mode === 'drive') { if (state.wsel === 'mg') state.mgHeld = true; else state.fireReq = true; }
   if (e.button === 2 && troopShoot()) state.aim = true;
@@ -635,7 +758,7 @@ function saveGame() {
   if (NET) { msg('В сетевой игре сохранение недоступно'); return; }
   if (state.over) return;
   try {
-    const data = snapshot({ state, player, items, tanks, director, world, workshop, infantry, garrisoned, SEED });
+    const data = snapshot({ state, player, items, tanks, director, world, workshop, infantry, garrisoned, SEED, planes, planesGone, parked });
     data.tod = sky.time.tod;
     const where = nextSettlementLabel(state.vehicle ? state.vehicle.root.position : player.position).replace(/^Впереди: /, 'у ');
     const meta = writeSave(data, `Мир #${SEED}, ${data.km} км — ${where}`);
@@ -747,6 +870,12 @@ let prefView = 'third';
 function tryToggleVehicle(asDriver = false) {
   if (state.mode === 'walk') {
     const v = state.nearTank;
+    // a plane close by (and no tank closer)
+    if (state.nearPlane && !items.hands && (!v || tankDist(v, player.position) > 1.2)) {
+      if (net && !net.claimPlane(state.nearPlane)) return;
+      flight.enter(state.nearPlane);
+      return;
+    }
     if (!v) return;
     if (v.wrecked) { msg('Танк сгорел — внутрь не сесть'); return; }
     if (v.crew) { msg('В этом танке живой экипаж!', '#ff9a7a'); return; }
@@ -806,6 +935,7 @@ function exitVehicle(force = false) {
     state.pitch = 0;
     state.mode = 'walk';
     v.playerInside = false;
+    v.playerSeat = null;
     v.aimPoint = null;
     state.vehicle = null;
     state.velY = 0;
@@ -827,10 +957,12 @@ let despawnT = 0, repairRenderT = 0, craneRenderT = 0, stashRenderT = 0, engineN
 function frame(dt) {
   state.time += dt;
   const walking = state.mode === 'walk';
+  const flying = state.mode === 'fly';
   const v = state.vehicle;
-  const anchor = walking ? player.position : v.root.position;
+  const pl = state.plane;
+  const anchor = walking ? player.position : flying ? pl.root.position : v.root.position;
 
-  world.update(anchor, 4);
+  world.update(anchor, flying ? 9 : 4);
   world.animate(dt);
   const created = director.update(anchor, tanks);
   // network play: the enemy turns up around the other player too
@@ -842,23 +974,27 @@ function frame(dt) {
   // AI and player control (network play: the other player is a target too; the guest runs no AI)
   const target = walking
     ? { id: 'local', pos: player.position, vel: playerVel, isTank: false }
+    : flying ? { id: 'local', pos: pl.root.position, vel: pl.vel, isTank: false, air: true }
     : { id: 'local', pos: v.root.position, vel: v.velocity, isTank: true, tank: v };
   if (walking) target.crouch = state.crouch;
   const targets = [];
-  if (!state.over && !state.dead) targets.push(target);
+  if (!state.over && !state.dead && !(flying && pl.alt > 150) && !(state.para && player.position.y - world.heightAt(player.position.x, player.position.z) > 60)) targets.push(target);
   if (net) { const rt = net.remoteTarget(); if (rt) targets.push(rt); }
   combat.now = state.time;
   if (!net || net.host) {
     director.think(dt, state.time, targets, combat);
     infantry.update(dt, { now: state.time, targets, tanks });
   } else net.puppets(dt);
-  if (!walking) updateDriveControls();
+  if (!walking && !flying) updateDriveControls();
+  if (flying) flight.update(dt);
 
   for (const t of tanks) t.update(dt, world, tanks);
+  for (const p of planes) p.update(dt, world);
   if (world.opts.bounds) for (const t of tanks) clampToBounds(world, t.root.position);
   if (net) net.update(dt);
 
-  if (walking) updateWalk(dt);
+  if (state.mode === 'walk') { if (state.para) flight.updatePara(dt); else updateWalk(dt); }
+  else if (state.mode === 'fly') flight.updateCamera(dt);
   else {
     if (state.view === 'inside' && !state.seat) updateInsideWalk(dt);
     updateDriveCamera(dt);
@@ -869,8 +1005,9 @@ function frame(dt) {
     if (cr.warn) msg(cr.warn, '#e8c96a');
   }
 
-  // extinguishing & burning
+  // extinguishing & burning (a car / motorcycle smashed to nothing is a wreck)
   for (const t of [...tanks]) {
+    if (t.soft && !t.wrecked && t.hp.hull <= 0) softWrecked(t, null);
     const f = t.fire;
     if (f && f.extinguish > 0) {
       f.extinguish -= dt;
@@ -886,15 +1023,28 @@ function frame(dt) {
     }
     if (t.burnOut) {
       t.burnOut = false;
-      if (t.playerInside) { t.makeWreck(); gameOver('Танк сгорел вместе с экипажем.'); }
+      if (t.playerInside && t.soft) { t.makeWreck(); }
+      else if (t.playerInside) { t.makeWreck(); gameOver('Танк сгорел вместе с экипажем.'); }
       else { t.makeWreck(); msg(`${t.def.name} сгорел`); }
     }
   }
-  if (v && v.wrecked && !state.over) gameOver('Танк уничтожен.');
+  // planes on fire / smoking wrecks
+  for (const p of planes) {
+    if (p.home != null && (p.used || p.wrecked)) planesGone.add(p.id);        // not set out on its airfield again
+    if (p.burning > 0) fx.burn(p.root.position.clone().setY(p.root.position.y + 0.5), p.wrecked ? 1 : 0.8);
+    else if (p.wrecked && (p.smokeT = (p.smokeT || 0) + dt) < 120) fx.smokeTrail(p.root.position.clone().setY(p.root.position.y + 1), 1);
+    else if (!p.wrecked && !p.onGround && p.engineHp < 40) fx.smokeTrail(p.local(new THREE.Vector3(0, 0, p.def.len * 0.3)), 1.5);
+  }
+  if (v && v.wrecked && !state.over) {
+    if (v.soft) { exitVehicle(true); damagePlayer(30); msg(`${v.def.name} уничтожен — вас выбросило`, '#ff9a7a'); }
+    else gameOver('Танк уничтожен.');
+  }
   if (state.duel && !state.duel.over && duelStatus(state).left === 0) victory();
 
   // combat
   combat.tanks = tanks;
+  combat.planes = planes;
+  guns.planes = planes;
   combat.foot = { pos: player.position, active: walking };
   combat.listener.copy(camera.position);
   combat.update(dt);
@@ -922,7 +1072,21 @@ function frame(dt) {
     state.nearTank = best;
     updateHold(dt);
     state.zone = null; state.zoneText = null;
+    state.nearPlane = state.para ? null : flight.nearPlane(player.position);
+  } else if (flying) {
+    state.nearTank = null; state.nearPlane = null;
+    state.slot = null; state.nearItem = null; state.nearPanel = null;
+    state.zone = null; state.zoneText = null;
+    $('hold').style.display = 'none';
   } else {
+    // a car / motorcycle: the player is seen in the driver's seat from outside; hard knocks hurt
+    v.playerSeat = v.soft && state.view !== 'inside' ? 'driver' : null;
+    if (v.crash > 0) {
+      const k = v.crash;
+      v.crash = 0;
+      if (k > 9) { damagePlayer((k - 9) * 2.5); msg(`Авария! ${v.def.name} разбит${v.hp.hull < 30 ? ' вдребезги' : ''}`, '#ff9a7a'); }
+      else msg('Удар!', '#e8c96a');
+    }
     state.nearTank = null;
     state.slot = null; state.nearItem = null; state.nearPanel = null;
     state.zone = currentZone(v.root.position);
@@ -955,6 +1119,10 @@ function frame(dt) {
     }
     if (!net || net.host) infantry.prune(anchor, 700, ra);           // (the guest's soldiers come from the host)
     director.prune(anchor);
+    for (const p of [...planes]) {
+      if (p === pl || p.remote || p.remoteUse) continue;
+      if (Math.hypot(p.root.position.x - anchor.x, p.root.position.z - anchor.z) > (p.used ? 3000 : 1600)) flight.removePlane(p);
+    }
     for (const p of [...items.pickups.values()]) {
       if (p.id.startsWith('drop:') && Math.hypot(p.pos.x - anchor.x, p.pos.z - anchor.z) > 1200) items.remove(p.id, false);
     }
@@ -975,7 +1143,8 @@ function frame(dt) {
   $('sight').style.display = !walking && state.sight && camera.fov < 30 ? 'block' : 'none';
   $('crosshair').style.display = !walking && state.sight ? 'none' : 'block';
   $('crosshair').classList.toggle('driving', !walking && canGun());
-  if (!walking && canGun() && v.parts.gun && state.wsel === 'gun') {
+  if (flying) flight.hudMarks();
+  else if (!walking && canGun() && v.parts.gun && state.wsel === 'gun') {
     const ip = predictImpact(v).project(camera);
     if (ip.z < 1) {
       gunMark.style.display = 'block';
@@ -1001,6 +1170,7 @@ function frame(dt) {
   hudT = HUD_DT;
   updateSystemsPanel(v || state.nearTank, !!v);
   updateGauge(v);
+  if (flying) flight.hud(); else flight.hideHud();
   updateInventory();
   updateWeaponPanel();
   updatePrompt();
@@ -1010,13 +1180,13 @@ function frame(dt) {
   } else if (state.range) topEl.innerHTML = `Танкодром &nbsp;·&nbsp; мишеней поражено: <b>${tanks.filter(t => t.derelict && t.marks.length).length}</b>`;
   else {
     // the land around (biomes.js): told when it changes
-    const ap = walking ? player.position : v.root.position;
+    const ap = anchor;
     const land = world.biomeAt(ap.x, ap.z).name;
     if (land !== lastLand) { if (lastLand) msg(`Местность: ${land}`, '#cfe3a8'); lastLand = land; }
     topEl.innerHTML = `Пройдено: <b>${((state.maxZ - state.startZ) / 1000).toFixed(2)} км</b> &nbsp;·&nbsp; Танков: <b>${state.kills}</b>` +
       ` &nbsp;·&nbsp; Пехоты: <b>${state.infKills}</b> &nbsp;·&nbsp; ${land} &nbsp;·&nbsp; ${sky.clock()}`;
   }
-  const heading = walking ? state.yaw : v.heading;
+  const heading = walking ? state.yaw : flying ? pl.heading : v.heading;
   minimap.draw(anchor, heading, { items, soldiers: infantry.soldiers, tanks, vehicle: state.vehicle, time: state.time });
   $('mmLabel').textContent = state.duel ? 'ДУЭЛЬ' : nextSettlementLabel(anchor);
 }
@@ -1067,6 +1237,13 @@ const { selectWeapon, startReload, lookDir, updateWeapon, updateViewModel, toggl
 const { currentZone, serviceTank } = createService(ctx);
 const { openRepair, closeRepair, renderRepair, doRepair, openCrane, closeCrane, renderCrane, doCrane } = createMenus(ctx);
 const { placeSandbag, stowPlate, loadShells, sumAmmo, grenText, openStash, closeStash, renderStash, doStash, dropHeld, paintJob, nextSpray, updateHold } = createStash(ctx);
+const flight = createFlight(Object.assign(ctx, {
+  scene, planes,
+  closeMenus: () => { closeStash(); closeRepair(); closeCrane(); },
+  zoneAt: p => currentZone(p, true),
+  explosion: (pos, r, dmg) => { infantry.explosion(pos, r, dmg, flight.owner); blastVehicles(pos, r, dmg, flight.owner); },
+  gameOver: text => gameOver(text),
+}));
 const { topEl, gunMark, fireEl, updateSystemsPanel, updateInventory, updateGauge, updateWeaponPanel, nextSettlementLabel, markers, minimap, updatePrompt } = createPanels(ctx);
 
 // ================== boot ==================
@@ -1124,9 +1301,13 @@ function enterTank(t) {
 
 // continue a saved game
 function restoreGame(d) {
-  const v = restore({ state, player, items, director, world, workshop, infantry, garrisoned, spawnTank, camera }, d);
+  const v = restore({ state, player, items, director, world, workshop, infantry, garrisoned, spawnTank, camera, planes, planesGone, parked,
+    spawnPlane: (key, x, z, h, o) => flight.spawnPlane(key, x, z, h, o) }, d);
   if (d.tod != null && !dbg.has('tod')) sky.setTime(d.tod);
   if (v) enterTank(v);
+  const fp = d.flying && planes.find(p => p.id === d.flying);
+  if (fp) flight.enter(fp);
+  else if (d.para) flight.startPara(new THREE.Vector3(...d.para.vel), d.para.open);
   if (d.state.view === 'inside' && state.vehicle) enterInside();
   msg(`Загружена игра: мир #${SEED}, пройдено ${d.km} км`, '#e8c96a');
   $('seedInfo').textContent = `Мир #${SEED} — повторить: ?seed=${SEED}`;
@@ -1146,7 +1327,7 @@ async function boot() {
   const startZ = parseFloat(dbg.get('start') || '0');
   const p0 = LOAD ? new THREE.Vector3(...LOAD.player) : MODE === 'duel' ? new THREE.Vector3(0, 0, -235)
     : MODE === 'range' ? new THREE.Vector3(6, 0, -270) : new THREE.Vector3(world.roadX(startZ), 0, startZ);
-  if (LOAD) restoreBefore({ items, director, world, workshop, garrisoned }, LOAD);
+  if (LOAD) restoreBefore({ items, director, world, workshop, garrisoned, planesGone, parked }, LOAD);
   const total = world.pendingChunks(p0);
   while (world.pendingChunks(p0) > 0) {
     world.update(p0, 30);
@@ -1191,7 +1372,7 @@ async function boot() {
 // ================== network play (net.js) ==================
 function netCtx() {
   return {
-    state, player, playerVel, camera, scene, world, tanks, items, combat, guns, infantry, director, fx, sfx, sky, MODE, SEED, CFG,
+    state, player, playerVel, camera, scene, world, tanks, planes, flight, items, combat, guns, infantry, director, fx, sfx, sky, MODE, SEED, CFG,
     spawnTank, spawnVehicle, removeTank, msg, showHit, describeHit, damagePlayer, troopSeat,
     duelStatus: () => duelStatus(state),
     enterVehicle: t => enterTank(t),
@@ -1216,8 +1397,8 @@ boot();
 renderer.setAnimationLoop(animate);      // (waits for the renderer to initialise)
 
 // handle for debugging / automated tests
-window.game = { renderer, scene, sky, pipeline, grass, state, tanks, world, items, combat, director, workshop, player, camera, keys, spawnTank, fx, frame, MODE, saveGame,
-  snapshot: () => snapshot({ state, player, items, tanks, director, world, workshop, infantry, garrisoned, SEED }),
+window.game = { renderer, scene, sky, pipeline, grass, state, tanks, planes, flight, world, items, combat, director, workshop, player, camera, keys, spawnTank, fx, frame, MODE, saveGame,
+  snapshot: () => snapshot({ state, player, items, tanks, director, world, workshop, infantry, garrisoned, SEED, planes, planesGone, parked }),
   guns, infantry, SEED, selectWeapon, viewModel, startReload, placeSandbag, mgAction, toggleTankWeapon, updateDriveControls,
   openStash, doStash, stowPlate, loadShells,
   enterInside, leaveInside, sitAt, pressF, pressQ, dropHeld, tryToggleVehicle, openCrane, doCrane, get net() { return net; } };

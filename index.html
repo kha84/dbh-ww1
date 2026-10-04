@@ -99,6 +99,13 @@
   #repair .info b { color: #ddd; font-weight: 500; }
 
   #gauge { position: fixed; right: 16px; bottom: 16px; z-index: 10; padding: 10px 14px; display: none; min-width: 210px; text-align: right; }
+  #flight { position: fixed; right: 16px; bottom: 16px; z-index: 10; padding: 10px 14px; display: none; min-width: 230px; text-align: right; }
+  #flight .fs { font-size: 38px; font-weight: 600; line-height: 1; color: #e8dcc0; }
+  #flight .fs small { font-size: 14px; color: #b7a97f; font-weight: 400; }
+  #flight .fn { font-size: 12px; color: #b7a97f; letter-spacing: 2px; text-transform: uppercase; margin: 3px 0 6px; }
+  #flight .warn { color: #ff6a4a; font-weight: 600; margin-top: 4px; }
+  #stickMark { position: fixed; left: calc(50% - 6px); top: calc(50% - 6px); width: 12px; height: 12px; border: 2px solid rgba(232,201,106,.8);
+    border-radius: 50%; pointer-events: none; z-index: 9; display: none; }
   #gaugeSpeed { font-size: 38px; font-weight: 600; line-height: 1; color: #e8dcc0; }
   #gaugeSpeed small { font-size: 14px; color: #b7a97f; font-weight: 400; }
   #gaugeName { font-size: 12px; color: #b7a97f; letter-spacing: 2px; text-transform: uppercase; margin: 3px 0 6px; }
@@ -283,6 +290,8 @@
 
 <div id="weapon" class="panel"></div>
 
+<div id="flight" class="panel"></div>
+<div id="stickMark"></div>
 <div id="gauge" class="panel">
   <div id="gaugeSpeed">0<small> км/ч</small></div>
   <div id="gaugeName"></div>
@@ -301,6 +310,9 @@
   <div class="team"><button id="spFoe">Противник (экипаж)</button><button id="spFree">Свободная (без экипажа)</button></div>
   <div class="h">ТАНКИ</div><div class="grid" id="spTanks"></div>
   <div class="h">БРОНЕТРАНСПОРТЁРЫ</div><div class="grid" id="spApcs"></div>
+  <div class="h">АВТОМОБИЛИ</div><div class="grid" id="spCars"></div>
+  <div class="h">МОТОЦИКЛЫ</div><div class="grid" id="spMotos"></div>
+  <div class="h">САМОЛЁТЫ (всегда свободные)</div><div class="grid" id="spPlanes"></div>
   <div class="foot">Клик — заспавнить перед собой · ` или ESC — закрыть</div>
 </div>
 
@@ -333,6 +345,16 @@
     <tr><td class="k">R</td><td>ремкомплект — починить систему</td></tr>
     <tr><td class="k">V</td><td>вид снаружи / изнутри танка</td></tr>
     <tr><td class="k">Q / 1 2 3</td><td>изнутри: встать-сесть / командир, наводчик, мехвод</td></tr>
+    <tr><td></td><td class="h">САМОЛЁТ</td></tr>
+    <tr><td class="k">E у кабины</td><td>сесть в самолёт (на аэродромах у дороги); на земле стоя — выйти</td></tr>
+    <tr><td class="k">W / S</td><td>газ больше / меньше</td></tr>
+    <tr><td class="k">МЫШЬ / стрелки</td><td>ручка: тангаж и крен (сама возвращается к центру)</td></tr>
+    <tr><td class="k">A / D, ПРОБЕЛ</td><td>руль направления (и руление на земле), тормоза колёс</td></tr>
+    <tr><td class="k">ЛКМ / B</td><td>пулемёты и пушки / сбросить бомбу</td></tr>
+    <tr><td class="k">V / ПКМ</td><td>вид сзади / из кабины, осмотреться</td></tr>
+    <tr><td class="k">E (держать в воздухе)</td><td>выпрыгнуть с парашютом (раскроется сам или ПРОБЕЛ, WASD — управлять)</td></tr>
+    <tr><td></td><td class="h">АВТОМОБИЛЬ / МОТОЦИКЛ</td></tr>
+    <tr><td class="k">E спереди / сзади</td><td>за руль / пассажиром (пассажир стреляет из своего оружия)</td></tr>
     <tr><td></td><td class="h">БРОНЕТРАНСПОРТЁР</td></tr>
     <tr><td class="k">E спереди / сзади</td><td>сесть за управление / в десантное отделение</td></tr>
     <tr><td class="k">десант: 1 2 3, ЛКМ, R</td><td>своё оружие: выбрать, стрелять через борт / из люка, перезарядить; Q — встать, пересесть</td></tr>

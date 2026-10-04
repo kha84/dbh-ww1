@@ -1,5 +1,5 @@
 // What is met where: difficulty grows along the road; tank types, weapons and loot are picked by it
-import { TANK_TIERS, APC_TIERS } from './parts.js';
+import { TANK_TIERS, APC_TIERS, CAR_TIERS, MOTO_TIERS } from './parts.js';
 import { WEAPONS, GRENADES, CALIBERS, SMALL_CATS } from './weapons.js';
 
 export const HARD_Z = 9000;           // metres of road until the most advanced machines are common
@@ -21,6 +21,15 @@ export function pickApcKey(r, d) {
   const i = Math.round(d * (n - 1) + (r() - 0.5) * 1.6);
   return APC_TIERS[Math.max(0, Math.min(n - 1, i))];
 }
+
+// car / motorcycle for difficulty d (the ones of the matching era, sometimes older / newer)
+const pickTier = (tiers, r, d, spread = 2.4) => {
+  const n = tiers.length;
+  const i = Math.round(d * (n - 1) + (r() - 0.5) * spread);
+  return tiers[Math.max(0, Math.min(n - 1, i))];
+};
+export const pickCarKey = (r, d) => pickTier(CAR_TIERS, r, d);
+export const pickMotoKey = (r, d) => pickTier(MOTO_TIERS, r, d);
 
 // era weights by difficulty: WW1 guns early, post-war ones far down the road
 function eraWeights(d) {

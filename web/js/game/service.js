@@ -7,9 +7,11 @@ export function createService(ctx) {
   const { world } = ctx;
 
   // ================== settlement service zones ==================
-  function currentZone(p) {
+  // (the airfield's apron serves the planes only: planes = true)
+  function currentZone(p, planes = false) {
     for (const s of world.settlements.values()) {
       for (const z of s.zones) {
+        if ((z.type === 'airfield') !== planes) continue;
         if (Math.hypot(p.x - z.x, p.z - z.z) < z.r) return z;
       }
     }

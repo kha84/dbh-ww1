@@ -12,7 +12,7 @@ import { $ } from './dom.js';
 import { PLATES_MAX } from './stash.js';
 
 export function createPanels(ctx) {
-  const { behindHalf, grenText, items, nearestSeat, paintJob, partName, player, seatName, state, sumAmmo, troopSeat, world } = ctx;
+  const { behindHalf, grenText, items, nearestSeat, paintJob, partName, player, seatName, state, sumAmmo, tankDist, troopSeat, world } = ctx;
 
   // ================== HUD ==================
   const invEl = $('inv'), topEl = $('topbar'), sysEl = $('systems'), gaugeEl = $('gauge');
@@ -140,7 +140,7 @@ export function createPanels(ctx) {
     if (!v) { gaugeEl.style.display = 'none'; return; }
     gaugeEl.style.display = 'block';
     $('gaugeSpeed').innerHTML = `${v.speedKmh.toFixed(0)}<small> км/ч</small>`;
-    $('gaugeName').textContent = v.apc ? `${v.def.name} · БТР` : `${v.def.name} · ${v.def.caliber}`;
+    $('gaugeName').textContent = v.car ? `${v.def.name} · ${v.car === 'moto' ? 'мотоцикл' : 'автомобиль'}` : v.apc ? `${v.def.name} · БТР` : `${v.def.name} · ${v.def.caliber}`;
     const view = state.view === 'inside'
       ? `<div class="gline seat"><span>Место</span><b>${state.seat ? seatName(state.seat) : 'в отделении'}</b></div>`
       : `<div class="gline seat"><span>Вид</span><b>снаружи (V — изнутри)</b></div>`;
@@ -149,7 +149,7 @@ export function createPanels(ctx) {
     const fuelP = v.fuelMax > 0 ? v.fuel / v.fuelMax * 100 : 0;
     const mgW = v.mg && WEAPONS[v.mg.key];
     const troops = v.apc ? v.seats().filter(s => s.troop).length : 0;
-    $('gaugeInfo').innerHTML = view + (v.apc ? `<div class="gline"><span>Десант</span><b>${troops} мест</b></div>` :
+    $('gaugeInfo').innerHTML = view + (v.apc ? `<div class="gline"><span>${v.car ? 'Пассажиры' : 'Десант'}</span><b>${troops} мест</b></div>` :
       `<div class="gline"><span>Снаряды</span><b>${Math.floor(v.ammo)} / ${v.def.ammoMax}</b></div>` +
       `<div class="gline"><span>${!v.parts.gun ? 'Орудия нет' : v.hp.gun <= 0 ? 'Орудие уничтожено' : rl >= 1 ? 'Заряжено' : 'Перезарядка ' + Math.max(0, v.reload).toFixed(1) + ' с'}</span></div>` +
       `<div class="mbar"><i style="width:${rl * 100}%;background:${rl >= 1 ? '#7fe07f' : '#e8a53a'}"></i></div>`) +
@@ -243,8 +243,14 @@ export function createPanels(ctx) {
 
   function updatePrompt() {
     const lines = [];
-    if (state.mode === 'walk') {
+    if (state.mode === 'walk' && state.para) {
+      lines.push(state.para.open ? 'Парашют: <b>WASD</b> — править куполом' : 'Свободное падение — <b>ПРОБЕЛ</b>: раскрыть парашют');
+    } else if (state.mode === 'walk') {
       const t = state.nearTank;
+      const pl = state.nearPlane;
+      if (pl && !items.hands && (!t || tankDist(t, player.position) > 1.2)) {
+        lines.push(`<b>E</b> — сесть в самолёт ${pl.def.name} (топливо ${Math.round(pl.fuel)} л${pl.hp < 60 ? `, планер ${Math.round(pl.hp)}%` : ''})`);
+      }
       if (state.slot) slotPrompt(state.slot, lines);
       if (items.hands === 'plate') {
         if (t && !t.wrecked && t.hp.hull < 100) {
@@ -283,7 +289,9 @@ export function createPanels(ctx) {
         if (t.wrecked) lines.push(`${t.def.name} — сгоревший танк`);
         else if (t.crew) lines.push(`${t.def.name}: экипаж жив`);
         else {
-          if (!items.hands) lines.push(t.apc ? (behindHalf(t, player.position) ? `<b>E</b> — сесть в десантное отделение ${t.def.name}`
+          if (!items.hands) lines.push(t.car ? (behindHalf(t, player.position) ? `<b>E</b> — сесть пассажиром в ${t.def.name}`
+            : `<b>E</b> — сесть за руль ${t.def.name} (сзади — пассажиром)`)
+            : t.apc ? (behindHalf(t, player.position) ? `<b>E</b> — сесть в десантное отделение ${t.def.name}`
             : `<b>E</b> — сесть в ${t.def.name} (сзади — в десант)`) : `<b>E</b> — сесть в ${t.def.name}`);
           if (!items.hands && !state.nearItem) lines.push(`<b>F</b> — укладка танка (ремкомплекты, бронелисты, снаряды, оружие)`);
           if (!items.hands && items.inventory.cutter > 0) {
@@ -300,7 +308,7 @@ export function createPanels(ctx) {
           }
         }
       }
-    } else {
+    } else if (state.mode === 'drive') {
       const v = state.vehicle;
       const ts = troopSeat();
       if (ts) lines.push(ts.fire ? `Десант: <b>1/2/3</b> — оружие, <b>ЛКМ</b> — огонь, <b>R</b> — перезарядка, <b>Q</b> — встать`

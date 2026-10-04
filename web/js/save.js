@@ -133,6 +133,12 @@ export function snapshot(g) {
     workshop: [...workshop.store.entries()].map(([k, sl]) => [k, sl.map(it => it && { turret: partData(it.turret), gun: partData(it.gun) })]),
     ruins: [...world.ruins],
     brokenTrees: [...world.brokenTrees.entries()],
+    craters: world.craters.data(),
+    planes: (g.planes || []).filter(p => !p.remote && near(p.root.position)).map(p => p.data()),
+    planesGone: [...(g.planesGone || [])],
+    flying: state.plane ? state.plane.id : null,
+    para: state.para ? { vel: v3(state.para.vel), open: state.para.open } : null,
+    parked: [...(g.parked || [])],
   };
 }
 
@@ -141,6 +147,11 @@ export function restoreBefore(g, d) {
   const { items, director, world, workshop } = g;
   for (const id of d.ruins) world.ruins.add(id);
   for (const [id, b] of d.brokenTrees) world.brokenTrees.set(id, b);
+  world.craters.load(d.craters);
+  // the planes of the airfields are set out again from the seed - except those taken away / saved elsewhere
+  for (const id of d.planesGone || []) g.planesGone.add(id);
+  for (const p of d.planes || []) g.planesGone.add(p.id);
+  for (const k of d.parked || []) g.parked.add(k);
   for (const j of d.spawned) director.spawned.add(j);
   for (const k of d.garrisoned) g.garrisoned.add(k);
   for (const [k, sl] of d.workshop) {
@@ -234,5 +245,12 @@ export function restore(g, d) {
     maxSquad = Math.max(maxSquad, sd.squad);
   }
   infantry.squadN = maxSquad;
+  // planes (flown ones where they were left, those in the air go on flying)
+  for (const pd of d.planes || []) {
+    const p = g.spawnPlane(pd.key, pd.pos[0], pd.pos[2], 0, { ...pd, id: pd.id, pos: pd.pos, quat: pd.quat, vel: pd.vel, air: pd.air });
+    if (!p) continue;
+    p.used = pd.used; p.home = pd.home;
+    if (pd.wrecked) p.makeWreck();
+  }
   return vehicle;
 }

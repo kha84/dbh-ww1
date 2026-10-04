@@ -89,6 +89,7 @@ export function createGrass(scene, world) {
       let tint = B.tuft, size = B.tuftS;
       const r = hash(world.seed, i, X * 31 + Z, 79);
       let bare = (world.opts.road && Math.abs(x - rx) < 5.5) || h < WATER_LEVEL + 0.35 - 0.25 * B.wet || h > 26 + 10 * B.hills ||
+        world.craterAt(x, z) < -0.12 ||                                   // blown out of the crater pits
         world.settlementWeight(x, z, rx) > 0.4 || hash(world.seed, i, X, Z * 5 + 3, 89) > B.tuftN;
       if (!bare && B.fields > 0) {
         const f = world.fieldAt(x, z, rx, B.fields);
@@ -116,6 +117,16 @@ export function createGrass(scene, world) {
       if (l !== level) held.clear();
       level = l;
       mesh.visible = l > 0;
+      tx = tz = null;
+    },
+    // a crater was dug at (x, z) (reach R): the tiles around are laid again on the next update
+    refresh(x, z, R) {
+      for (let Z = Math.floor((z - R) / TILE); Z <= Math.floor((z + R) / TILE); Z++) {
+        for (let X = Math.floor((x - R) / TILE); X <= Math.floor((x + R) / TILE); X++) {
+          const block = mod(X, N) + mod(Z, N) * N;
+          if (held.get(block) === X + ',' + Z) held.delete(block);
+        }
+      }
       tx = tz = null;
     },
     update(anchor) {

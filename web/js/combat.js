@@ -178,6 +178,7 @@ export class Combat {
     this.sfx = sfx;
     this.shells = [];
     this.tanks = [];                 // set by the game each frame
+    this.planes = [];                // aeroplanes (planes.js)
     this.foot = null;                // { pos, active } on-foot player target
     this.listener = new THREE.Vector3();
     /** @type {(...a: any[]) => void} */
@@ -204,14 +205,29 @@ export class Combat {
   }
   // a shell in flight from spec s ({ pos, vel, pen, dmg, owner, ghost }); ghost shells (network play: fired on the
   // other machine) only make the effects - hits are worked out where the real shell flies
+  // bombs (s.bomb: kg) fall without a muzzle flash; light shells (aircraft cannons) make a small one
   launch(s) {
     const dir = s.vel.clone().normalize();
-    this.fx.muzzle(s.pos, dir);
+    if (s.bomb) {
+      if (!this.bombGeo) {
+        this.bombGeo = new THREE.CylinderGeometry(0.13, 0.08, 0.9, 8);
+        this.bombMat = new THREE.MeshStandardMaterial({ color: 0x3a3d34, roughness: 0.7, metalness: 0.4 });
+      }
+      const mesh = new THREE.Mesh(this.bombGeo, this.bombMat);
+      mesh.scale.setScalar(Math.cbrt(s.bomb / 100));
+      mesh.position.copy(s.pos);
+      this.scene.add(mesh);
+      this.shells.push({ life: 7, ...s, mesh });
+      return;
+    }
+    if (s.light) this.fx.spawn('flash', s.pos, null, 0.35);
+    else this.fx.muzzle(s.pos, dir);
     const mesh = new THREE.Mesh(this.tracerGeo, this.tracerMat);
     mesh.position.copy(s.pos);
+    if (s.light) mesh.scale.set(0.6, 0.5, 0.6);
     this.scene.add(mesh);
-    this.shells.push({ ...s, mesh, life: 7 });
-    this.sfx.shot(s.pos.distanceTo(this.listener));
+    this.shells.push({ life: 7, ...s, mesh });
+    if (!s.light) this.sfx.shot(s.pos.distanceTo(this.listener));
   }
 
   update(dt) {
@@ -256,6 +272,12 @@ export class Combat {
         if (tt !== null && (!best || tt < best.t)) best = { t: tt, kind: 'tank', tank: t, vol };
       }
     }
+    // planes
+    for (const pl of this.planes) {
+      if ((s.owner && s.owner.plane === pl) || (!s.owner && pl.remoteUse)) continue;   // (its own shells, flown here as copies)
+      const tt = pl.hitSegment(p0, p1);
+      if (tt !== null && (!best || tt < best.t)) best = { t: tt, kind: 'plane', plane: pl };
+    }
     // static obstacles
     const ob = this.world.raycastObstacles(p0, p1);
     if (ob && (!best || ob.t < best.t)) best = { t: ob.t, kind: 'obstacle', obstacle: ob.obstacle };
@@ -297,6 +319,8 @@ export class Combat {
 
     const hp = p0.clone().lerp(p1, best.t);
     const dir = s.vel.clone().normalize();
+    // a burst on the ground leaves a crater (ghost shells too: both machines of a network game dig their own)
+    if (best.kind === 'ground') this.crater(hp, s);
     if (s.ghost) {
       // effects only: the damage is done on the machine that runs the world
       if (best.kind === 'water') this.fx.splash(hp);
@@ -305,7 +329,11 @@ export class Combat {
       this.sfx.boom(hp.distanceTo(this.listener), best.kind === 'water' ? 0.4 : 0.9);
       return true;
     }
-    if (best.kind === 'tank') {
+    if (best.kind === 'plane') {
+      this.fx.explosion(hp, s.light ? 0.5 : 1, false);
+      this.sfx.boom(hp.distanceTo(this.listener), 0.7);
+      best.plane.damage(s.dmg * 140, hp);
+    } else if (best.kind === 'tank') {
       this.hitTank(best.tank, best.vol, hp, dir, s);
     } else if (best.kind === 'water') {
       this.fx.splash(hp);
@@ -315,14 +343,21 @@ export class Combat {
       this.sfx.boom(hp.distanceTo(this.listener), 0.9);
       this.world.breakTree(best.tree, hp.y, dir.x, dir.z);
     } else {
-      this.fx.explosion(hp, 1, best.kind === 'ground');
-      if (best.kind === 'obstacle' && best.obstacle.house) best.obstacle.house.hit(hp, dir, s.dmg);
-      this.sfx.boom(hp.distanceTo(this.listener), 1);
+      this.fx.explosion(hp, s.bomb ? 1.5 + s.dmg * 0.4 : s.light ? 0.45 : 1, best.kind === 'ground');
+      if (best.kind === 'obstacle' && best.obstacle.house) best.obstacle.house.hit(hp, dir, s.dmg * (s.bomb ? 3 : 1));
+      this.sfx.boom(hp.distanceTo(this.listener), s.bomb ? 1.5 : s.light ? 0.5 : 1);
       if (best.kind === 'foot' && !this.god) this.onPlayerDamage(200, s.owner);
     }
     this.splashDamage(hp, s);
-    if (best.kind !== 'water') this.onExplosion(hp, 3 + 5 * Math.sqrt(s.dmg), 150 * s.dmg, s.owner);
+    if (best.kind !== 'water' && !(s.light && best.kind === 'plane')) this.onExplosion(hp, (s.light ? 1.5 : 3) + 5 * Math.sqrt(s.dmg), 150 * s.dmg, s.owner);
     return true;
+  }
+
+  // crater of a shell / bomb: its size grows with the charge (s.crater: the charge for it, else the damage)
+  crater(p, s) {
+    const k = s.crater ?? s.dmg;
+    if (!(k > 0.15)) return;
+    this.world.addCrater(p.x, p.z, 1.1 + 1.6 * Math.min(k, 1.8) + Math.max(0, k - 1.8) * 1.1, 0.4 + 0.65 * Math.min(k, 1.8) + Math.max(0, k - 1.8) * 0.35);
   }
 
   splashDamage(p, s) {
@@ -410,6 +445,7 @@ export class Combat {
       if (pen >= eff) {
         res.pen = true;
         tank.damage('hull', rand(9, 16) * dmgMul);
+        if (tank.soft) tank.damage('hull', rand(40, 70) * Math.max(0.6, dmgMul) * 1.6);      // a car is torn apart
         const inside = this.pathModules(tank, hitPoint, dir, 3.2, false);
         for (const id of inside.mods) {
           tank.damage(id, rand(40, 85) * dmgMul);

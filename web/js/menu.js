@@ -1,6 +1,6 @@
 // Main menu shown when the page is opened without a game mode: the endless road (random or given seed), a duel,
 // the tank range, loading a saved game. Starting a game reloads the page with the mode in the URL.
-import { HULLS, TANK_TIERS, APC_TIERS, computeSpec, defaultParts } from './parts.js';
+import { HULLS, TANK_TIERS, APC_TIERS, CAR_TIERS, MOTO_TIERS, computeSpec, defaultParts } from './parts.js';
 import { WEAPONS } from './weapons.js';
 import { DEFS } from './tankdefs/index.js';
 import { listSaves, deleteSave } from './save.js';
@@ -15,11 +15,19 @@ function tankOptions(sel, withRandom = false) {
   const opt = k => `<option value="${k}" ${k === sel ? 'selected' : ''}>${esc(HULLS[k].name)} (${DEFS[k].year})</option>`;
   return (withRandom ? `<option value="random">Случайный</option>` : '') +
     `<optgroup label="Танки">${TANKS.map(opt).join('')}</optgroup>` +
-    `<optgroup label="Бронетранспортёры">${APC_TIERS.map(opt).join('')}</optgroup>`;
+    `<optgroup label="Бронетранспортёры">${APC_TIERS.map(opt).join('')}</optgroup>` +
+    `<optgroup label="Автомобили">${CAR_TIERS.map(opt).join('')}</optgroup>` +
+    `<optgroup label="Мотоциклы">${MOTO_TIERS.map(opt).join('')}</optgroup>`;
 }
 function tankCard(k) {
   if (!HULLS[k]) return '<div class="tcard">Тип танка выбирается случайно</div>';
   const d = computeSpec(k, defaultParts(k));
+  const mg = DEFS[k].mg ? `пулемёт ${esc(WEAPONS[DEFS[k].mg].name)} · ` : '';
+  if (d.car) {
+    return `<div class="tcard"><b>${esc(d.name)}</b> · ${d.car === 'moto' ? 'мотоцикл' : 'автомобиль'} · ${DEFS[k].year} г.<br>` +
+      `${(d.weight * 1000).toFixed(0)} кг · ${d.power} л.с. · до ${(d.maxSpeed * 3.6).toFixed(0)} км/ч<br>` +
+      `${mg}пассажиров ${(HULLS[k].troops || []).length} · без брони</div>`;
+  }
   if (d.apc) {
     return `<div class="tcard"><b>${esc(d.name)}</b> · бронетранспортёр · ${DEFS[k].year} г.<br>` +
       `${d.weight.toFixed(1)} т · ${d.power} л.с. · до ${(d.maxSpeed * 3.6).toFixed(0)} км/ч · ${d.wheeled ? 'колёсный' : 'гусеничный'}<br>` +

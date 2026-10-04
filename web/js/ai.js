@@ -5,7 +5,7 @@ import { Tank, sandbagMesh } from './tanks.js';
 import { HULLS } from './parts.js';
 import { makeWeapon } from './weapons.js';
 import { pickTarget } from './infantry.js';
-import { difficultyAt, pickTankKey, pickApcKey, soldierKit, lootRoll } from './loot.js';
+import { difficultyAt, pickTankKey, pickApcKey, pickCarKey, pickMotoKey, soldierKit, lootRoll } from './loot.js';
 import { buildCaponier } from './structures/caponier.js';
 
 export { buildCaponier };
@@ -384,6 +384,53 @@ export class EnemyDirector {
     return t;
   }
 
+  // a motorcycle patrol (one to three machines riding together along the road) or a staff car (sometimes with a
+  // motorcycle escort): the men on them get off and fight when the enemy is met
+  spawnRiders(zc, r, d, created, car) {
+    const z0 = zc + (r() - 0.5) * 220;
+    const dir = r() < 0.5 ? 1 : -1;
+    if (this.world.settlementNear(this.world.roadX(z0), z0, 30)) return;
+    const n = car ? 1 + (r() < 0.35 ? 1 : 0) : 1 + Math.floor(r() * (2 + d * 1.5));
+    for (let i = 0; i < n; i++) {
+      const key = car && i === 0 ? pickCarKey(r, d) : pickMotoKey(r, d);
+      const z = z0 - dir * i * 9;
+      const x = this.world.roadX(z) + 2.2 * dir;
+      const seats = (HULLS[key].troops || []).length;
+      const troops = [];
+      if (!this.noInfantry) for (let k = 0; k < seats; k++) if (k === 0 || r() < 0.7) troops.push(soldierKit(r, d));
+      const heading = dir > 0 ? this.world.roadHeading(z) : this.world.roadHeading(z) + Math.PI;
+      const t = this.makeTank(key, new THREE.Vector3(x, 0, z), heading, r, { troops, bags: 0, plates: 0, fuelFrac: 0.4 + r() * 0.5 });
+      this.ais.push(new TankAI(t, 'patrol', this.world, { z0: zc - 380, z1: zc + 380, dir, lane: 2.2 }));
+      created.push(t);
+    }
+  }
+
+  // a car / motorcycle knocked out by the road (shot up or burnt out): something left in it
+  spawnCarWreck(j, zc, r, d, created) {
+    const z = zc + (r() - 0.5) * 300;
+    if (this.world.settlementNear(this.world.roadX(z), z, 30)) return;
+    const side = r() < 0.5 ? -1 : 1;
+    const hd = this.world.roadHeading(z);
+    const off = side * (6 + r() * 10);
+    const x = this.world.roadX(z) + Math.cos(hd) * off, z2 = z - Math.sin(hd) * off;
+    if (this.world.heightAt(x, z2) < this.world.WATER_LEVEL + 0.6) return;
+    const key = r() < 0.6 ? pickCarKey(r, d) : pickMotoKey(r, d);
+    const t = new Tank(this.scene, key, new THREE.Vector3(x, 0, z2), hd + (r() - 0.5) * 2.5, {
+      team: 'neutral', crew: false, fuelFrac: r() * 0.4, mgAmmo: Math.floor(r() * 200), kits: r() < 0.3 ? 1 : 0,
+    });
+    t.derelict = true;
+    t.hp.engine = r() < 0.4 ? 0 : 20 + r() * 60;
+    t.hp.hull = 15 + r() * 50;
+    if (r() < 0.4) {
+      t.makeWreck();
+      lootRoll(r, d, 1 + Math.floor(r() * 2)).forEach((it, k) => {
+        const a = r() * Math.PI * 2;
+        this.onLoot(`cw${j}:${k}`, it.type, x + Math.sin(a) * 3, z2 + Math.cos(a) * 3, it);
+      });
+    } else t.loot.repair_kit += this.stowLoot(t.cargo, r, d, 1 + Math.floor(r() * 2));
+    created.push(t);
+  }
+
   // the infantry climbs out of the back of a personnel carrier and joins the fight
   dismount(t) {
     const kits = t.troops;
@@ -413,6 +460,12 @@ export class EnemyDirector {
       const r2 = rng(Math.floor(hash(this.seed, j, 313) * 4294967296));
       if (r2() < 0.4) this.spawnWreck(j, zc, r2, d, created);
       if (r2() < 0.28 + d * 0.25) this.spawnPost(j, zc, r2, d);
+      // cars and motorcycles: patrols, staff cars, wrecks (their own numbers: the rest stays as it was)
+      const r3 = rng(Math.floor(hash(this.seed, j, 919) * 4294967296));
+      const x3 = r3();
+      if (x3 < 0.26) this.spawnRiders(zc, r3, d, created, false);
+      else if (x3 < 0.38) this.spawnRiders(zc, r3, d, created, true);
+      if (r3() < 0.14) this.spawnCarWreck(j, zc, r3, d, created);
       const roll = r();
       if (roll < 0.42 - difficulty * 0.12) {                    // quiet stretch, now and then a lone carrier with infantry
         if (r() < 0.3) this.spawnApc(zc, r, d, created);

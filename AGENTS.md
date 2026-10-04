@@ -14,6 +14,15 @@ The game features:
 - Biomes change along the road every 1.3-3 km with smooth transitions: copses, dense forest, birch groves, fields
   (patchwork of crops, tree lines), steppe, swamps (pools, mud slows the tanks, a low causeway), hills; the HUD names
   the land and tells when it changes
+- Shell / bomb craters stay in the ground (a pit with a lip, deep enough to take cover in; craters.js)
+- Long summer days (sunrise 4:30, sunset 20:30: 24 min of daylight, 4 min of night by default)
+- Airfields beside the road (k=2 always, then ~11% of the stretches): a grass runway, hangars, tower, windsock, fuel
+  dump, 3-4 parked planes of the era; 10 planes 1917-1941 (Sopwith Camel, Fokker Dr.I, SPAD XIII, Fokker D.VII, Po-2,
+  I-16, Bf 109 E, Ju 87 B, Spitfire Mk I, Il-2) the player flies (take-off / landing on the gear, guns, cannons,
+  bombs), bails out of (hold E) and comes down under a parachute
+- Cars (Renault AG-1, Ford T, GAZ-A, GAZ-M1, Horch 901, Kubelwagen, Willys MB, GAZ-67, UAZ-469, HMMWV) and motorcycles
+  (Harley J, Triumph H, BMW R12, BSA M20, Zundapp KS 750, Harley WLA, BMW R75, M-72, Ural M-62, Kawasaki M1030):
+  soft-skinned "personnel carriers" driven by the player or the enemy (motorcycle patrols, staff cars), riders seen
 - First-person on foot; in tanks (Renault FT, Mark V, Vickers 6-ton (twin turrets), T-26, T-28 (three turrets),
   T-35 (five turrets), Type 89, Pz.II, BT-7, Char B1 bis, Sherman, Pz.IV, T-44, IS-2, T-55, Chieftain AVRE, Leopard 2,
   Abrams) third-person / gunner-sight, or first person inside
@@ -81,7 +90,8 @@ web/js/game/            # parts of the game loop taken out of main.js, each `cre
                         #   screen), panels.js (HUD panels, prompts), stash.js (tank stowage, hold actions), menus.js
                         #   (repair kit / crane), service.js (service zones), smallarms.js, inside.js (crew
                         #   compartment), interact.js (F / looking at parts), motion.js (walking, driving, cameras),
-                        #   netui.js, dom.js
+                        #   netui.js, dom.js, flight.js (planes: enter / leave, controls, cameras, bail-out,
+                        #   parachute, instruments, Plane.onEvent: crashes)
 web/js/batch.js         # ChunkBatch: all chunks of a kind (terrain / forest / water / road) in one BatchedMesh
 web/js/bakestatic.js    # static scenery (houses, settlement props) baked into one mesh (colour + roughness/metalness
                         #   per vertex, node material)
@@ -101,12 +111,23 @@ web/js/world.js         # endless world: road centreline roadX(z)/roadH(z), chun
 web/js/biomes.js        # biomes along the road: segments, blended parameters (relief, swamp, fields, trees, colours,
                         #   grass, rivers), field patchwork (fieldAt, CROPS)
 web/js/rivers.js        # river plans (between settlements; brook / river / broad, width along the course), carving
-web/js/settlements.js   # roadside villages / towns / gas stations / repair stations: layout, loot, service zones
+web/js/settlements.js   # roadside villages / towns / gas stations / repair stations / airfields: layout, loot, service
+                        #   zones (airfield: the planes' zone 'airfield' + a fuel point), parked plane spots
 web/js/obstacles.js     # obstacle boxes: pushOut (circle + height), segBox / segObstacle, compound obstacles (sub)
 web/js/structures/      # ONE FILE PER WORLD OBJECT: kit.js (settlement builder context K: frame / part / obstacle /
                         #   addItem, shared geometry + MAT), house.js (enterable houses), church.js, depot.js, well.js,
                         #   gasstation.js, repairstation.js, props.js (fence, crates, barrels, tyres, signs),
                         #   bridge.js, caponier.js, trees.js (Forest: baked chunk trees, broken trees, falling tops)
+web/js/craters.js       # shell / bomb craters: profile, per-chunk lists, heightAt offset, the cells of the terrain mesh
+                        #   under a crater replaced by a fine patch (watertight), saved
+web/js/planes.js        # Plane class: flight physics, ground roll / take-off / landing, retracting gear, guns /
+                        #   cannons / bombs, damage / break-up / crash, network pose, saved data
+web/js/planedefs/       # ONE FILE PER PLANE TYPE (numbers, weapons, gear, hit boxes, model); index.js = registry
+                        #   (PLANES, PLANE_TIERS, buildPlane), kit.js = lofted fuselages, wings, struts, props, gear,
+                        #   markings, canopies
+web/js/structures/airfield.js  # runway, hangars, tower, windsock, fuel dump; returns the parked plane spots
+web/js/tankdefs/carkit.js  # shared pieces of the cars / motorcycles (wheels, guards, glass, motorcycle frame,
+                        #   sidecar, tanks, engines, riders) and softHull (their gameplay data)
 web/js/tankdefs/apckit.js  # shared pieces of the personnel carriers (wheels that steer, open troop boxes, benches,
                         #   troop seats, MG shield)
 web/js/tankdefs/        # ONE FILE PER TANK TYPE: gameplay data (hull / turret / gun / engine / fuel / drive, seats,
@@ -153,12 +174,18 @@ web/js/noise.js         # perlin/fbm, hash, seeded rng
 - Personnel carrier: E next to its front half - drive it, next to its rear half - climb into the troop compartment;
   there 1/2/3 pick the own weapon, LMB fires over the side / from the hatch / through the loophole (seats with `fire`),
   R reloads, Q stands up (then Q at a seat / 1/2/3 for commander / gunner / driver).
+- Car / motorcycle: like a personnel carrier (E at the front half - drive, at the rear - ride as a passenger and
+  fire your own weapon); hard knocks against trees / walls / tanks break it and hurt the men in it.
+- Plane: E next to the cockpit - get in (on the ground, standing - E gets out), W/S throttle, mouse = the stick
+  (pitch / bank, it re-centres slowly), arrows = stick too, A/D rudder (steers on the ground), SPACE wheel brakes,
+  LMB guns + cannons, B drop a bomb, V chase / cockpit view, RMB look around, hold E in the air - bail out
+  (the parachute opens by itself or SPACE; WASD steers it). Planes refuel / rearm / repair standing on an airfield.
 - In tank: W/S throttle, A/D steer, SPACE brake, mouse aims (turret follows), LMB fire, RMB gunner sight, X main gun / MG
   (hold LMB for bursts),
   F fire extinguisher, R repair kit menu (digits choose the system), V third person / inside view, ESC pause
   (pause menu: resume / save / main menu), F5 quick save (road mode).
   Inside: Q stand up / sit at the nearest station, 1/2/3 commander / gunner / driver.
-- Any mode: ` (Backquote) opens the spawn menu: any tank / APC in front of the player, an enemy with its crew (TankAI
+- Any mode: ` (Backquote) opens the spawn menu: any tank / APC / car / motorcycle (or a free plane) in front of the player, an enemy with its crew (TankAI
   'hunt', in a duel it joins the foes) or a free one without crew (`spawnVehicle`; the guest sends 'spawn' to the host). Commander = full control,
   gunner = gun only, driver = driving only; standing up = WASD moves around the compartment.
 
@@ -171,9 +198,9 @@ URL params: `?nowater=1&noclouds=1&notrees=1&notanks=1&noenemies=1&noinfantry=1&
 `?biome=KEY` one biome everywhere (mixed | forest | birch | fields | steppe | swamp | hills), `?god=1`
 invulnerable player, `?view=N` chunk radius.
 Graphics: `?backend=webgl`, `?q=low|medium|high` (else the one chosen in the pause menu, else high on WebGPU / medium
-on WebGL 2), `?tod=H` time of day, `?daylen=M` minutes per day (0 = the clock stands), `?nopost=1 ?noao=1 ?nobloom=1
+on WebGL 2), `?tod=H` time of day, `?daylen=M` minutes per day at the daytime pace (night 3x faster; 0 = the clock stands), `?nopost=1 ?noao=1 ?nobloom=1
 ?bloomT=0.1 ?bloomS=0.9 ?nograss=1 ?nowarm=1`.
-`window.game` exposes renderer/scene/sky/pipeline/grass/state/tanks/world/items/combat/guns/infantry; `game.frame(dt)` advances the simulation without
+`window.game` exposes renderer/scene/sky/pipeline/grass/state/tanks/planes/flight/world/items/combat/guns/infantry; `game.frame(dt)` advances the simulation without
 rendering (handy for headless tests; `game.state.noLock = true` lets small arms fire without pointer lock).
 
 ## Web notes
@@ -182,7 +209,25 @@ rendering (handy for headless tests; `game.state.noLock = true` lets small arms 
   many small meshes; share materials (a canvas texture per object is an upload each). A material with `mrtNode` breaks
   when no MRT is bound - use glow.js. `material.clippingPlanes` does not work: clip with THREE.ClippingGroup
   (broken trees). Points are always 1 px on WebGPU (stars are instanced sprites).
-- Time of day: `sky.time.tod` (hours), saved with the game, the host sends it to the guest.
+- Time of day: `sky.time.tod` (hours), saved with the game, the host sends it to the guest. SUNRISE / SUNSET in
+  render.js set the day arc (16 h of day), the night runs 3x faster than the day.
+- Craters (craters.js): `world.addCrater(x, z, r, d)` / `world.craterAt(x, z)`; Combat.crater digs one for every
+  shell / bomb burst on the ground (size from `s.crater ?? s.dmg`; `crater: 0` - none, e.g. aircraft cannons);
+  `world.heightAt` adds the offset of `ch.craters`; `ch.tgeo` is the chunk's terrain geometry (its cells under a
+  crater collapse, `ch.craterMesh` is the fine patch); `world.craters.onAdded` -> grass.refresh.
+- Cars / motorcycles: hulls with `car: 'car' | 'moto'`, `soft`, `apc` (troop seats), `accelCap`, `lean` (solo bikes),
+  `engineShown` (the motorcycle engine part is always visible); seats / troops with `rider` (pose: car / moto / side /
+  gun) get low-poly riders (`Tank.updateRiders`, `tank.playerSeat`); `isApc` excludes them, `CAR_TIERS` / `MOTO_TIERS`,
+  `loot.pickCarKey / pickMotoKey`; `Guns.onSoftHit`, `blastVehicles` / `softWrecked` (main.js), `Tank.knock` / `crash`.
+  `interior.shell: false` - no compartment, `noSeats`, `controls: 'none'`.
+- Planes (planes.js): physics constants from `mass / power / vmax / vstall`; `ctl { throttle, sx, sy, rud, brake }`;
+  the nose follows the path, `sy` sets the angle of attack (trim seeks level flight), `sx` the bank. `state.mode ===
+  'fly'` with `state.plane` (`state.vehicle` null); `state.para` = parachute (mode 'walk'). Guns: `guns.planes`,
+  `combat.planes` (hit boxes `def.boxes`, `Plane.hitSegment`), `guns.onPlaneHit`; owner `{ player, plane }`, `dmgK` -
+  one traced round for several. Bombs: `combat.launch({ bomb: kg, crater, life })`, light cannon shells `light: true`.
+  Airfield planes: `s.planes` spots, ids `af{k}:{i}`, `planesGone` (taken) - not set out again; `home`, `used`.
+  Network: the pose rides in the player pose (`mePose()[13]`), remote planes are puppets (`remote`, `remoteUse`),
+  hits on them -> 'phit'; shells carry `b` (bomb) / `l` (light) / `c` (crater).
 - Tank types live in `web/js/tankdefs/<key>.js` (data + models); add a tank = add a file and list it in
   `tankdefs/index.js`. `models.hull()` returns `hullResult(...)` (root, wheels, ring, bay, box, fuelAt...),
   `models.turret()` returns { group, gunPos, sightY, mgPos, box, second? }, `models.gun()` { group, muzzleLen },
@@ -223,8 +268,9 @@ rendering (handy for headless tests; `game.state.noLock = true` lets small arms 
   scores obstacles / trees / wrecks / terrain spots and keeps those hidden from the threat (kind: tall / mid / low ->
   hide / peek stances); `Guns.onShot` -> `Infantry.shot` (suppression, hearing), `Infantry.noise(pos, r)` (tank gun,
   engine), squads bound by fire teams (`squad.advance`). Enemy fire doesn't hit enemy soldiers.
-- Saves (save.js): tanks / soldiers / pickups within 1.5 km, post walls, crane stands, ruins, broken trees, spawned
-  encounter stretches, garrisons, taken pickups; settlements and encounters regenerate from the seed.
+- Saves (save.js): tanks / soldiers / pickups / planes within 1.5 km, post walls, crane stands, ruins, broken trees,
+  craters, spawned encounter stretches, garrisons, parked settlement cars, taken pickups / airfield planes, the plane
+  flown / the parachute; settlements and encounters regenerate from the seed.
 - World is endless: road runs along +Z, `world.roadX(z)` is the centreline. Terrain is flattened to `roadH(z)`
   near the road and in settlements; far from the road it rises into mountains.
 - Chunks are 128 m / 32 cells (33*33 verts, Uint16 indices). Each chunk stores its height grid with a 1-cell

@@ -41,8 +41,11 @@ export function defaultParts(key) {
   return { engine: has(ENGINES, 'engine'), gun: has(GUNS, 'gun'), fuel: has(FUELS, 'fuel'), drive: has(DRIVES, 'drive'),
            turret: has(TURRETS, 'turret') };
 }
-// armoured personnel carriers (carry infantry, armed with a machine gun)
-export const isApc = key => !!(HULLS[key] && HULLS[key].apc);
+// armoured personnel carriers (carry infantry, armed with a machine gun); cars and motorcycles are carriers too
+// (troop seats, no main gun) but soft-skinned: `car: 'car' | 'moto'`
+export const isApc = key => !!(HULLS[key] && HULLS[key].apc && !HULLS[key].car);
+export const isCar = key => !!(HULLS[key] && HULLS[key].car === 'car');
+export const isMoto = key => !!(HULLS[key] && HULLS[key].car === 'moto');
 
 let PART_ID = 0;
 export function makePart(kind, key, hp = 100) {
@@ -96,12 +99,12 @@ export function computeSpec(hullKey, parts, bags = null) {
   if (T) for (const c of T.crew) crew.push({ ...c, space: 'turret' });
 
   return {
-    key: hullKey, apc: !!H.apc, wheeled: !!H.wheeled,
+    key: hullKey, apc: !!H.apc, wheeled: !!H.wheeled, car: H.car || null, soft: !!H.soft,
     name: H.name + (frank ? ' (сборный)' : ''),
     hullName: H.name,
     frank, weight, power, pw, driveOk,
     maxSpeed: power > 0 ? Math.min(H.speedCap, H.eff * 3.1 * Math.pow(pw, 0.55)) : 0,
-    accel: power > 0 ? Math.min(9, H.eff * (0.9 + 0.23 * pw)) : 0,
+    accel: power > 0 ? Math.min(H.accelCap || 9, H.eff * (0.9 + 0.23 * pw)) : 0,
     turn: H.turn * clamp(0.7 + 0.3 * pw / 16, 0.6, 1.3),
     radius: H.radius,
     turretSpeed: driveOk ? D.speed : 0,
@@ -132,8 +135,11 @@ export function tankRating(key) {
 const YEAR = Object.fromEntries(TANK_DEFS.map(d => [d.key, d.year || 0]));
 // tank types in the order they appeared in the world (same year: the weaker one first). The road follows it:
 // the oldest machines are met at the start, the newest far down the road.
-export const TANK_TIERS = Object.keys(HULLS).filter(k => !isApc(k)).sort((a, b) => YEAR[a] - YEAR[b] || tankRating(a) - tankRating(b));
+export const TANK_TIERS = Object.keys(HULLS).filter(k => !HULLS[k].apc).sort((a, b) => YEAR[a] - YEAR[b] || tankRating(a) - tankRating(b));
 // personnel carriers in the order they appeared
 export const APC_TIERS = Object.keys(HULLS).filter(isApc).sort((a, b) => YEAR[a] - YEAR[b]);
+// cars and motorcycles in the order they appeared
+export const CAR_TIERS = Object.keys(HULLS).filter(isCar).sort((a, b) => YEAR[a] - YEAR[b]);
+export const MOTO_TIERS = Object.keys(HULLS).filter(isMoto).sort((a, b) => YEAR[a] - YEAR[b]);
 // the weakest tank of all: the player starts the road in it
 export const STARTER_TANK = TANK_TIERS.reduce((a, b) => tankRating(b) < tankRating(a) ? b : a);

@@ -181,6 +181,7 @@ const PROPS = {
   driver(g, M, p) {
     const [ex, ey, ez] = p.eye;
     const st = p.style || 'levers';
+    if (st === 'none') return;
     const f = frame(g, [ex, ey, ez]);
     if (st === 'levers') {
       for (const dx of [-0.2, 0.2]) {
@@ -531,6 +532,11 @@ export function buildHullInterior(key, hv) {
   g.userData.interior = true;
   const x = I.x, f = I.floor, r = I.roof - 0.04, [z0, z1] = I.z;     // stay clear of the outer skin
   const ring = hv.ring, cab = I.cab;
+  // cars and motorcycles: no compartment - the vehicle itself is around the seat
+  if (I.shell === false) {
+    if (I.props) for (const p of I.props) PROPS[p.type](g, M, p, I);
+    return g;
+  }
   // floor
   addPanel(g, panel(V(0, f, 0), AX, AZ, breaks(-x, x, 0.3), breaks(z0, z1, 0.3)), M.floor);
   for (let z = z0 + 0.3; z < z1 - 0.1; z += 0.6) ibox(g, M.dark, 0, f + 0.005, z, x * 1.8, 0.01, 0.04);   // floor plate seams

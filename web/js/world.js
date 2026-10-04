@@ -9,6 +9,7 @@ import { Biomes, BIOMES, CROPS } from './biomes.js';
 import { buildBridge } from './structures/bridge.js';
 import { Forest } from './structures/trees.js';
 import { prepObstacle, pushOut, segObstacle } from './obstacles.js';
+import { Craters } from './craters.js';
 
 export { segBox, pushOut } from './obstacles.js';
 
@@ -60,6 +61,7 @@ const SETTLE_SIZE = {
   repair:  { halfLen: 60,  halfW: 55 },
   village: { halfLen: 120, halfW: 60 },
   town:    { halfLen: 190, halfW: 85 },
+  airfield: { halfLen: 300, halfW: 150 },
 };
 
 /**
@@ -113,6 +115,7 @@ export class World {
 
     this.houses = new Set();         // standing houses of the built settlements (their floors: groundAt)
     this.forest = new Forest(this);  // trees (structures/trees.js)
+    this.craters = new Craters(this, { CHUNK, CSEG, CELL, WATER_LEVEL, ROAD_HALF, ckey });   // shell craters (craters.js)
 
     this.makeMaterials();
   }
@@ -162,14 +165,18 @@ export class World {
     }
     const r = rng(Math.floor(hash(this.seed, k, 991) * 4294967296));
     let type;
+    // airfields beside the road (one soon after the start, then now and then) - on their own hash
+    const air = k === 2 || (k > 3 && hash(this.seed, k, 2718) < 0.11);
     if (k === 0) type = 'village';
     else if (k === 1) type = 'repair';
+    else if (air) type = 'airfield';
     else if (r() < 0.15) { this.settleInfo.set(k, null); return null; }
     else {
       const t = r();
       type = t < 0.3 ? 'gas' : t < 0.55 ? 'repair' : t < 0.85 ? 'village' : 'town';
     }
-    const z = k * SETTLE_LEN + SETTLE_OFS + r() * 200;
+    let z = k * SETTLE_LEN + SETTLE_OFS + r() * 200;
+    if (air) z = k * SETTLE_LEN + SETTLE_OFS + 100;            // (the long field keeps clear of the neighbours)
     const names = SETTLEMENT_NAMES[type];
     const plan = {
       k, type, z,
@@ -306,9 +313,15 @@ export class World {
     const fx = gx - ix, fz = gz - iz;
     const hg = ch.hg;
     const i = iz * G + ix;
-    return (hg[i] * (1 - fx) + hg[i + 1] * fx) * (1 - fz) +
-           (hg[i + G] * (1 - fx) + hg[i + G + 1] * fx) * fz;
+    const h = (hg[i] * (1 - fx) + hg[i + 1] * fx) * (1 - fz) +
+              (hg[i + G] * (1 - fx) + hg[i + G + 1] * fx) * fz;
+    return ch.craters ? h + this.craters.offset(ch.craters, x, z) : h;
   }
+
+  // a shell / bomb crater at (x, z): radius r, depth d (craters.js); returns it or null
+  addCrater(x, z, r, d) { return this.craters.add(x, z, r, d); }
+  // crater pit / lip at (x, z): height offset (0 where there is none)
+  craterAt(x, z) { return this.craters.at(x, z); }
 
   slopeAt(x, z) {
     const d = 1.5;
@@ -490,7 +503,7 @@ export class World {
         hg[gz * G + gx] = this.height(x0 + (gx - 1) * CELL, wz);
       }
     }
-    const ch = { cx, cz, x0, z0, hg, meshes: [], parts: {}, trees: [], extra: [] };
+    const ch = { cx, cz, x0, z0, hg, meshes: [], parts: {}, trees: [], extra: [], craters: null, craterMesh: null, tgeo: null };
 
     // ---- terrain mesh
     const pos = new Float32Array(N * N * 3);
@@ -558,6 +571,7 @@ export class World {
     geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
     geo.setIndex(new THREE.BufferAttribute(idx, 1));
     ch.parts.terrain = this.batch.terrain.add(geo);
+    ch.tgeo = geo;                   // kept: the craters take cells out of it (craters.js)
 
     // ---- water: trimmed sub-quads over cells that are actually under water
     if (minH < WATER_LEVEL && dbg.get('nowater') !== '1') {
@@ -642,6 +656,7 @@ export class World {
     if (dbg.get('notrees') !== '1') this.forest.buildTrees(ch);
 
     this.chunks.set(ckey(cx, cz), ch);
+    this.craters.chunkBuilt(ch, ckey(cx, cz));
     return ch;
   }
 

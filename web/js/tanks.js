@@ -10,6 +10,7 @@ import { buildSecondTurretInterior } from './interiors.js';
 import { WEAPONS, makeWeapon, bakedWeaponMesh } from './weapons.js';
 import { PALETTES } from './modelkit.js';
 import { paintObject, patchMaterial, PATCH_GEO } from './paint.js';
+import { riderMesh } from './tankdefs/carkit.js';
 
 export const G = 9.81;
 
@@ -263,6 +264,13 @@ export class Tank {
     this.turretless = !!HULLS[key].turretless;
     this.apc = !!HULLS[key].apc;                 // armoured personnel carrier: troop seats, no main gun
     this.wheeled = !!HULLS[key].wheeled;         // steers with its front wheels (can't turn on the spot)
+    this.car = HULLS[key].car || null;           // 'car' | 'moto': soft-skinned, bullets go through, the men in it are seen
+    this.soft = !!HULLS[key].soft;
+    this.lean = 0;                               // solo motorcycles lean into the turns / onto the stand
+    this.crash = 0;                              // soft vehicles: speed of the last hard knock (the game hurts the men in it)
+    /** @type {string | null} */
+    this.playerSeat = null;                      // where the player sits, seen from outside (riders of cars / motorcycles)
+    this.remoteInside = false;                   // network play: the other player sits in it
     // yaw pivot: turret ring (or the Mark V gun mount)
     this.turret = new THREE.Group();
     this.turret.position.copy(this.turretless ? this.hull.mount : this.hull.ring.pos);
@@ -316,6 +324,9 @@ export class Tank {
     const parts = opts.parts || defaultParts(key);
     for (const k of ['engine', 'fuel', 'drive', 'turret', 'gun']) if (parts[k]) this.setPart(k, parts[k], true);
     this.refresh();
+    // cars / motorcycles: a figure for every seat that has one (shown while someone sits there)
+    this.riders = [];
+    if (this.soft) for (const s of this.seats()) if (s.rider) this.riders.push({ role: s.role, troop: s.troop ? +s.role.slice(5) : -1, seat: s, mesh: null, ally: null });
 
     this.ammo = opts.ammo ?? this.def.ammoMax;
     if (opts.fuelFrac !== undefined && this.parts.fuel) this.fuel = this.fuelMax * opts.fuelFrac;
@@ -577,7 +588,7 @@ export class Tank {
   }
   updateEngineVisibility() {
     const e = this.parts.engine;
-    if (e && e.vis) e.vis.group.visible = this.bayOpen || !!this.interiorOn;
+    if (e && e.vis) e.vis.group.visible = this.bayOpen || !!this.interiorOn || !!this.hull.engineShown;
   }
 
   setInteriorFlags(obj, on) {
@@ -683,10 +694,14 @@ export class Tank {
         this.speed *= 0.3;
       }
       const r = this.def.radius * 0.8;
-      // trees give way to a moving tank, houses collapse when rammed
+      // trees give way to a moving tank, houses collapse when rammed (a car only flattens bushes: it crashes into the rest)
       const sg = this.speed >= 0 ? 1 : -1;
-      const ram = { speed: this.speed, dx: dirX * sg, dz: dirZ * sg, broke: false, size: 0 };
-      if (world.collideTrees(p, r, ram)) this.speed *= Math.pow(0.02, dt);
+      const ram = { speed: this.speed, dx: dirX * sg, dz: dirZ * sg, broke: false, size: 0, light: this.soft };
+      const impact = Math.abs(this.speed);
+      if (world.collideTrees(p, this.soft ? r * 0.7 : r, ram)) {
+        this.speed *= Math.pow(0.02, dt);
+        if (this.soft) this.knock(impact);
+      }
       const W = this.def.weight;
       if (ram.broke) {
         // knocking a tree down costs speed: the lighter the tank and the thicker the tree, the more
@@ -695,8 +710,11 @@ export class Tank {
         this.rammedT = 0.3;
       }
       let rammed = false;
-      const breakFn = o => { const b = o.house.ram(Math.abs(this.speed)); if (b) rammed = true; return b; };
-      if (world.collideObstacles(p, r, breakFn, 2.6)) this.speed *= Math.pow(0.02, dt);
+      const breakFn = this.soft ? null : o => { const b = o.house.ram(Math.abs(this.speed)); if (b) rammed = true; return b; };
+      if (world.collideObstacles(p, this.soft ? r * 0.7 : r, breakFn, this.soft ? 1.6 : 2.6)) {
+        this.speed *= Math.pow(0.02, dt);
+        if (this.soft) this.knock(impact);
+      }
       if (rammed) {
         this.speed *= 1 - THREE.MathUtils.clamp(0.85 - W / 140, 0.35, 0.8);
         this.bump = 1.4;
@@ -747,9 +765,11 @@ export class Tank {
       this.hull.bay.hole.visible = hinge.rotation.x < -0.05;
     }
 
+    if (this.hull.lean && dt > 0) this.leanStep(dt);
+    if (this.riders.length) this.updateRiders();
     this.root.quaternion.setFromAxisAngle(UP, this.heading)
       .multiply(_q.setFromAxisAngle(AX, this.tiltX))
-      .multiply(_q2.setFromAxisAngle(AZ, this.tiltZ));
+      .multiply(_q2.setFromAxisAngle(AZ, this.tiltZ + this.lean));
 
     // turret / gun laying
     if (dt > 0 && this.aimPoint && this.operated) this.layGun(dt);
@@ -826,7 +846,48 @@ export class Tank {
     }
     p.x = q.x - nx * rr;
     p.z = q.z - nz * rr;
+    if (this.soft) this.knock(Math.abs(this.speed));
     this.speed *= Math.pow(0.05, dt);
+  }
+
+  // ------------------------------------------------ cars and motorcycles
+  // a soft vehicle ran into a tree / wall / tank at `impact` m/s: it stops dead, a hard knock breaks it and hurts
+  // the men in it (the game reads this.crash)
+  knock(impact) {
+    if (impact < 5) return;
+    this.speed *= 0.15;
+    if (impact > 7) {
+      this.crash = Math.max(this.crash, impact);
+      this.damage('hull', (impact - 7) * 5);
+      if (impact > 12) this.damage('engine', (impact - 12) * 6);
+    }
+  }
+  // solo motorcycles lean into the turn (on the side stand when parked)
+  leanStep(dt) {
+    const moving = Math.abs(this.speed) > 0.6 || (this.operated && !this.wrecked);
+    const want = moving ? -this.controls.steer * THREE.MathUtils.clamp(this.speed / 10, -1, 1) * 0.42 : -0.2;
+    this.lean += (want - this.lean) * Math.min(1, dt * 4);
+  }
+  // the men sitting in a car / on a motorcycle: the crew (driver, sidecar gunner), riding infantry, the player
+  // (seen from outside) and the other player of a network game
+  updateRiders() {
+    const crewOn = this.crew && !this.wrecked;
+    for (const r of this.riders) {
+      let on = false, ally = this.team !== 'enemy';
+      if (this.playerSeat && r.role === this.playerSeat) { on = true; ally = true; }
+      else if (this.remoteInside && !this.playerInside && r.role === 'driver') { on = true; ally = true; }
+      else if (r.troop >= 0) on = r.troop < this.troops.length;
+      else if (crewOn) on = r.role === 'driver' || (r.role === 'gunner' && !!this.mg);
+      if (on && (!r.mesh || r.ally !== ally)) {
+        if (r.mesh) r.mesh.removeFromParent();
+        r.mesh = riderMesh(r.seat.rider, ally ? 0x7a6c48 : 0x565b4c);
+        r.mesh.position.set(r.seat.pos[0], r.seat.pos[1] - 0.08, r.seat.pos[2]);
+        r.mesh.rotation.y = r.seat.ry || 0;
+        r.ally = ally;
+        this.root.add(r.mesh);
+      }
+      if (r.mesh) r.mesh.visible = on;
+    }
   }
 
   // tractive force (kN) this tank drives with towards the unit direction (nx, nz): 0 unless it is under way to it.
@@ -877,9 +938,11 @@ export class Tank {
       if (this.reload > 0) this.reload -= dt;
       if (this.mgCool > 0) this.mgCool -= dt;
     }
+    if (this.hull.lean && dt > 0) this.leanStep(dt);
+    if (this.riders.length) this.updateRiders();
     this.root.quaternion.setFromAxisAngle(UP, this.heading)
       .multiply(_q.setFromAxisAngle(AX, this.tiltX))
-      .multiply(_q2.setFromAxisAngle(AZ, this.tiltZ));
+      .multiply(_q2.setFromAxisAngle(AZ, this.tiltZ + this.lean));
     this.turret.rotation.y = this.turretYaw;
     this.gun.rotation.x = -this.gunElev;
     const S = this.secondTurret;

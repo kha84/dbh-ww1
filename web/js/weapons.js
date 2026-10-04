@@ -109,6 +109,11 @@ export const WEAPONS = {
                m: { len: 1.65, bl: 0.9, stock: 'none', h: 0.16 } }),
   kpvt:      M('КПВТ', '14.5×114', 50, 140, 600, 3, { mount: true, reload: 7, spread: 0.03, recoil: 0.04, range: 700,
                m: { len: 2.0, bl: 1.2, stock: 'none', h: 0.17 } }),
+  // aircraft machine guns (fixed in the planes)
+  lmg08:     M('LMG 08/15 «Шпандау»', '7.92×57', 500, 62, 500, 1, { mount: true, air: true, range: 500, m: { len: 1.0, stock: 'none' } }),
+  shkas:     M('ШКАС', '7.62×54R', 750, 60, 1800, 2, { mount: true, air: true, range: 500, m: { len: 0.95, stock: 'none' } }),
+  mg17:      M('MG 17', '7.92×57', 1000, 62, 1150, 2, { mount: true, air: true, range: 500, m: { len: 1.2, stock: 'none' } }),
+  br303:     M('Browning .303 Mk II', '.303', 300, 60, 1150, 2, { mount: true, air: true, range: 500, m: { len: 1.1, stock: 'none' } }),
 };
 
 // cartridge boxes found / dropped: rounds per box
@@ -199,6 +204,7 @@ export class Guns {
     this.fx = fx;
     this.sfx = sfx;
     this.tanks = [];                 // set by the game
+    this.planes = [];                // aeroplanes (planes.js)
     this.soldiers = [];              // live infantry (see infantry.js)
     this.foot = null;                // { pos, active, crouch } on-foot player
     this.exposed = null;             // { pos } eye of the player riding exposed (troop seat of an open carrier)
@@ -213,6 +219,10 @@ export class Guns {
     this.onExplosion = () => {};     // (pos, radius, dmg, owner)
     /** @type {(...a: any[]) => void} */
     this.onGrenadeTank = () => {};   // anti-tank grenade struck a tank: (tank, point, dir, def, owner)
+    /** @type {(...a: any[]) => void} */
+    this.onSoftHit = () => {};       // a bullet went into a car / motorcycle: (vehicle, point, dmg, owner)
+    /** @type {(...a: any[]) => void} */
+    this.onPlaneHit = () => {};      // a bullet struck a plane: (plane, point, dmg, owner)
     /** @type {(...a: any[]) => void} */
     this.onShot = () => {};          // every round fired: (origin, hitPoint, owner, W) - infantry hears / is suppressed
     /** @type {(...a: any[]) => void} */
@@ -247,6 +257,16 @@ export class Guns {
         const tt = segBox(a.x, a.y, a.z, b.x, b.y, b.z, bx.min.x, bx.min.y, bx.min.z, bx.max.x, bx.max.y, bx.max.z);
         if (tt !== null && tt * maxD < best) { best = tt * maxD; hit = { kind: 'tank', tank: t }; }
       }
+    }
+    // planes
+    for (const pl of this.planes) {
+      if (owner && (owner.plane === pl || ((owner.remote || owner.replay) && pl.remoteUse))) continue;
+      const rel = _c.copy(pl.root.position).sub(origin);
+      const along = rel.dot(dir);
+      if (along < -15 || along > best + 15) continue;
+      if (rel.addScaledVector(dir, -along).length() > 15) continue;
+      const tt = pl.hitSegment(origin, end);
+      if (tt !== null && tt * maxD < best) { best = tt * maxD; hit = { kind: 'plane', plane: pl }; }
     }
     // infantry: vertical capsules (enemies - soldiers and enemy tanks - don't hit their own men)
     const friendly = owner && (owner.soldier || (owner.tank && owner.tank.team === 'enemy' && !owner.player));
@@ -337,7 +357,7 @@ export class Guns {
   fire(origin, dir, W, owner, muzzle = origin, tracer = true) {
     const hit = this.trace(origin, dir, Math.max(250, W.range * 2.2), owner);
     const dmgFall = hit.dist > W.range ? Math.max(0.35, 1 - (hit.dist - W.range) / (W.range * 1.5)) : 1;
-    const dmg = W.dmg * dmgFall * (hit.head ? 2.2 : 1);
+    const dmg = W.dmg * dmgFall * (hit.head ? 2.2 : 1) * (owner && owner.dmgK || 1);     // (dmgK: one trace for several rounds)
     const real = !this.visual;
     this.onFired(origin, dir, W, owner, muzzle, tracer);
     if (hit.kind === 'soldier') {
@@ -347,6 +367,12 @@ export class Guns {
       if (real) this.onPlayerHit(dmg * 0.5, owner);
     } else if (hit.kind === 'remote') {
       if (real) this.onRemoteHit(dmg * 0.5, owner);
+    } else if (hit.kind === 'plane') {
+      this.fx.spawn('spark', hit.point, this.fx.rnd(6), 0.25);
+      if (real) this.onPlaneHit(hit.plane, hit.point, dmg, owner);
+    } else if (hit.kind === 'tank' && hit.tank.soft) {
+      this.fx.spawn('spark', hit.point, this.fx.rnd(6), 0.25);
+      if (real) this.onSoftHit(hit.tank, hit.point, dmg, owner);
     } else if (hit.kind === 'tank') {
       for (let i = 0; i < 3; i++) this.fx.spawn('spark', hit.point, this.fx.rnd(10), 0.4);
       if (Math.random() < 0.25) this.sfx.ping(hit.point.distanceTo(this.listener), 0.25);

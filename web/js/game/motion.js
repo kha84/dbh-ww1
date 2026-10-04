@@ -99,6 +99,7 @@ export function createMotion(ctx) {
     if (state.fireReq) {
       state.fireReq = false;
       if (!canGun()) msg('Стрелять можно с места наводчика или командира (2 / 1)');
+      else if (v.car && !v.parts.gun) msg('Из-за руля не стрелять — сядь пассажиром (E у задней половины)');
       else if (!v.parts.gun) msg('Орудия нет!', '#ff9a7a');
       else if (v.hp.gun <= 0) msg('Орудие уничтожено!', '#ff9a7a');
       else if (v.ammo <= 0) msg('Снаряды кончились!', '#ff9a7a');

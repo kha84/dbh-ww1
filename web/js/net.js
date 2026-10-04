@@ -331,8 +331,9 @@ export class Net {
     // shells: the host sends the shells it fires, the guest sends its own (and flies a ghost of it)
     combat.onFired = (s, tank) => {
       if (!this.connected) return;
-      if (this.host) this.send({ k: 'shell', n: tank.nid, p: v3(s.pos), v: v3(s.vel) });
-      else { s.ghost = true; this.send({ k: 'fire', n: tank.nid, p: v3(s.pos), v: v3(s.vel), pen: s.pen, dmg: s.dmg }); }
+      const x = { b: s.bomb || 0, l: s.light ? 1 : 0, c: s.crater ?? s.dmg };
+      if (this.host) this.send({ k: 'shell', n: tank ? tank.nid : 0, p: v3(s.pos), v: v3(s.vel), ...x });
+      else { s.ghost = true; this.send({ k: 'fire', n: tank ? tank.nid : 0, p: v3(s.pos), v: v3(s.vel), pen: s.pen, dmg: s.dmg, ...x }); }
     };
     if (this.host) {
       const hit0 = combat.hitTank.bind(combat);
@@ -418,12 +419,14 @@ export class Net {
   mePose() {
     const G = this.G, s = G.state;
     const drive = s.mode === 'drive' && s.vehicle;
-    const p = drive ? s.vehicle.root.position : G.player.position;
+    const pl = s.mode === 'fly' && s.plane;
+    const p = drive ? s.vehicle.root.position : pl ? pl.root.position : G.player.position;
     const d = G.items.drawnWeapon && G.items.drawnWeapon();
     const ts = G.troopSeat();
     const eye = ts && ts.fire ? v3(G.camera.position) : null;
     return [...v3(p), r3(s.yaw), r3(s.pitch), s.crouch ? 1 : 0, drive ? 1 : 0, drive ? s.vehicle.nid || 0 : 0,
-            s.seat || '', d && !G.items.hands ? d.w.key : (G.items.drawn === 'grenade' ? 'g' : ''), eye, s.dead ? 1 : 0, r2(s.aimK || 0)];
+            s.seat || '', d && !G.items.hands ? d.w.key : (G.items.drawn === 'grenade' ? 'g' : ''), eye, s.dead ? 1 : 0, r2(s.aimK || 0),
+            pl ? [pl.id, pl.key, ...pl.netPose()] : null, s.para ? [r2(s.para.open)] : null];
   }
   // the host's snapshot: its tanks (poses), soldiers, the host player, shots since the last one
   sendSnapshot() {
@@ -496,6 +499,7 @@ export class Net {
       const t = this.byNid.get(r.veh);
       if (t) return { id: 'remote', pos: t.root.position, vel: t.velocity, isTank: true, tank: t, remote: true };
     }
+    if (this.remotePlane) return this.remotePlane.alt > 150 ? null : { id: 'remote', pos: this.remotePlane.root.position, vel: this.remotePlane.vel, isTank: false, air: true, remote: true };
     return { id: 'remote', pos: r.pos, vel: this.remoteVel, isTank: false, crouch: r.crouch, remote: true };
   }
   partnerPos() { return this.remote ? this.remote.pos.clone() : null; }
@@ -538,6 +542,7 @@ export class Net {
       pickups: [...items.pickups.values()].filter(p => !/^s\d+:/.test(p.id) && near(p.pos))
         .map(p => ({ id: p.id, type: p.type, x: r2(p.pos.x), y: r2(p.pos.y), z: r2(p.pos.z), d: pickupData(p) })),
       ruins: [...G.world.ruins], trees: [...G.world.brokenTrees.entries()], time: G.state.time,
+      craters: G.world.craters.data().filter(c => Math.hypot(c[0] - pos[0], c[1] - pos[2]) < REL_R),
     });
     for (const t of G.tanks) { this.register(t); if (near(t.root.position)) { t.netSent = false; this.sendState(t, true); } }
     this.send({ k: 'welcome', pos, yaw: hd, tank: tank ? tank.nid : 0, nid: this.nid });
@@ -561,7 +566,8 @@ export class Net {
   }
   on_fire(m) {
     const t = this.byNid.get(m.n);
-    this.G.combat.launch({ pos: new THREE.Vector3(...m.p), vel: new THREE.Vector3(...m.v), pen: m.pen, dmg: m.dmg, owner: t || null });
+    this.G.combat.launch({ pos: new THREE.Vector3(...m.p), vel: new THREE.Vector3(...m.v), pen: m.pen, dmg: m.dmg, owner: t || null,
+                           bomb: m.b || 0, light: !!m.l, crater: m.c ?? m.dmg, life: m.b ? 40 : 7 });
     this.G.infantry.noise(new THREE.Vector3(...m.p), 280);
   }
   on_claim(m) {
@@ -622,6 +628,8 @@ export class Net {
         if (b.y2 != null) world.cutStump(t, b.y2, b.dx2, b.dz2, true);
       }
     }
+    // the craters dug before the guest came (new ones each machine digs itself)
+    for (const [x, z, r, d] of m.craters || []) if (!world.craters.list.some(c => Math.hypot(c.x - x, c.z - z) < 0.5)) world.craters.add(x, z, r, d, true);
     G.state.time = m.time;
   }
   on_s(m) {
@@ -688,7 +696,7 @@ export class Net {
   }
   on_shell(m) {
     this.G.combat.launch({ pos: new THREE.Vector3(...m.p), vel: new THREE.Vector3(...m.v), pen: 0, dmg: 0,
-                           owner: this.byNid.get(m.n) || null, ghost: true });
+                           owner: this.byNid.get(m.n) || null, ghost: true, bomb: m.b || 0, light: !!m.l, crater: m.c || 0, life: m.b ? 40 : 7 });
   }
   on_owner(m) {
     const G = this.G, t = this.byNid.get(m.n);
@@ -937,13 +945,17 @@ export class Net {
     r.eye = P[10] ? new THREE.Vector3(...P[10]) : null;
     r.dead = !!P[11];
     r.aimK = P[12] || 0;
+    r.plane = P[13] || null;                                  // [id, key, pose...] while it flies
+    r.para = P[14] || null;                                   // [open] under the parachute
   }
   removeAvatar() {
     if (this.avatar) { this.avatar.dispose(); this.avatar = null; }
   }
   updateAvatar(dt) {
     const r = this.remote;
-    if (!this.connected || !r || r.dead) { this.removeAvatar(); return; }
+    this.updateRemotePlane();
+    if (!this.connected || !r || r.dead || r.plane) { this.removeAvatar(); this.setRemoteCanopy(false); return; }
+    this.setRemoteCanopy(!!(r.para && r.para[0] > 0.2));
     // on foot: a figure; riding in the open back of a carrier: crouched behind the side
     const riding = r.mode && r.eye;
     if (r.mode && !riding) { this.removeAvatar(); return; }
@@ -968,6 +980,39 @@ export class Net {
     a.root.rotation.y = r.yaw;
   }
 
+  // the other player's plane: a puppet following its pose; when the player leaves it, it flies on (or stands) here
+  updateRemotePlane() {
+    const G = this.G, r = this.remote;
+    const info = this.connected && r && r.plane;
+    if (info) {
+      const [id, key, ...pose] = info;
+      let p = G.planes.find(q => q.id === id);
+      if (!p) p = G.flight.spawnPlane(key, pose[0], pose[2], 0, { id, air: true, pos: [pose[0], pose[1], pose[2]], quat: pose.slice(3, 7), vel: pose.slice(7, 10) });
+      if (!p) return;
+      p.remote = true; p.remoteUse = true; p.used = true;
+      p.setNetPose(pose);
+      this.remotePlane = p;
+    } else if (this.remotePlane) {
+      const p = this.remotePlane;
+      this.remotePlane = null;
+      p.remote = false; p.remoteUse = false;
+      if (p.speed < 3) { p.onGround = true; p.setGroundPose(p.heading, G.world); }
+      else { p.onGround = false; p.abandoned = true; p.ctl.sy = -0.3; p.ctl.throttle = 0.3; }
+    }
+  }
+  setRemoteCanopy(on) {
+    const G = this.G;
+    if (on && !this.remoteCanopy) {
+      const g = new THREE.Mesh(new THREE.SphereGeometry(3.2, 14, 5, 0, Math.PI * 2, 0, Math.PI / 2.6), new THREE.MeshStandardMaterial({ color: 0xd9d3bd, side: THREE.DoubleSide }));
+      g.scale.y = 0.6;
+      G.scene.add(g);
+      this.remoteCanopy = g;
+    } else if (!on && this.remoteCanopy) { G.scene.remove(this.remoteCanopy); this.remoteCanopy = null; }
+    if (this.remoteCanopy && this.avatar) this.remoteCanopy.position.copy(this.avatar.pos).setY(this.avatar.pos.y + 7);
+  }
+  // a hit on the plane the other player flies: it is told (its plane takes the damage there)
+  on_phit(m) { const p = this.G.state.plane; if (p) p.damage(m.n); }
+
   // ------------------------------------------------ helpers
   pickupFrom(type, d) {
     if (d == null) return null;
@@ -981,4 +1026,9 @@ export class Net {
     return null;
   }
   victory(text) { this.send({ k: 'victory', text }); }
+  // a plane the local player wants to fly: not the one the other player sits in
+  claimPlane(p) {
+    if (p.remoteUse) { this.G.msg('В этом самолёте второй игрок'); return false; }
+    return true;
+  }
 }

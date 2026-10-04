@@ -442,7 +442,7 @@ export class Forest {
       const rr = t.r + r;
       const d2 = dx * dx + dz * dz;
       if (d2 < rr * rr && d2 > 1e-6) {
-        if (ram && Math.abs(ram.speed) > 1.2 + t.g * 1.3) {
+        if (ram && Math.abs(ram.speed) > 1.2 + t.g * 1.3 && (!ram.light || t.kind === 'bush')) {
           this.breakTree(t, t.base + 0.35 + Math.random() * 0.3, ram.dx, ram.dz);
           ram.broke = true;
           ram.size = Math.max(ram.size || 0, t.g);

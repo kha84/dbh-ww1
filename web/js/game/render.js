@@ -3,7 +3,7 @@
 // and post-processing (ambient occlusion, bloom, FXAA). `three` is the WebGPU build of three.js (vite.config.js
 // aliases it), so every module shares one copy.
 //   ?backend=webgl  force WebGL 2     ?q=low|medium|high  graphics quality (else the saved one / by the backend)
-//   ?tod=H  start at H o'clock     ?daylen=M  minutes of a whole day (0: the time stands still)
+//   ?tod=H  start at H o'clock     ?daylen=M  minutes of a whole day at the daytime pace (night runs 3x; 0: the time stands still)
 //   ?noshadows=1 ?nofog=1 ?noclouds=1 ?noaa=1 ?nopost=1 ?noao=1 ?nobloom=1 ?bloomT=0.1 ?bloomS=0.9 ?logdepth=1
 import * as THREE from 'three/webgpu';
 import { pass, mrt, output, normalView, vec4, renderOutput, uniform, float, instancedBufferAttribute } from 'three/tsl';
@@ -70,6 +70,8 @@ export function initialQuality(dbg, renderer) {
 export function saveQuality(q) { try { localStorage.setItem(QUALITY_KEY, q); } catch { /* private mode */ } }
 
 // ===================================================================== sky
+// the long summer day: sunrise / sunset (hours)
+const SUNRISE = 4.5, SUNSET = 20.5;
 const smooth = (a, b, x) => { const t = Math.max(0, Math.min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 const _c1 = new THREE.Color(), _c2 = new THREE.Color();
 const mixHex = (a, b, t, out) => out.set(a).lerp(_c2.set(b), t);
@@ -156,15 +158,18 @@ export function createSky(scene, camera, dbg, viewDist) {
   }
   clouds.renderOrder = 1;
 
-  // time of day (hours): a whole day in `dayLen` minutes, nights pass twice as fast as days
-  const dl = dbg.has('daylen') ? parseFloat(dbg.get('daylen')) : 24;
+  // time of day (hours): a long summer day (sunrise 4:30, sunset 20:30) and a short night - in `dayLen` minutes of
+  // daytime clock the night passes three times as fast (24 min of day, 4 min of night by default)
+  const dl = dbg.has('daylen') ? parseFloat(dbg.get('daylen')) : 36;
   const t = { tod: dbg.has('tod') ? parseFloat(dbg.get('tod')) % 24 : 9, dayLen: dl };
   const sunDir = new THREE.Vector3(), lightDir = new THREE.Vector3();
   const env = { night: 0, sunUp: 1, exposure: 1.05 };
 
-  // sun direction for the hour: rises in the east (+X), highest at noon in the south (-Z)
+  // sun direction for the hour: rises in the east (+X), highest at noon in the south (-Z); the day arc takes the 16
+  // hours from SUNRISE to SUNSET, the night half of the circle the other 8
   function sunDirection(h, out) {
-    const a = (h - 6) / 12 * Math.PI;                       // 0 at sunrise, PI at sunset
+    const day = SUNSET - SUNRISE, hd = ((h - SUNRISE) % 24 + 24) % 24;
+    const a = hd < day ? hd / day * Math.PI : Math.PI + (hd - day) / (24 - day) * Math.PI;   // 0 at sunrise, PI at sunset
     return out.set(Math.cos(a), Math.sin(a) * 0.78, -Math.sin(a) * 0.45 - 0.2).normalize();
   }
 
@@ -204,8 +209,8 @@ export function createSky(scene, camera, dbg, viewDist) {
   // every frame: the clock runs, the sun and the clouds follow the player
   function update(dt, anchor) {
     if (t.dayLen > 0) {
-      const night = t.tod < 5.5 || t.tod > 18.5;
-      setTime(t.tod + dt * 24 / (t.dayLen * 60) * (night ? 2 : 1));
+      const night = t.tod < SUNRISE - 0.5 || t.tod > SUNSET + 0.5;
+      setTime(t.tod + dt * 24 / (t.dayLen * 60) * (night ? 3 : 1));
     }
     const d = sun.userData.dir;
     sun.position.set(anchor.x + d.x * 250, anchor.y + d.y * 250, anchor.z + d.z * 250);

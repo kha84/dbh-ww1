@@ -10,6 +10,7 @@ import { well } from './structures/well.js';
 import { gasStation } from './structures/gasstation.js';
 import { repairStation } from './structures/repairstation.js';
 import { fence, sign } from './structures/props.js';
+import { airfield } from './structures/airfield.js';
 
 export const SETTLEMENT_NAMES = {
   village: ['Берёзовка', 'Ивановка', 'Сосновка', 'Малиновка', 'Кривцы', 'Заречье', 'Горелово',
@@ -17,10 +18,11 @@ export const SETTLEMENT_NAMES = {
   town:    ['Краснополье', 'Новоград', 'Верхнедонск', 'Старый Оскол', 'Приволжск', 'Белозёрск'],
   gas:     ['АЗС «Путь»', 'АЗС №17', 'Заправка «Горизонт»', 'АЗС «Дорожная»', 'Бензоколонка'],
   repair:  ['Ремпункт №3', 'Танкоремонтный пункт', 'Ремпункт «Броня»', 'ПТРМ-12', 'Мастерские'],
+  airfield: ['Аэродром «Сокол»', 'Полевой аэродром №4', 'Аэродром «Ястреб»', 'Площадка подскока', 'Аэродром «Берёзка»', 'Аэродром «Орлиное»'],
 };
 
 export const SETTLEMENT_LABEL = {
-  village: 'Село', town: 'Город', gas: 'Заправка', repair: 'Ремпункт',
+  village: 'Село', town: 'Город', gas: 'Заправка', repair: 'Ремпункт', airfield: 'Аэродром',
 };
 
 export function buildSettlement(world, plan) {
@@ -81,9 +83,10 @@ export function buildSettlement(world, plan) {
     } else well(K, 0, 11);
   }
 
-  let crane = null;
+  let crane = null, planes = [];
   if (plan.type === 'gas') gasStation(K);
   if (plan.type === 'repair') crane = repairStation(K);
+  if (plan.type === 'airfield') planes = airfield(K);
 
   // houses destroyed earlier stay ruined
   for (const h of houses) if (world.ruins.has(h.id)) h.ruin(true);
@@ -102,5 +105,5 @@ export function buildSettlement(world, plan) {
   bakeStatic(group.children.filter(o => !inHouses.has(o)), group);
 
   world.scene.add(group);
-  return { plan, group, obstacles: K.obstacles, zones: K.zones, items: K.items, crane, houses };
+  return { plan, group, obstacles: K.obstacles, zones: K.zones, items: K.items, crane, houses, planes };
 }
