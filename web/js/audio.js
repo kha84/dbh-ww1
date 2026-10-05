@@ -75,6 +75,57 @@ export class Sfx {
   pour() { this.burst(0.12, 0.4, 1200, 3); }
   reload() { this.burst(0.18, 0.06, 5000); setTimeout(() => this.burst(0.2, 0.08, 3000), 180); }
 
+  // railway: the steam whistle ('high' | 'low') or the air horn of a diesel ('horn')
+  whistle(dist, kind = 'high', dur = 1.4) {
+    if (!this.ctx) return;
+    const v = this.vol(dist * 0.35);
+    if (v < 0.01) return;
+    const t = this.ctx.currentTime;
+    const tones = kind === 'horn' ? [311, 370] : kind === 'low' ? [233, 277, 349] : [440, 554, 659];
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(0.12 * v, t + 0.08);
+    g.gain.setValueAtTime(0.12 * v, t + dur - 0.2);
+    g.gain.linearRampToValueAtTime(0, t + dur);
+    const f = this.ctx.createBiquadFilter();
+    f.type = 'lowpass'; f.frequency.value = kind === 'horn' ? 1400 : 2600;
+    f.connect(g); g.connect(this.master);
+    for (const fr of tones) {
+      const o = this.ctx.createOscillator();
+      o.type = kind === 'horn' ? 'sawtooth' : 'triangle';
+      o.frequency.setValueAtTime(fr * 0.97, t);
+      o.frequency.linearRampToValueAtTime(fr, t + 0.12);
+      o.connect(f);
+      o.start(t); o.stop(t + dur + 0.05);
+    }
+    if (kind !== 'horn') this.burst(0.08 * v, dur, 3000, 0.4);       // the hiss of the steam
+  }
+  // one exhaust beat of a steam engine (k: how hard it works)
+  chuff(dist, k = 1) {
+    const v = this.vol(dist * 0.6) * k;
+    this.burst(0.35 * v, 0.22, 900, 1.2);
+  }
+  // wheels over a rail joint: ta-tak
+  clack(dist) {
+    const v = this.vol(dist);
+    this.burst(0.18 * v, 0.06, 2500, 2);
+    setTimeout(() => this.burst(0.16 * v, 0.06, 2200, 2), 110);
+  }
+  // the bell of a level crossing
+  bell(dist) {
+    if (!this.ctx) return;
+    const v = this.vol(dist * 0.5);
+    const t = this.ctx.currentTime;
+    const o = this.ctx.createOscillator();
+    o.type = 'square';
+    o.frequency.value = 1180;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.06 * v, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
+    o.connect(g); g.connect(this.master);
+    o.start(t); o.stop(t + 0.4);
+  }
+
   setEngine(on, load) {
     if (!this.ctx) return;
     if (!this.engine) {

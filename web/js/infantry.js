@@ -27,6 +27,7 @@ const UNIFORMS = {
   enemy: { cloth: 0x59604a, dark: 0x3f4535, helmet: 0x464d3a, boots: 0x2a241c },
   crew:  { cloth: 0x2e3033, dark: 0x222325, helmet: 0x18191a, boots: 0x18181a },
   ally:  { cloth: 0x7a6a48, dark: 0x4f4430, helmet: 0x3d4a2f, boots: 0x2e241a },      // the other player (network)
+  rail:  { cloth: 0x2b3446, dark: 0x1d2330, helmet: 0x1f2633, boots: 0x18181a },      // train crews (trains.js)
 };
 const SKIN = new THREE.Color(0xc39a7a);
 const SMAT = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, metalness: 0.05 });
@@ -196,6 +197,10 @@ export class Soldier {
     this.pitch = 0;
     this.aimK = 0;                             // 0 low ready .. 1 aiming
     this.pose = { hipsY: 0.92, thigh: 0, shin: 0, torso: 0, body: 0, bodyZ: 0 };
+    /** @type {any} riding in a train ({ train }: trains.js keeps him in his place) */
+    this.ride = null;
+    /** @type {string | null} */
+    this.rideStance = null;
     scene.add(this.root);
   }
 
@@ -243,7 +248,7 @@ export class Soldier {
       this.losT = 0.3 + Math.random() * 0.25;
       const tp = _w.copy(tgt.pos); tp.y += tgt.isTank ? 1.6 : (tgt.crouch ? 0.9 : 1.45);
       const range = tgt.isTank ? 260 : 170;
-      this.los = dist < range && ctx.ai.clearLine(this.eye(_v), tp, tgt.isTank ? tgt.tank : null);
+      this.los = dist < range && ctx.ai.clearLine(this.eye(_v), tp, tgt.isTank ? tgt.tank : null, !!this.ride);
       // field of view: things behind the soldier are noticed only close by (or once it knows about them)
       if (this.los && !this.alert) {
         const off = Math.abs(wrap(Math.atan2(tgt.pos.x - this.pos.x, tgt.pos.z - this.pos.z) - this.heading - this.lookYaw));
@@ -280,7 +285,8 @@ export class Soldier {
     this.thinkT -= dt;
     if (this.thinkT <= 0) {
       this.thinkT = 0.25 + Math.random() * 0.2;
-      this.decide(ctx, W, tgt, dist);
+      if (this.ride) this.decideRide(tgt);
+      else this.decide(ctx, W, tgt, dist);
     }
 
     // ---- facing
@@ -314,8 +320,21 @@ export class Soldier {
     if (tgt && this.state !== 'idle') this.pitch = Math.atan2(tgt.pos.y + (tgt.isTank ? 1.2 : 1.0) - (this.pos.y + STANCE[this.stance].eye), Math.max(1, dist));
     else this.pitch *= 0.9;
 
-    this.move(dt, ctx);
+    if (this.ride) this.speedNow = 0;               // riding in a train: it carries him (trains.js places him)
+    else this.move(dt, ctx);
     this.animate(dt);
+  }
+
+  // riding in a train (trains.js): watch from his place, fire at what he sees; no cover, no running about
+  decideRide(tgt) {
+    this.dodge = null;
+    this.cover = null;
+    this.moveTo = null;
+    this.board = null;
+    this.idleAct = 'watch';
+    this.setStance(this.rideStance || 'stand');
+    if (this.alert && tgt) this.state = 'combat';
+    else if (this.state !== 'combat') this.state = 'idle';
   }
 
   // the part of the AI that picks what to do (called a few times a second)
@@ -753,7 +772,11 @@ export class Infantry {
     const p = new THREE.Vector3(x, y, z);
     this.world.collideObstacles(p, 0.4);
     p.y = this.world.heightAt(p.x, p.z);
-    const s = new Soldier(this.scene, p, o);
+    return this.add(new Soldier(this.scene, p, o));
+  }
+  // a soldier riding in a train at pos (trains.js sets s.ride and keeps him in his place)
+  spawnRider(pos, o) { return this.add(new Soldier(this.scene, pos.clone(), o)); }
+  add(s) {
     s.onDeath = (sd, owner) => this.died(sd, owner);
     this.soldiers.push(s);
     if (s.squad) {
@@ -854,9 +877,9 @@ export class Infantry {
 
   // ------------------------------------------------ cover & line of sight
   // a clear line between two points (terrain, obstacles, trees; `ignore`: tank not to count)
-  clearLine(a, b, ignore = null) {
+  clearLine(a, b, ignore = null, noTrain = false) {
     if (!this.world.lineOfSight(a, b, 4)) return false;
-    if (this.world.raycastObstacles(a, b)) return false;
+    if (this.world.raycastObstacles(a, b, noTrain)) return false;
     if (this.world.raycastTrees(a, b)) return false;
     for (const t of this.tanks) {
       if (t === ignore) continue;
@@ -882,6 +905,7 @@ export class Infantry {
     for (const ob of W.obstacles) {
       const dx = ob.x - P.x, dz = ob.z - P.z;
       if (dx * dx + dz * dz > (R + ob.rad) ** 2) continue;
+      if (ob.train && ob.train.train.moving) continue;          // not behind a running train
       const gy = W.heightAt(ob.x, ob.z);
       if (ob.y1 !== undefined && ob.y1 - gy < 0.55) continue;
       let tx = ob.x - threat.x, tz = ob.z - threat.z;
@@ -1001,7 +1025,7 @@ export class Infantry {
       const b = t.vis.hullBox;
       const c = Math.cos(t.heading), sn = Math.sin(t.heading);
       for (const s of this.soldiers) {
-        if (!s.alive) continue;
+        if (!s.alive || s.ride) continue;
         const dx = s.pos.x - tp.x, dz = s.pos.z - tp.z;
         if (dx * dx + dz * dz > 40) continue;
         const lx = dx * c - dz * sn, lz = dx * sn + dz * c;
@@ -1050,7 +1074,7 @@ export class Infantry {
       let going = this.soldiers.filter(s => s.alive && s.board === t).length;
       if (going >= want) continue;
       const cands = this.soldiers.filter(s => {
-        if (!s.alive || s.board || s.state === 'flee' || s.state === 'retreat' || s.dodge) return false;
+        if (!s.alive || s.board || s.ride || s.state === 'flee' || s.state === 'retreat' || s.dodge) return false;
         const d = Math.hypot(s.pos.x - tp.x, s.pos.z - tp.z);
         return s.state === 'idle' ? d < 35 && !t.derelict : d < 65;
       }).sort((a, b) => a.pos.distanceTo(tp) - b.pos.distanceTo(tp));
@@ -1077,6 +1101,7 @@ export class Infantry {
   // forget soldiers far from the player; bodies disappear after a while
   prune(anchor, dist = 700, anchor2 = null) {
     this.soldiers = this.soldiers.filter(s => {
+      if (s.ride) return true;                        // the train takes its riders away with it
       const far = Math.hypot(s.pos.x - anchor.x, s.pos.z - anchor.z) > dist &&
                   (!anchor2 || Math.hypot(s.pos.x - anchor2.x, s.pos.z - anchor2.z) > dist);
       const old = !s.alive && s.deathT > 1.2 && (s.goneT = (s.goneT || 0) + 1) > 60;

@@ -345,6 +345,7 @@ export class Combat {
     } else {
       this.fx.explosion(hp, s.bomb ? 1.5 + s.dmg * 0.4 : s.light ? 0.45 : 1, best.kind === 'ground');
       if (best.kind === 'obstacle' && best.obstacle.house) best.obstacle.house.hit(hp, dir, s.dmg * (s.bomb ? 3 : 1));
+      else if (best.kind === 'obstacle' && best.obstacle.hit) best.obstacle.hit(hp, dir, s);          // a car of a train
       this.sfx.boom(hp.distanceTo(this.listener), s.bomb ? 1.5 : s.light ? 0.5 : 1);
       if (best.kind === 'foot' && !this.god) this.onPlayerDamage(200, s.owner);
     }

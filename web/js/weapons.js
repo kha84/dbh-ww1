@@ -307,7 +307,7 @@ export class Guns {
     // obstacles & trees
     _p0.copy(origin);
     const segEnd = _c.copy(origin).addScaledVector(dir, best);
-    const ob = this.world.raycastObstacles(_p0, segEnd);
+    const ob = this.world.raycastObstacles(_p0, segEnd, true);           // (bullets go through the cars of a train)
     if (ob && ob.t * best < best) { best = ob.t * best; hit = { kind: 'obstacle', obstacle: ob.obstacle }; }
     const segEnd2 = new THREE.Vector3().copy(origin).addScaledVector(dir, best);
     const tr = this.world.raycastTrees(_p0, segEnd2);

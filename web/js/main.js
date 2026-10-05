@@ -35,9 +35,12 @@ import { createGrass } from './game/grass.js';
 import { createFlight } from './game/flight.js';
 import { Plane } from './planes.js';
 import { PLANES, PLANE_TIERS } from './planedefs/index.js';
+import { Trains } from './trains.js';
+import { LOCOS, LOCO_TIERS, composeTrain } from './traindefs/index.js';
+import { createRail } from './game/railway.js';
 
 // debug flags: ?nowater=1 ?noclouds=1 ?notrees=1 ?notanks=1 ?noenemies=1 ?noinfantry=1 ?noshadows=1 ?nofog=1
-//              ?waterred=1 ?watery=N ?noaa=1 ?logdepth=1 ?seed=N ?god=1 ?start=Z ?view=N
+//              ?waterred=1 ?watery=N ?noaa=1 ?logdepth=1 ?seed=N ?god=1 ?start=Z ?view=N ?notrains=1 ?norail=1
 // game: ?mode=road|duel|range (&tank=KEY &enemies=K1,K2), ?load=SAVE_ID; without a mode the main menu is shown
 // (?seed / ?start alone start the road directly)
 const dbg = new URLSearchParams(location.search);
@@ -52,7 +55,7 @@ const SEED = LOAD ? LOAD.seed : dbg.has('seed') ? parseInt(dbg.get('seed'), 10) 
 
 // ================== state ==================
 const state = {
-  mode: 'walk',          // 'walk' | 'drive'
+  mode: 'walk',          // 'walk' | 'drive' | 'fly' | 'train'
   vehicle: null,
   view: 'third',         // in a tank: 'third' person or 'inside' (first person in the crew compartment)
   seat: null,            // inside: 'commander' | 'gunner' | 'driver' | null (moving around the compartment)
@@ -117,6 +120,12 @@ items.onTaken = p => director.bagTaken(p);
 const workshop = new Workshop(scene, world);
 const tanks = [];
 const planes = [];                   // aeroplanes (planes.js): parked on the airfields, flown, crashed
+// trains on the railway lines (trains.js): the enemy's come along the lines near the player (road mode, the host)
+const trains = new Trains(scene, world, { fx, sfx });
+trains.disabled = MODE !== 'road' || NET === 'guest' || dbg.get('notrains') === '1' || dbg.get('noenemies') === '1';
+trains.spawnRider = (pos, kit) => (dbg.get('noinfantry') === '1' ? null : infantry.spawnRider(pos, kit));
+trains.onEvent = (t, kind, a, b) => trainEvent(t, kind, a, b);
+trains.god = combat.god;
 
 // data of a loot item (settlements, wrecks) -> the object the pickup carries
 function itemData(it) {
@@ -311,10 +320,14 @@ function renderSpawnMenu() {
   $('spCars').innerHTML = CAR_TIERS.map(btn).join('');
   $('spMotos').innerHTML = MOTO_TIERS.map(btn).join('');
   $('spPlanes').innerHTML = PLANE_TIERS.map(k => `<button data-k="${k}" data-plane="1">${PLANES[k].name}<small>${PLANES[k].year}</small></button>`).join('');
+  $('spTrains').innerHTML = LOCO_TIERS.map(k => `<button data-k="${k}" data-train="1">${LOCOS[k].name}<small>${LOCOS[k].year}</small></button>`).join('');
   $('spFoe').className = spawnFoe ? 'on foe' : '';
   $('spFree').className = spawnFoe ? '' : 'on';
   for (const b of spawnEl.querySelectorAll('.grid button')) {
-    b.onclick = e => { e.stopPropagation(); setSpawnMenu(false); if (b.dataset.plane) spawnPlaneAhead(b.dataset.k); else spawnAhead(b.dataset.k, spawnFoe); };
+    b.onclick = e => {
+      e.stopPropagation(); setSpawnMenu(false);
+      if (b.dataset.plane) spawnPlaneAhead(b.dataset.k); else if (b.dataset.train) spawnTrainNear(b.dataset.k, spawnFoe); else spawnAhead(b.dataset.k, spawnFoe);
+    };
   }
 }
 $('spFoe').onclick = e => { e.stopPropagation(); spawnFoe = true; renderSpawnMenu(); };
@@ -351,6 +364,26 @@ function spawnPlaneAhead(key) {
   const x = from.x + d.x * dist, z = from.z + d.z * dist;
   const p = flight.spawnPlane(key, x, z, Math.atan2(d.x, d.z), { id: `sp${net && !net.host ? 'g' : ''}${Date.now() % 1e7}` });
   if (p) { p.used = true; msg(`Самолёт: ${PLANES[key].name} — E рядом с кабиной, чтобы сесть`, '#9fe07f'); }
+}
+
+// a train with locomotive `key` on the nearest railway line (an enemy one with its crew and soldiers, or a free one
+// without crew the player can drive)
+function spawnTrainNear(key, foe) {
+  if (net && net.connected && !net.host) { msg('В сетевой игре поезда — у хозяина игры'); return; }
+  const p = anchorPos();
+  let best = null;
+  if (world.rail) for (const L of world.rail.linesAround(p.z)) { const n = trains.nearestPoint(L, p); if (!best || n.d < best.d) best = { L, ...n }; }
+  if (!best || best.d > 600) { msg('Рядом нет железной дороги', '#ff9a7a'); return; }
+  const L = best.L;
+  const made = composeTrain(Math.random, difficultyAt(p.z), { loco: key });
+  const len = made.comp.reduce((a, c) => a + (c.part === 'tender' ? c.def.tender.len : c.def.len) + 0.15, 0);
+  let dir = Math.random() < 0.5 ? 1 : -1;
+  let s = best.i * 5 + dir * 25;
+  if (dir > 0 && s - len < 5) { if (s + len < L.len - 5) { dir = -1; s = best.i * 5 - 25; } else s = len + 5; }
+  if (dir < 0 && s + len > L.len - 5) { if (s - len > 5) { dir = 1; s = best.i * 5 + 25; } else s = L.len - len - 5; }
+  s = Math.max(dir > 0 ? len + 2 : 2, Math.min(dir > 0 ? L.len - 2 : L.len - len - 2, s));
+  const t = trains.spawn(L, s, dir, { made, crew: foe, team: foe ? 'enemy' : 'neutral' });
+  msg(`${foe ? 'Поезд противника' : 'Свободный поезд'}: ${t.def.name}, ${t.vehicles.length} ед. (${best.d.toFixed(0)} м)${foe ? '' : ' — E у кабины, чтобы сесть'}`, foe ? '#ff9a7a' : '#9fe07f');
 }
 
 function removeTank(t) {
@@ -416,7 +449,7 @@ function ownHitMsg(res) {
   if (res.fire) msg(res.fire === 'ammo' ? 'Боеукладка горит! Туши — F!' : 'Бензобак горит! Туши — F!', '#ff5a3a');
 }
 combat.onPlayerDamage = (amount) => damagePlayer(amount);
-combat.onExplosion = (pos, r, dmg, owner) => { infantry.explosion(pos, r, dmg, owner); blastVehicles(pos, r, dmg, owner); if (net) net.explosion(pos, r, dmg); };
+combat.onExplosion = (pos, r, dmg, owner) => { infantry.explosion(pos, r, dmg, owner); blastVehicles(pos, r, dmg, owner); trains.blast(pos, r, dmg, owner); if (net) net.explosion(pos, r, dmg); };
 
 // crew of a burning enemy tank jumps out and fights on foot (soldiers who took the tank over keep their own kit)
 function bailOut(t) {
@@ -456,6 +489,7 @@ guns.onPlayerHit = (amount) => damagePlayer(amount, true);
 guns.onExplosion = (pos, r, dmg, owner) => {
   infantry.explosion(pos, r, dmg, owner);
   blastVehicles(pos, r, dmg, owner);
+  trains.blast(pos, r, dmg, owner);
   if (net) net.explosion(pos, r, dmg);
   if (troopShoot() && !combat.god) {
     const d = pos.distanceTo(camera.position);
@@ -541,6 +575,22 @@ infantry.onDeath = (s, owner) => {
   }
 };
 
+// trains (trains.js): what the player is told / what follows
+function trainEvent(t, kind, a, b) {
+  const mine = b && (b.player || (b.tank && b.tank === state.vehicle) || (b.plane && b.plane === state.plane));
+  if (kind === 'destroyed' || kind === 'tankcar') {
+    if (a.loco) msg(`${t.def.name} ${mine ? 'подбит' : 'разбит'} — поезд встал`, mine ? '#9fe07f' : '#e8c96a');
+    if (kind === 'tankcar') {
+      const p = a.root.position.clone().setY(a.root.position.y + 2);
+      combat.onExplosion(p, 12, 260, b || null);
+      if (state.mode === 'walk' && !combat.god && player.position.distanceTo(p) < 12) damagePlayer((12 - player.position.distanceTo(p)) * 8);
+    }
+  } else if (kind === 'ram' && a === state.vehicle) { msg(`Удар поезда! (${t.def.name})`, '#ff5a3a'); damagePlayer(Math.min(40, b * 0.15)); }
+  else if (kind === 'buffer' && t === state.train) { msg('Поезд врезался в тупиковый упор!', '#ff9a7a'); damagePlayer(Math.min(60, a * 3)); }
+  else if (kind === 'station' && t.pos.distanceTo(anchorPos()) < 500) msg(`Поезд ${t.def.name} стоит на станции ${t.line.station.name}`, '#c9b48a');
+}
+const anchorPos = () => state.mode === 'train' && state.train ? state.train.pos : state.vehicle ? state.vehicle.root.position : state.plane ? state.plane.root.position : player.position;
+
 function damagePlayer(amount, bullet = false) {
   if (state.over || state.dead || combat.god) return;
   if (bullet && state.mode === 'walk' && Math.random() < 0.3) msg('Вы ранены!', '#ff9a7a');
@@ -587,6 +637,7 @@ function netDeath(reason) {
   msg(`${reason} Возрождение через 10 с рядом с напарником.`, '#ff9a7a');
   if (state.mode === 'drive') exitVehicle(true);
   if (state.mode === 'fly') flight.abandon();
+  if (state.mode === 'train') rail.leave(true);
   if (state.para) flight.cutPara();
   state.fireHeld = false; state.aim = false;
 }
@@ -626,6 +677,7 @@ document.addEventListener('keydown', e => {
   if (!state.started || state.paused || state.over) return;
   sfx.resume();
   if (state.mode === 'fly') { flight.key(e.code); return; }       // flying: game/flight.js
+  if (state.mode === 'train') { rail.key(e.code); return; }       // driving a train: game/railway.js
   if (state.para) return;                                          // under the parachute
   if (e.code === 'KeyE') tryToggleVehicle();
   if (e.code === 'KeyC' && state.mode === 'walk') state.crouch = !state.crouch;
@@ -672,6 +724,7 @@ document.addEventListener('keyup', e => { keys[e.code] = false; });
 document.addEventListener('mousemove', e => {
   if (!locked || state.paused || !state.started || state.over) return;
   if (state.mode === 'fly') { flight.mouse(e.movementX, e.movementY); return; }
+  if (state.mode === 'train') { rail.mouse(e.movementX, e.movementY); return; }
   if (state.mode === 'walk') {
     state.yaw -= e.movementX * MOUSE_SENS;
     state.pitch -= e.movementY * MOUSE_SENS;
@@ -703,6 +756,7 @@ document.addEventListener('mousedown', e => {
   if (!state.started || state.paused || state.over || state.spawnOpen) return;
   sfx.resume();
   if (state.mode === 'fly') { if (e.button === 0 && locked) state.fireHeld = true; if (e.button === 2) state.aim = true; return; }
+  if (state.mode === 'train') return;
   if (e.button === 0 && locked && troopShoot()) state.fireHeld = true;
   else if (e.button === 0 && locked && state.mode === 'drive') { if (state.wsel === 'mg') state.mgHeld = true; else state.fireReq = true; }
   if (e.button === 2 && troopShoot()) state.aim = true;
@@ -870,6 +924,8 @@ let prefView = 'third';
 function tryToggleVehicle(asDriver = false) {
   if (state.mode === 'walk') {
     const v = state.nearTank;
+    // the cab of an engine (no tank right beside the player)
+    if (!items.hands && (!v || tankDist(v, player.position) > 1.2) && rail.tryEnter()) return;
     // a plane close by (and no tank closer)
     if (state.nearPlane && !items.hands && (!v || tankDist(v, player.position) > 1.2)) {
       if (net && !net.claimPlane(state.nearPlane)) return;
@@ -958,9 +1014,11 @@ function frame(dt) {
   state.time += dt;
   const walking = state.mode === 'walk';
   const flying = state.mode === 'fly';
+  const riding = state.mode === 'train';
   const v = state.vehicle;
   const pl = state.plane;
-  const anchor = walking ? player.position : flying ? pl.root.position : v.root.position;
+  const tr = state.train;
+  const anchor = walking ? player.position : flying ? pl.root.position : riding ? tr.pos : v.root.position;
 
   world.update(anchor, flying ? 9 : 4);
   world.animate(dt);
@@ -975,18 +1033,24 @@ function frame(dt) {
   const target = walking
     ? { id: 'local', pos: player.position, vel: playerVel, isTank: false }
     : flying ? { id: 'local', pos: pl.root.position, vel: pl.vel, isTank: false, air: true }
+    : riding ? { id: 'local', pos: rail.target, vel: tr.velocity, isTank: false }
     : { id: 'local', pos: v.root.position, vel: v.velocity, isTank: true, tank: v };
   if (walking) target.crouch = state.crouch;
   const targets = [];
   if (!state.over && !state.dead && !(flying && pl.alt > 150) && !(state.para && player.position.y - world.heightAt(player.position.x, player.position.z) > 60)) targets.push(target);
   if (net) { const rt = net.remoteTarget(); if (rt) targets.push(rt); }
   combat.now = state.time;
+  // trains before the soldiers (their riders are carried along)
+  trains.listener.copy(camera.position);
+  trains.update(dt, { anchors: ra ? [anchor, ra] : [anchor], tanks, soldiers: infantry.soldiers, foot: { pos: player.position, active: walking && !state.dead },
+    hurtPlayer: (dmg, text) => { if (!combat.god) { damagePlayer(dmg); msg(text, '#ff9a7a'); } } });
   if (!net || net.host) {
     director.think(dt, state.time, targets, combat);
     infantry.update(dt, { now: state.time, targets, tanks });
   } else net.puppets(dt);
-  if (!walking && !flying) updateDriveControls();
+  if (!walking && !flying && !riding) updateDriveControls();
   if (flying) flight.update(dt);
+  if (riding) rail.update(dt);
 
   for (const t of tanks) t.update(dt, world, tanks);
   for (const p of planes) p.update(dt, world);
@@ -995,6 +1059,7 @@ function frame(dt) {
 
   if (state.mode === 'walk') { if (state.para) flight.updatePara(dt); else updateWalk(dt); }
   else if (state.mode === 'fly') flight.updateCamera(dt);
+  else if (state.mode === 'train') rail.updateCamera(dt);
   else {
     if (state.view === 'inside' && !state.seat) updateInsideWalk(dt);
     updateDriveCamera(dt);
@@ -1051,7 +1116,7 @@ function frame(dt) {
   guns.tanks = tanks;
   guns.soldiers = infantry.soldiers;
   guns.foot = { pos: player.position, active: walking, crouch: state.crouch };
-  guns.exposed = troopShoot() ? { pos: camera.position } : null;
+  guns.exposed = troopShoot() ? { pos: camera.position } : riding && state.train ? { pos: rail.eyePos(new THREE.Vector3()) } : null;
   guns.listener.copy(camera.position);
   guns.update(dt);
   if (walking || troopShoot()) updateWeapon(dt); else updateViewModel(dt);
@@ -1073,7 +1138,7 @@ function frame(dt) {
     updateHold(dt);
     state.zone = null; state.zoneText = null;
     state.nearPlane = state.para ? null : flight.nearPlane(player.position);
-  } else if (flying) {
+  } else if (flying || riding) {
     state.nearTank = null; state.nearPlane = null;
     state.slot = null; state.nearItem = null; state.nearPanel = null;
     state.zone = null; state.zoneText = null;
@@ -1171,6 +1236,7 @@ function frame(dt) {
   updateSystemsPanel(v || state.nearTank, !!v);
   updateGauge(v);
   if (flying) flight.hud(); else flight.hideHud();
+  if (state.mode === 'train') rail.hud(); else rail.hideHud();
   updateInventory();
   updateWeaponPanel();
   updatePrompt();
@@ -1186,8 +1252,8 @@ function frame(dt) {
     topEl.innerHTML = `Пройдено: <b>${((state.maxZ - state.startZ) / 1000).toFixed(2)} км</b> &nbsp;·&nbsp; Танков: <b>${state.kills}</b>` +
       ` &nbsp;·&nbsp; Пехоты: <b>${state.infKills}</b> &nbsp;·&nbsp; ${land} &nbsp;·&nbsp; ${sky.clock()}`;
   }
-  const heading = walking ? state.yaw : flying ? pl.heading : v.heading;
-  minimap.draw(anchor, heading, { items, soldiers: infantry.soldiers, tanks, vehicle: state.vehicle, time: state.time });
+  const heading = walking ? state.yaw : flying ? pl.heading : riding && state.train ? state.train.loco.heading : v.heading;
+  minimap.draw(anchor, heading, { items, soldiers: infantry.soldiers, tanks, vehicle: state.vehicle, time: state.time, trains: trains.list, train: state.train });
   $('mmLabel').textContent = state.duel ? 'ДУЭЛЬ' : nextSettlementLabel(anchor);
 }
 
@@ -1203,7 +1269,7 @@ function animate(t) {
 // ---- game modules (web/js/game/): each gets this context; functions of the modules are reached through
 // wrappers (the modules are created below, after the context)
 const ctx = {
-  state, keys, player, playerVel, camera, world, tanks, items, combat, guns, infantry, workshop, fx, sfx, viewModel,
+  state, keys, player, playerVel, camera, world, tanks, items, combat, guns, infantry, workshop, fx, sfx, viewModel, trains,
   cabinLight, PLAYER_SPEED, PLAYER_RUN, JUMP_V, GRAVITY, BASE_FOV,
   get locked() { return locked; }, set locked(v) { locked = v; },
   get aimDir() { return aimDir; },
@@ -1244,6 +1310,8 @@ const flight = createFlight(Object.assign(ctx, {
   explosion: (pos, r, dmg) => { infantry.explosion(pos, r, dmg, flight.owner); blastVehicles(pos, r, dmg, flight.owner); },
   gameOver: text => gameOver(text),
 }));
+const rail = createRail(Object.assign(ctx, { net: () => net }));
+ctx.trainPrompt = () => rail.prompt();
 const { topEl, gunMark, fireEl, updateSystemsPanel, updateInventory, updateGauge, updateWeaponPanel, nextSettlementLabel, markers, minimap, updatePrompt } = createPanels(ctx);
 
 // ================== boot ==================
@@ -1372,7 +1440,7 @@ async function boot() {
 // ================== network play (net.js) ==================
 function netCtx() {
   return {
-    state, player, playerVel, camera, scene, world, tanks, planes, flight, items, combat, guns, infantry, director, fx, sfx, sky, MODE, SEED, CFG,
+    state, player, playerVel, camera, scene, world, tanks, planes, flight, items, combat, guns, infantry, director, fx, sfx, sky, MODE, SEED, CFG, trains,
     spawnTank, spawnVehicle, removeTank, msg, showHit, describeHit, damagePlayer, troopSeat,
     duelStatus: () => duelStatus(state),
     enterVehicle: t => enterTank(t),
@@ -1397,7 +1465,7 @@ boot();
 renderer.setAnimationLoop(animate);      // (waits for the renderer to initialise)
 
 // handle for debugging / automated tests
-window.game = { renderer, scene, sky, pipeline, grass, state, tanks, planes, flight, world, items, combat, director, workshop, player, camera, keys, spawnTank, fx, frame, MODE, saveGame,
+window.game = { renderer, scene, sky, pipeline, grass, state, tanks, planes, flight, world, trains, rail, items, combat, director, workshop, player, camera, keys, spawnTank, fx, frame, MODE, saveGame,
   snapshot: () => snapshot({ state, player, items, tanks, director, world, workshop, infantry, garrisoned, SEED, planes, planesGone, parked }),
   guns, infantry, SEED, selectWeapon, viewModel, startReload, placeSandbag, mgAction, toggleTankWeapon, updateDriveControls,
   openStash, doStash, stowPlate, loadShells,

@@ -11,6 +11,7 @@ import { gasStation } from './structures/gasstation.js';
 import { repairStation } from './structures/repairstation.js';
 import { fence, sign } from './structures/props.js';
 import { airfield } from './structures/airfield.js';
+import { station } from './structures/station.js';
 
 export const SETTLEMENT_NAMES = {
   village: ['Берёзовка', 'Ивановка', 'Сосновка', 'Малиновка', 'Кривцы', 'Заречье', 'Горелово',
@@ -28,6 +29,7 @@ export const SETTLEMENT_LABEL = {
 export function buildSettlement(world, plan) {
   const K = settlementKit(world, plan);
   const { r, houses } = K;
+  const floors = [];                 // walkable surfaces that are not houses (the station platform): world.houses
 
   const typeLabel = SETTLEMENT_LABEL[plan.type];
   sign(K, -plan.halfLen - 8, 7, plan.name, typeLabel, -1);
@@ -81,6 +83,9 @@ export function buildSettlement(world, plan) {
       church(K, 0, 30);
       ammoDepot(K, 0, -24);
     } else well(K, 0, 11);
+    // a railway line beside the road: the station (railways.js plans it)
+    const st = world.rail && world.rail.stationAt(plan.k);
+    if (st) floors.push(station(K, st));
   }
 
   let crane = null, planes = [];
@@ -105,5 +110,6 @@ export function buildSettlement(world, plan) {
   bakeStatic(group.children.filter(o => !inHouses.has(o)), group);
 
   world.scene.add(group);
-  return { plan, group, obstacles: K.obstacles, zones: K.zones, items: K.items, crane, houses, planes };
+  for (const f of floors) world.houses.add(f);
+  return { plan, group, obstacles: K.obstacles, zones: K.zones, items: K.items, crane, houses, planes, floors };
 }

@@ -99,11 +99,11 @@
   #repair .info b { color: #ddd; font-weight: 500; }
 
   #gauge { position: fixed; right: 16px; bottom: 16px; z-index: 10; padding: 10px 14px; display: none; min-width: 210px; text-align: right; }
-  #flight { position: fixed; right: 16px; bottom: 16px; z-index: 10; padding: 10px 14px; display: none; min-width: 230px; text-align: right; }
-  #flight .fs { font-size: 38px; font-weight: 600; line-height: 1; color: #e8dcc0; }
-  #flight .fs small { font-size: 14px; color: #b7a97f; font-weight: 400; }
-  #flight .fn { font-size: 12px; color: #b7a97f; letter-spacing: 2px; text-transform: uppercase; margin: 3px 0 6px; }
-  #flight .warn { color: #ff6a4a; font-weight: 600; margin-top: 4px; }
+  #flight, #trainHud { position: fixed; right: 16px; bottom: 16px; z-index: 10; padding: 10px 14px; display: none; min-width: 230px; text-align: right; }
+  #flight .fs, #trainHud .fs { font-size: 38px; font-weight: 600; line-height: 1; color: #e8dcc0; }
+  #flight .fs small, #trainHud .fs small { font-size: 14px; color: #b7a97f; font-weight: 400; }
+  #flight .fn, #trainHud .fn { font-size: 12px; color: #b7a97f; letter-spacing: 2px; text-transform: uppercase; margin: 3px 0 6px; }
+  #flight .warn, #trainHud .warn { color: #ff6a4a; font-weight: 600; margin-top: 4px; }
   #stickMark { position: fixed; left: calc(50% - 6px); top: calc(50% - 6px); width: 12px; height: 12px; border: 2px solid rgba(232,201,106,.8);
     border-radius: 50%; pointer-events: none; z-index: 9; display: none; }
   #gaugeSpeed { font-size: 38px; font-weight: 600; line-height: 1; color: #e8dcc0; }
@@ -291,6 +291,7 @@
 <div id="weapon" class="panel"></div>
 
 <div id="flight" class="panel"></div>
+<div id="trainHud" class="panel"></div>
 <div id="stickMark"></div>
 <div id="gauge" class="panel">
   <div id="gaugeSpeed">0<small> км/ч</small></div>
@@ -313,6 +314,7 @@
   <div class="h">АВТОМОБИЛИ</div><div class="grid" id="spCars"></div>
   <div class="h">МОТОЦИКЛЫ</div><div class="grid" id="spMotos"></div>
   <div class="h">САМОЛЁТЫ (всегда свободные)</div><div class="grid" id="spPlanes"></div>
+  <div class="h">ПОЕЗДА (на ближайшей ж/д линии)</div><div class="grid" id="spTrains"></div>
   <div class="foot">Клик — заспавнить перед собой · ` или ESC — закрыть</div>
 </div>
 
@@ -358,7 +360,11 @@
     <tr><td></td><td class="h">БРОНЕТРАНСПОРТЁР</td></tr>
     <tr><td class="k">E спереди / сзади</td><td>сесть за управление / в десантное отделение</td></tr>
     <tr><td class="k">десант: 1 2 3, ЛКМ, R</td><td>своё оружие: выбрать, стрелять через борт / из люка, перезарядить; Q — встать, пересесть</td></tr>
-    <tr><td class="k">` (Ё)</td><td>заспавнить любую технику — противника или свободную</td></tr>
+    <tr><td></td><td class="h">ПОЕЗД</td></tr>
+    <tr><td class="k">E у кабины</td><td>занять место машиниста (бригада противника должна быть перебита); E на малом ходу — сойти</td></tr>
+    <tr><td class="k">W / S, ПРОБЕЛ</td><td>регулятор (меньше нуля — задний ход), тормоз</td></tr>
+    <tr><td class="k">H / V / мышь</td><td>гудок, вид из кабины / снаружи, осмотреться</td></tr>
+    <tr><td class="k">` (Ё)</td><td>заспавнить любую технику (и поезд на ближайшей линии) — противника или свободную</td></tr>
     <tr><td class="k">ESC</td><td>пауза</td></tr>
   </table>
   <div id="netPanel" class="netbox hidden"></div>

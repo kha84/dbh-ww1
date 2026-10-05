@@ -445,6 +445,7 @@ export class Net {
               r2(s.lookYaw || 0), r2(s.fallDir || 0)]);
     }
     const m = { k: 's', T, S, P: this.mePose(), H: r2(G.sky.time.tod) };
+    if (G.trains && G.trains.list.length) m.R = G.trains.netRows(a || G.player.position);
     if (G.state.duel) { const st = G.duelStatus(); if (st) m.D = [st.left, st.total]; }
     this.send(m, true);
     if (this.shots.length) { this.send({ k: 'sh', X: this.shots }); this.shots = []; }
@@ -674,6 +675,7 @@ export class Net {
       const i = G.infantry.soldiers.indexOf(s);
       if (i >= 0) G.infantry.soldiers.splice(i, 1);
     }
+    if (G.trains) G.trains.netApply(m.R || []);           // the host's trains (copies here)
     this.setRemote(m.P);
     if (m.D) G.state.netDuel = m.D;
     // the time of day runs on the host (the guest's clock only fills the gaps)

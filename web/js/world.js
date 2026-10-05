@@ -10,6 +10,7 @@ import { buildBridge } from './structures/bridge.js';
 import { Forest } from './structures/trees.js';
 import { prepObstacle, pushOut, segObstacle } from './obstacles.js';
 import { Craters } from './craters.js';
+import { Railways } from './railways.js';
 
 export { segBox, pushOut } from './obstacles.js';
 
@@ -67,6 +68,7 @@ const SETTLE_SIZE = {
 /**
  * @typedef {object} WorldOptions
  * @property {boolean} [rivers]      rivers + bridges (on by default)
+ * @property {boolean} [rails]       railway lines (on by default, never in the arenas)
  * @property {boolean} [settlements] roadside settlements (on by default)
  * @property {boolean} [road]        the road (on by default)
  * @property {string} [arena]      'duel' | 'range' an enclosed field instead of the endless world
@@ -82,7 +84,7 @@ export class World {
     this.scene = scene;
     this.seed = seed;
     /** @type {WorldOptions} */
-    this.opts = { rivers: true, settlements: true, road: true, ...opts };
+    this.opts = { rivers: true, settlements: true, road: true, rails: dbg.get('norail') !== '1', ...opts };
     this.WATER_LEVEL = WATER_LEVEL;
     this.VIEW = parseInt(dbg.get('view') || '4', 10);   // chunk radius
 
@@ -111,11 +113,12 @@ export class World {
     this.ruins = new Set();          // ids of destroyed houses (kept across settlement reloads)
     this.brokenTrees = new Map();    // tree id -> { y, dx, dz } (kept across chunk reloads)
     this.riverInfo = new Map();      // gap k -> river plan (or null)
-    this.bridges = new Map();        // gap k -> built bridge
+    this.bridges = new Map();        // gap k -> built bridge ('r<line>:<n>' -> rail bridge)
 
     this.houses = new Set();         // standing houses of the built settlements (their floors: groundAt)
     this.forest = new Forest(this);  // trees (structures/trees.js)
     this.craters = new Craters(this, { CHUNK, CSEG, CELL, WATER_LEVEL, ROAD_HALF, ckey });   // shell craters (craters.js)
+    this.rail = this.opts.rails && !this.opts.arena ? new Railways(this) : null;   // railway lines (railways.js)
 
     this.makeMaterials();
   }
@@ -280,7 +283,8 @@ export class World {
     return h;
   }
 
-  height(x, z) {
+  // the land flattened along the road and in the settlements (no rivers, no railway formation)
+  baseHeight(x, z) {
     if (this.opts.arena) {
       const n = this.arenaHeight(x, z);
       if (!this.opts.road && !this.opts.settlements) return n;
@@ -296,7 +300,13 @@ export class World {
     let w = 1 - smoothstep(7, 45, dr);
     const sw = this.settlementWeight(x, z, rx);
     if (sw > w) w = sw;
-    let h = w <= 0 ? n : n + (this.roadH(z) - n) * w;
+    return w <= 0 ? n : n + (this.roadH(z) - n) * w;
+  }
+
+  height(x, z) {
+    let h = this.baseHeight(x, z);
+    if (this.opts.arena) return h;
+    if (this.rail) h = this.rail.flatten(x, z, h);           // embankments / cuttings of the railway lines
     for (const r of this.riversNear(z)) h = carve(r, x, z, h, WATER_LEVEL);
     return h;
   }
@@ -452,6 +462,7 @@ export class World {
       if (r && r.bridge && !this.bridges.has(k) && Math.abs(pos.z - r.z) < 900) this.bridges.set(k, buildBridge(this, r));
     }
     for (const [k, b] of this.bridges) if (Math.abs(pos.z - b.cz) > 1300) { b.dispose(); this.bridges.delete(k); }
+    if (this.rail) this.rail.update(pos);                    // track, crossings, rail bridges, portals (railways.js)
     for (const [k, s] of this.settlements) {
       if (Math.abs(pos.z - s.plan.z) > 1300) {
         this.scene.remove(s.group);
@@ -463,6 +474,7 @@ export class World {
         });
         for (const o of s.obstacles) this.obstacles.delete(o);
         for (const h of s.houses) this.houses.delete(h);
+        for (const f of s.floors || []) this.houses.delete(f);
         this.settlements.delete(k);
         if (this.onSettlementRemoved) this.onSettlementRemoved(s);
       }
@@ -698,11 +710,13 @@ export class World {
   }
 
   // segment p0->p1 vs obstacle boxes (the pieces of compound ones); returns {t, obstacle} of nearest hit or null
-  raycastObstacles(p0, p1) {
+  // (noTrain: the cars of the trains let the ray through - bullets go through their thin sides)
+  raycastObstacles(p0, p1, noTrain = false) {
     let best = null;
     const mx = (p0.x + p1.x) / 2, mz = (p0.z + p1.z) / 2;
     const half = Math.hypot(p1.x - p0.x, p1.z - p0.z) / 2;
     for (const o of this.obstacles) {
+      if (noTrain && o.train) continue;
       const dx = mx - o.x, dz = mz - o.z;
       const lim = o.rad + half;
       if (dx * dx + dz * dz > lim * lim) continue;

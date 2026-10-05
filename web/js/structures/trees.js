@@ -124,6 +124,7 @@ export class Forest {
       if (h < WATER_LEVEL + 1.2 - 0.9 * B.wet || h > 36) continue;    // swamp birches stand on the hummocks
       if (W.slopeAt(x, z) > 0.7) continue;
       if (W.settlementWeight(x, z, rx) > 0.02) continue;
+      if (W.rail && W.rail.nearTrack(x, z, 9)) continue;              // the railway keeps its clearing
       const density = Math.min(1, fbm(W.nTree, x * 0.006, z * 0.006, 3) * 0.5 + 0.5 + B.treeFill);
       let p = density * density * 1.7 * B.trees;
       if (B.fields > 0) {

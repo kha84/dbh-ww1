@@ -251,6 +251,8 @@ export function createPanels(ctx) {
       if (pl && !items.hands && (!t || tankDist(t, player.position) > 1.2)) {
         lines.push(`<b>E</b> — сесть в самолёт ${pl.def.name} (топливо ${Math.round(pl.fuel)} л${pl.hp < 60 ? `, планер ${Math.round(pl.hp)}%` : ''})`);
       }
+      const tp = ctx.trainPrompt && ctx.trainPrompt();
+      if (tp && !items.hands) lines.push(tp);
       if (state.slot) slotPrompt(state.slot, lines);
       if (items.hands === 'plate') {
         if (t && !t.wrecked && t.hp.hull < 100) {
@@ -308,6 +310,10 @@ export function createPanels(ctx) {
           }
         }
       }
+    } else if (state.mode === 'train') {
+      const t = state.train;
+      if (t && Math.abs(t.speed) < 2.5) lines.push('<b>E</b> — сойти с поезда');
+      lines.push('<b>W/S</b> — регулятор, <b>ПРОБЕЛ</b> — тормоз, <b>H</b> — гудок, <b>V</b> — вид');
     } else if (state.mode === 'drive') {
       const v = state.vehicle;
       const ts = troopSeat();

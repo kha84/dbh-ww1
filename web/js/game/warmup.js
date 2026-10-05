@@ -1,5 +1,6 @@
 // Shader warm-up under the loading screen: one of every tank / personnel carrier / car / motorcycle (and a burnt-out
-// one, a crewed car with its riders), a plane (glass, propeller disc, bombs), a crater patch, a soldier and every kind
+// one, a crewed car with its riders), a plane (glass, propeller disc, bombs), a crater patch, a soldier, the rolling
+// stock (baked models of every locomotive / car, the running gear) and every kind
 // of pickup are put in front of the camera for a few frames, so the pipelines they need are built now and
 // not in the middle of a fight (a new kind of machine turning up used to stall a frame for 100+ ms).
 import * as THREE from 'three';
@@ -8,6 +9,7 @@ import { TANK_DEFS } from '../tankdefs/index.js';
 import { Soldier } from '../infantry.js';
 import { ITEM_DEFS, buildItemMesh } from '../items.js';
 import { buildPlane } from '../planedefs/index.js';
+import { warmTrains } from '../trains.js';
 
 const nextFrame = () => new Promise(r => requestAnimationFrame(() => r()));
 
@@ -47,6 +49,9 @@ export async function warmUp(o) {
       g.add(m);
     } catch { /* some pickups need data: skip them */ }
   });
+  const tr = warmTrains();                                         // rolling stock: baked models, running gear
+  tr.position.set(at.x + 6, y, at.z + 30);
+  g.add(tr);
   for (let i = 0; i < (o.frames || 3); i++) await nextFrame();
   scene.remove(g);
 }

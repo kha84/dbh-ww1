@@ -124,7 +124,7 @@ export function snapshot(g) {
     pickups,
     walls: director.walls.filter(w => near(w)).map(w => ({ id: w.id, x: w.x, z: w.z, cols: w.cols.map(c => ({ x: c.x, z: c.z, gy: c.gy, ids: c.ids })) })),
     tanks: keptTanks.map(t => tankData(t, director)),
-    soldiers: infantry.soldiers.filter(s => s.alive && near(s.pos)).map(s => ({
+    soldiers: infantry.soldiers.filter(s => s.alive && !s.ride && near(s.pos)).map(s => ({          // (riders go with their trains)
       key: s.weapon.key, mag: s.weapon.mag, kind: s.kind, grenades: { ...s.grenades }, pos: v3(s.pos), heading: s.heading,
       hp: s.hp, squad: s.squad, post: v3(s.post), guardDir: s.guardDir,
     })),

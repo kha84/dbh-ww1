@@ -90,7 +90,8 @@ export function createGrass(scene, world) {
       const r = hash(world.seed, i, X * 31 + Z, 79);
       let bare = (world.opts.road && Math.abs(x - rx) < 5.5) || h < WATER_LEVEL + 0.35 - 0.25 * B.wet || h > 26 + 10 * B.hills ||
         world.craterAt(x, z) < -0.12 ||                                   // blown out of the crater pits
-        world.settlementWeight(x, z, rx) > 0.4 || hash(world.seed, i, X, Z * 5 + 3, 89) > B.tuftN;
+        world.settlementWeight(x, z, rx) > 0.4 || hash(world.seed, i, X, Z * 5 + 3, 89) > B.tuftN ||
+        (world.rail && world.rail.nearTrack(x, z, 2.8));
       if (!bare && B.fields > 0) {
         const f = world.fieldAt(x, z, rx, B.fields);
         if (f.crop >= 0) { const c = CROPS[f.crop]; tint = c.tuft; size = c.tuftS; bare = !tint; }

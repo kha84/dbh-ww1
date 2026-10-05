@@ -14,6 +14,14 @@ The game features:
 - Biomes change along the road every 1.3-3 km with smooth transitions: copses, dense forest, birch groves, fields
   (patchwork of crops, tree lines), steppe, swamps (pools, mud slows the tanks, a low causeway), hills; the HUD names
   the land and tells when it changes
+- Railways (railways.js): lines crossing the road at level crossings (barriers come down before a train, bell), lines
+  coming in from far away to run beside the road for a while and go away again, stations in villages / towns, rail
+  bridges over rivers, tunnels through hills, buffer stops at the ends; trains (trains.js) of 10 locomotives (Ов, Эу,
+  G 8.1, Су, ФД, BR 52, П36 - steam with tenders; ТЭ3 (two sections), М62, ТЭП70 - diesels) and 10 car types
+  (two-axle / wooden bogie / all-steel / modern coaches, теплушка, two-axle gondola, flat with a load (a tank under a
+  tarpaulin), tank car, bogie boxcar, bogie gondola), passenger / goods / military trains by era (the road starts with
+  WW1 steam); the enemy's crew and soldiers ride in them (real infantry, firing from the windows / doors, getting off a
+  stopped train); kill the crew - the train stops - take the driver's place and drive it
 - Shell / bomb craters stay in the ground (a pit with a lip, deep enough to take cover in; craters.js)
 - Long summer days (sunrise 4:30, sunset 20:30: 24 min of daylight, 4 min of night by default)
 - Airfields beside the road (k=2 always, then ~11% of the stretches): a grass runway, hangars, tower, windsock, fuel
@@ -104,7 +112,17 @@ web/js/modes.js         # game modes: world options per mode, duel / range setup
 web/js/net.js           # network play: WebRTC link (room code via server.py or copy-paste codes), host-authoritative
                         #   world, tank ownership, snapshots / full states / events, puppets and the other player's figure
 web/js/save.js          # saved games: snapshot / restore (restoreBefore runs before the world is generated), localStorage
-web/js/hud.js           # tank markers over the view, minimap
+web/js/hud.js           # tank markers over the view, minimap (railway lines, trains)
+web/js/railways.js      # railway lines per rail block (3 settlement stretches, at most one line): plans (cross /
+                        #   parallel), formation profile (graded, embankments / cuttings: world.height -> flatten),
+                        #   stations, rail bridges, tunnels, segment grid queries (nearest, at), streaming of track
+                        #   tiles / crossings / portals / buffer stops / rail bridges
+web/js/trains.js        # Train (vehicles following the line on their pivots, physics, AI driver, riders, damage) +
+                        #   Trains director (spawning by era, despawn, collisions, crossing barriers, network copies)
+web/js/traindefs/       # ONE FILE PER LOCOMOTIVE / CAR TYPE (numbers + model); kit.js (wheels, bogies, buffers, boiler,
+                        #   cab, bodies with openings, bake: body + spinning geometry), steam.js / diesel.js / cars.js
+                        #   builders, index.js = registry (LOCOS, CARS, LOCO_TIERS, vehicleModel, composeTrain)
+web/js/game/railway.js  # driving a train: entering the cab, controls, cameras, instruments, prompts
 web/js/world.js         # endless world: road centreline roadX(z)/roadH(z), chunked terrain streamed around
                         #   the player, lakes, rivers + bridges, forest, obstacle boxes (OBB push-out + shell raycast),
                         #   arenas (opts.arena: 'duel' | 'range', features, bounds)
@@ -117,7 +135,8 @@ web/js/obstacles.js     # obstacle boxes: pushOut (circle + height), segBox / se
 web/js/structures/      # ONE FILE PER WORLD OBJECT: kit.js (settlement builder context K: frame / part / obstacle /
                         #   addItem, shared geometry + MAT), house.js (enterable houses), church.js, depot.js, well.js,
                         #   gasstation.js, repairstation.js, props.js (fence, crates, barrels, tyres, signs),
-                        #   bridge.js, caponier.js, trees.js (Forest: baked chunk trees, broken trees, falling tops)
+                        #   bridge.js, caponier.js, track.js (track tiles, buffer stops), crossing.js (level
+                        #   crossing), railbridge.js, tunnel.js (portal), station.js (railway station), trees.js (Forest: baked chunk trees, broken trees, falling tops)
 web/js/craters.js       # shell / bomb craters: profile, per-chunk lists, heightAt offset, the cells of the terrain mesh
                         #   under a crater replaced by a fine patch (watertight), saved
 web/js/planes.js        # Plane class: flight physics, ground roll / take-off / landing, retracting gear, guns /
@@ -185,6 +204,8 @@ web/js/noise.js         # perlin/fbm, hash, seeded rng
   F fire extinguisher, R repair kit menu (digits choose the system), V third person / inside view, ESC pause
   (pause menu: resume / save / main menu), F5 quick save (road mode).
   Inside: Q stand up / sit at the nearest station, 1/2/3 commander / gunner / driver.
+- Train: E beside the cab of an engine whose crew is dead - take the driver's place; W/S regulator (below zero backs),
+  SPACE brake, H whistle / horn, V cab / outside view, mouse looks around, E (slow) gets off.
 - Any mode: ` (Backquote) opens the spawn menu: any tank / APC / car / motorcycle (or a free plane) in front of the player, an enemy with its crew (TankAI
   'hunt', in a duel it joins the foes) or a free one without crew (`spawnVehicle`; the guest sends 'spawn' to the host). Commander = full control,
   gunner = gun only, driver = driving only; standing up = WASD moves around the compartment.
@@ -193,14 +214,14 @@ web/js/noise.js         # perlin/fbm, hash, seeded rng
 Game: `?mode=road|duel|range`, `&tank=KEY` (duel / range, APC keys too), `&net=host|guest` (network play; the guest
 takes what it joins from sessionStorage `dbh-ww1-net`, written by the menu), `&enemies=K1,K2,...` (duel, `random` allowed), `?load=SAVE_ID`.
 Without `mode` / `load` the main menu is shown; `?seed=N` or `?start=Z` alone start the road directly.
-URL params: `?nowater=1&noclouds=1&notrees=1&notanks=1&noenemies=1&noinfantry=1&noshadows=1&nofog=1&waterred=1&watery=N&noaa=1&logdepth=1`
+URL params: `?notrains=1` (no enemy trains), `?norail=1` (no railways at all), `?nowater=1&noclouds=1&notrees=1&notanks=1&noenemies=1&noinfantry=1&noshadows=1&nofog=1&waterred=1&watery=N&noaa=1&logdepth=1`
 `?seed=N` world seed (random without it; shown in the pause menu), `?start=Z` start further down the road,
 `?biome=KEY` one biome everywhere (mixed | forest | birch | fields | steppe | swamp | hills), `?god=1`
 invulnerable player, `?view=N` chunk radius.
 Graphics: `?backend=webgl`, `?q=low|medium|high` (else the one chosen in the pause menu, else high on WebGPU / medium
 on WebGL 2), `?tod=H` time of day, `?daylen=M` minutes per day at the daytime pace (night 3x faster; 0 = the clock stands), `?nopost=1 ?noao=1 ?nobloom=1
 ?bloomT=0.1 ?bloomS=0.9 ?nograss=1 ?nowarm=1`.
-`window.game` exposes renderer/scene/sky/pipeline/grass/state/tanks/planes/flight/world/items/combat/guns/infantry; `game.frame(dt)` advances the simulation without
+`window.game` exposes renderer/scene/sky/pipeline/grass/state/tanks/planes/flight/trains/rail/world/items/combat/guns/infantry; `game.frame(dt)` advances the simulation without
 rendering (handy for headless tests; `game.state.noLock = true` lets small arms fire without pointer lock).
 
 ## Web notes
@@ -211,6 +232,20 @@ rendering (handy for headless tests; `game.state.noLock = true` lets small arms 
   (broken trees). Points are always 1 px on WebGPU (stars are instanced sprites).
 - Time of day: `sky.time.tod` (hours), saved with the game, the host sends it to the guest. SUNRISE / SUNSET in
   render.js set the day arc (16 h of day), the night runs 3x faster than the day.
+- Railways (railways.js): `world.rail` (null in the arenas / `?norail=1`); a line { id (block), kind 'cross' |
+  'parallel', n points STEP=5 m apart: x, z, y (formation; rails at y + RAIL_TOP), len, cross { i, s, x, z, y }, station
+  { k, side, off, s, name, half }, bridges [{ i0, i1 }], portals, tun / bridge flags per point, grid }. `world.height` =
+  `baseHeight` (no rivers / rails) -> `rail.flatten` -> river carve; the profile is planned from `baseHeight` (never
+  from `height`: recursion). `rail.nearest(x, z, maxD)`, `rail.at(L, s, out)`, `nearTrack` (trees / grass keep off).
+  Rail bridges / the crossing deck live in `world.bridges` ('rb<id>:<n>' / 'rx<id>'), the station platform is a floor
+  in `world.houses` (settlement `floors`).
+- Trains (trains.js): `train.s` = the front along the line, `dir` = facing (+1 increasing s), `speed` along the facing;
+  vehicles { def, part main | tender, flip (second ТЭ3 section), piv (local z of the pivots), ob (moving obstacle with
+  `train` + `hit`) }; small arms go through the cars (`raycastObstacles(.., noTrain)`), shells hit them
+  (`obstacle.hit`), blasts -> `trains.blast`. Riders: `Soldier.ride` (no move / decide; `decideRide`), placed by the
+  train every frame before `infantry.update`, `Infantry.spawnRider`; pruning / saving skip them. Wheels / coupling
+  rods turn in the vertex shader (attributes spinC / crank, uniform = distance run). Network: the host sends `R` rows
+  in its snapshot, the guest keeps `puppet` copies (it cannot drive trains).
 - Craters (craters.js): `world.addCrater(x, z, r, d)` / `world.craterAt(x, z)`; Combat.crater digs one for every
   shell / bomb burst on the ground (size from `s.crater ?? s.dmg`; `crater: 0` - none, e.g. aircraft cannons);
   `world.heightAt` adds the offset of `ch.craters`; `ch.tgeo` is the chunk's terrain geometry (its cells under a

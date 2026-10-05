@@ -97,6 +97,22 @@ export class Minimap {
       i ? mmBaseCtx.lineTo(x, y) : mmBaseCtx.moveTo(x, y);
     }
     mmBaseCtx.stroke();
+    // railway lines (railways.js): a dark line with white ties
+    if (world.rail) {
+      for (const L of world.rail.linesAround(c.z)) {
+        if (L.maxX < c.x - MM_RANGE - 50 || L.minX > c.x + MM_RANGE + 50 || L.maxZ < c.z - MM_RANGE - 50 || L.minZ > c.z + MM_RANGE + 50) continue;
+        const path = () => {
+          mmBaseCtx.beginPath();
+          for (let i = 0; i < L.n; i += 2) {
+            const x = MM_S / 2 - (L.x[i] - c.x) * MM_SC, y = MM_S / 2 - (L.z[i] - c.z) * MM_SC;
+            i ? mmBaseCtx.lineTo(x, y) : mmBaseCtx.moveTo(x, y);
+          }
+        };
+        mmBaseCtx.strokeStyle = '#2b2622'; mmBaseCtx.lineWidth = 3; mmBaseCtx.setLineDash([]); path(); mmBaseCtx.stroke();
+        mmBaseCtx.strokeStyle = '#d8d0c0'; mmBaseCtx.lineWidth = 1.2; mmBaseCtx.setLineDash([3, 3]); path(); mmBaseCtx.stroke();
+        mmBaseCtx.setLineDash([]);
+      }
+    }
     this.center = c.clone();
   }
 
@@ -145,6 +161,18 @@ export class Minimap {
       const [x, y] = toMap(t.root.position.x, t.root.position.z);
       mmCtx.fillStyle = t.wrecked ? '#333' : t.team === 'enemy' && t.crew ? '#ff4a3a' : t.team === 'player' ? '#7fe07f' : '#bbb';
       mmCtx.beginPath(); mmCtx.arc(x, y, 3.2, 0, 7); mmCtx.fill();
+    }
+    // trains: their cars as short strokes (the enemy's red, the player's green)
+    for (const t of g.trains || []) {
+      if (t === g.train) continue;
+      mmCtx.strokeStyle = t.wrecked ? '#333' : t.team === 'enemy' && t.crewAlive ? '#ff4a3a' : t.team === 'player' ? '#7fe07f' : '#ddd';
+      mmCtx.lineWidth = 3.2;
+      mmCtx.beginPath();
+      t.vehicles.forEach((v, i) => {
+        const [x, y] = toMap(v.root.position.x, v.root.position.z);
+        i ? mmCtx.lineTo(x, y) : mmCtx.moveTo(x, y);
+      });
+      mmCtx.stroke();
     }
     // player arrow
     mmCtx.save();
