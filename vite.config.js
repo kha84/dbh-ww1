@@ -20,6 +20,7 @@ function mailbox() {
           res.end(text);
         };
         if (path === '/api/ping') return reply(200, 'dbh');
+        if (path === '/api/whoami') return reply(200, (req.socket.remoteAddress || '').replace(/^::ffff:/, ''));
         const m = ROUTE.exec(path);
         if (!m) return reply(404);
         const key = `${m[1].toUpperCase()}/${m[2]}`;

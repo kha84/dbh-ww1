@@ -10,7 +10,7 @@ invitation / answer codes); the game itself then runs peer to peer.
 
 (`npm run dev` is the Vite dev server; it answers the same mailbox API itself.)
 
-API: GET /api/ping -> "dbh";  POST /api/room/<code>/<slot> (body = text);  GET /api/room/<code>/<slot>
+API: GET /api/ping -> "dbh";  GET /api/whoami -> the caller's IP address (LAN candidates for WebRTC);  POST /api/room/<code>/<slot> (body = text);  GET /api/room/<code>/<slot>
 Rooms are forgotten after an hour.
 """
 import functools
@@ -46,6 +46,9 @@ class Handler(SimpleHTTPRequestHandler):
         path = self.path.split('?')[0]
         if path == '/api/ping':
             return self.reply(200, 'dbh')
+        if path == '/api/whoami':
+            ip = self.client_address[0]
+            return self.reply(200, ip[7:] if ip.startswith('::ffff:') else ip)
         m = ROUTE.match(path)
         if m:
             key = (m.group(1).upper(), m.group(2))

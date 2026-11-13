@@ -66,6 +66,15 @@ export const Signal = {
       return r.ok && (await r.text()).trim() === 'dbh';
     } catch { return false; }
   },
+  // this machine's address as the server sees it: 'self' when it runs on the server machine itself (loopback)
+  async whoami() {
+    try {
+      const r = await fetch('api/whoami', { cache: 'no-store' });
+      const ip = r.ok ? (await r.text()).trim() : '';
+      if (/^127\.|^::1$|^localhost$/.test(ip)) return 'self';
+      return /^\d+\.\d+\.\d+\.\d+$/.test(ip) ? ip : null;
+    } catch { return null; }
+  },
   async put(room, slot, text) {
     const r = await fetch(`api/room/${room}/${slot}`, { method: 'POST', body: text });
     if (!r.ok) throw new Error('signal ' + r.status);
@@ -79,6 +88,19 @@ export const Signal = {
 };
 export const newRoom = () => Array.from({ length: 5 }, () => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[Math.floor(Math.random() * 32)]).join('');
 export const isRoomCode = s => /^[A-Z0-9]{4,8}$/i.test(s.trim());
+
+// Browsers hide the LAN address of host candidates behind random mDNS names (xxxx.local); when mDNS does not get
+// through between the two machines (Wi-Fi, firewalls) and STUN does not help inside one LAN, ICE fails. The mailbox
+// server tells each side its address: a copy of every .local candidate with that address is added to the peer's SDP.
+// ip 'self' = the peer runs on the server machine: it is reached at the address this page came from.
+export function withLanIp(sdp, ip) {
+  if (ip === 'self') ip = location.hostname;
+  if (!ip || !/^\d+\.\d+\.\d+\.\d+$/.test(ip) || /^127\./.test(ip)) return sdp;
+  return sdp.split(/\r?\n/).flatMap(line => {
+    const m = /^a=candidate:(\S+) (\d+ udp \d+ )[0-9a-z-]+\.local( \d+ typ host.*)$/i.exec(line);
+    return m ? [line, `a=candidate:${m[1]}9 ${m[2]}${ip}${m[3]}`] : [line];
+  }).join('\r\n');
+}
 
 // ===================================================================== transport
 export class Link {
@@ -254,9 +276,10 @@ export class Net {
     this.wireLink();
     this.ui.status('Сеть: готовлю приглашение...');
     const sdp = await this.link.offer();
-    const offer = { mode: G.MODE, seed: G.SEED, start: G.state.startZ, tank: G.CFG.tank, enemies: G.CFG.enemies, sdp };
-    const code = await pack(offer);
+    const offer = { mode: G.MODE, seed: G.SEED, start: G.state.startZ, tank: G.CFG.tank, enemies: G.CFG.enemies, sdp, ip: null };
     if (!this.room && await Signal.available()) this.room = newRoom();
+    if (this.room) offer.ip = await Signal.whoami();
+    const code = await pack(offer);
     if (this.room) {
       await Signal.put(this.room, 'answer', '');
       await Signal.put(this.room, 'offer', code);
@@ -272,7 +295,7 @@ export class Net {
     while (!this.connected && this.link === link) {
       const a = await Signal.get(this.room, 'answer');
       if (a) {
-        try { await link.accept((await unpack(a)).sdp); } catch (e) { console.error(e); }
+        try { const ans = await unpack(a); await link.accept(withLanIp(ans.sdp, ans.ip)); } catch (e) { console.error(e); }
         await Signal.put(this.room, 'answer', '');
         return;
       }
@@ -284,8 +307,8 @@ export class Net {
     this.link = new Link();
     this.wireLink();
     this.joinTank = payload.tank;
-    const sdp = await this.link.answer(payload.offer.sdp);
-    const code = await pack({ sdp });
+    const sdp = await this.link.answer(withLanIp(payload.offer.sdp, payload.offer.ip));
+    const code = await pack({ sdp, ip: payload.room ? await Signal.whoami() : null });
     if (payload.room) {
       await Signal.put(payload.room, 'answer', code);
       this.ui.guestWait(null);
