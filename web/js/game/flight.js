@@ -25,7 +25,7 @@ export function createFlight(ctx) {
   function nearPlane(pos) {
     let best = null, bd = 3.2;
     for (const p of planes) {
-      if (p.remote || p.wrecked) continue;
+      if (p.remoteUse || p.wrecked || !p.onGround) continue;          // (network: not the one the other player flies)
       const f = new THREE.Vector3(0, 0, 1).applyQuaternion(p.q);
       const rel = pos.clone().sub(p.root.position);
       const along = THREE.MathUtils.clamp(rel.dot(f), -p.def.len * 0.45, p.def.len * 0.35);
@@ -292,7 +292,7 @@ export function createFlight(ctx) {
       fx.explosion(pos.clone().setY(pos.y + 1), data.how === 'water' ? 1 : 2.2, data.how !== 'water');
       if (data.how === 'water') fx.splash(pos);
       sfx.boom(pos.distanceTo(camera.position), 1.2);
-      if (data.how !== 'water') ctx.explosion(pos, 9, 220);
+      if (data.how !== 'water') ctx.explosion(pos, 9, 220);       // (network: only where the world runs)
       if (p === state.plane) {
         if (data.speed < 18 && data.how !== 'water') { leave(); damagePlayer(45); msg('Самолёт разбит, вы выбрались', '#ff9a7a'); }
         else { finish(p); ctx.gameOver('Самолёт разбился.'); }

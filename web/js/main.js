@@ -362,7 +362,8 @@ function spawnPlaneAhead(key) {
   const from = state.mode === 'fly' ? state.plane.root.position : state.vehicle ? state.vehicle.root.position : player.position;
   const dist = 8 + PLANES[key].span * 0.6;
   const x = from.x + d.x * dist, z = from.z + d.z * dist;
-  const p = flight.spawnPlane(key, x, z, Math.atan2(d.x, d.z), { id: `sp${net && !net.host ? 'g' : ''}${Date.now() % 1e7}` });
+  if (net && net.connected && !net.host) { net.send({ k: 'pspawn', key, x, z, h: Math.atan2(d.x, d.z) }); msg(`${PLANES[key].name}: запрос хозяину игры`); return; }
+  const p = flight.spawnPlane(key, x, z, Math.atan2(d.x, d.z), { id: `sp${Date.now() % 1e7}` });
   if (p) { p.used = true; msg(`Самолёт: ${PLANES[key].name} — E рядом с кабиной, чтобы сесть`, '#9fe07f'); }
 }
 
@@ -517,7 +518,7 @@ guns.onSoftHit = (t, point, dmg, owner) => {
 };
 // a bullet in a plane (the plane the other player flies: told to its machine)
 guns.onPlaneHit = (p, point, dmg) => p.damage(dmg, point);
-Plane.onRemoteDamage = (p, dmg) => { if (net && net.connected) net.send({ k: 'phit', n: Math.round(dmg) }); };
+Plane.onRemoteDamage = (p, dmg) => { if (net && net.connected) net.send({ k: 'phit', id: p.id, n: Math.round(dmg) }); };
 
 // a blast next to a car / motorcycle: the car is torn up, the men in it hurt
 function blastVehicles(pos, r, dmg, owner) {
@@ -1186,7 +1187,9 @@ function frame(dt) {
     director.prune(anchor);
     for (const p of [...planes]) {
       if (p === pl || p.remote || p.remoteUse) continue;
-      if (Math.hypot(p.root.position.x - anchor.x, p.root.position.z - anchor.z) > (p.used ? 3000 : 1600)) flight.removePlane(p);
+      const far = p.used ? 3000 : 1600;
+      if (Math.hypot(p.root.position.x - anchor.x, p.root.position.z - anchor.z) > far &&
+          (!ra || Math.hypot(p.root.position.x - ra.x, p.root.position.z - ra.z) > far)) flight.removePlane(p);
     }
     for (const p of [...items.pickups.values()]) {
       if (p.id.startsWith('drop:') && Math.hypot(p.pos.x - anchor.x, p.pos.z - anchor.z) > 1200) items.remove(p.id, false);
@@ -1307,7 +1310,8 @@ const flight = createFlight(Object.assign(ctx, {
   scene, planes,
   closeMenus: () => { closeStash(); closeRepair(); closeCrane(); },
   zoneAt: p => currentZone(p, true),
-  explosion: (pos, r, dmg) => { infantry.explosion(pos, r, dmg, flight.owner); blastVehicles(pos, r, dmg, flight.owner); },
+  // (a network guest's crash blasts the world on the host: Net passes the crash on)
+  explosion: (pos, r, dmg) => { if (net && net.connected && !net.host) return; infantry.explosion(pos, r, dmg, flight.owner); blastVehicles(pos, r, dmg, flight.owner); },
   gameOver: text => gameOver(text),
 }));
 const rail = createRail(Object.assign(ctx, { net: () => net }));

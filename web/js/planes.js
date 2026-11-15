@@ -30,6 +30,8 @@ export class Plane {
   static onEvent = null;
   /** @type {((p: Plane, dmg: number) => void) | null} network: a hit on the plane the other player flies */
   static onRemoteDamage = null;
+  /** @type {((p: Plane, how: string, speed: number) => void) | null} network: a crash of a plane run here (told to the other machine) */
+  static onCrash = null;
 
   constructor(scene, key, pos, heading, opts = {}) {
     this.scene = scene;
@@ -384,7 +386,8 @@ export class Plane {
     this.burning = Math.max(this.burning, 30);
     if (Plane.onEvent) Plane.onEvent(this, 'broken');
   }
-  crash(world, how) {
+  // fromNet: the crash happened on the other machine (no onCrash, the blast is done where the world runs)
+  crash(world, how, fromNet = false) {
     if (this.wrecked) return;
     const p = this.root.position;
     const gh = world.heightAt(p.x, p.z);
@@ -397,7 +400,8 @@ export class Plane {
     const fast = this.speed;
     this.makeWreck();
     this.burning = how === 'water' ? 0 : 60;
-    if (Plane.onEvent) Plane.onEvent(this, 'crash', { how, speed: fast });
+    if (!fromNet && Plane.onCrash) Plane.onCrash(this, how, fast);
+    if (Plane.onEvent) Plane.onEvent(this, 'crash', { how, speed: fast, fromNet });
   }
   // the burnt-out look (also for wrecks restored from a save)
   makeWreck() {
@@ -429,11 +433,25 @@ export class Plane {
   netPose() {
     const p = this.root.position, r = x => Math.round(x * 1000) / 1000;
     return [r(p.x), r(p.y), r(p.z), ...this.q.toArray().map(r), r(this.vel.x), r(this.vel.y), r(this.vel.z), r(this.ctl.throttle),
-            this.gearDown ? 1 : 0, this.bombs];
+            this.gearDown ? 1 : 0, this.bombs,
+            (this.broken ? 1 : 0) | (this.burning > 0 ? 2 : 0) | (this.abandoned ? 4 : 0) | (this.onGround ? 8 : 0)];
+  }
+  // the bombs still hanging under the wings
+  setBombs(n) {
+    const list = this.def.bombs || [];
+    this.bombs = Math.max(0, Math.min(list.length, n));
+    for (let i = 0; i < this.bombMeshes.length; i++) this.bombMeshes[i].visible = i >= list.length - this.bombs;
   }
   setNetPose(a) {
     this.net = { pos: new THREE.Vector3(a[0], a[1], a[2]), q: new THREE.Quaternion(a[3], a[4], a[5], a[6]),
                  vel: new THREE.Vector3(a[7], a[8], a[9]), throttle: a[10], gear: !!a[11], bombs: a[12], at: performance.now() };
+    const f = a[13];
+    if (f != null) {
+      this.broken = !!(f & 1);
+      this.burning = f & 2 ? Math.max(this.burning, 1) : 0;
+      this.abandoned = !!(f & 4);
+      this.onGround = !!(f & 8);
+    }
   }
   netStep(dt) {
     const n = this.net;

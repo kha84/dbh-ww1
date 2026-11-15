@@ -17,6 +17,7 @@ import { WEAPONS } from './weapons.js';
 import { HULLS } from './parts.js';
 import { buildCaponier } from './ai.js';
 import { Tank } from './tanks.js';
+import { Plane } from './planes.js';
 import { paintObject } from './paint.js';
 import { partData, weaponData, mkPart, mkWeapon, pickupData, patchData, restorePatches } from './save.js';
 
@@ -239,6 +240,25 @@ function applyTankState(t, st) {
 const HP_KEYS = ['hull', 'transmission', 'ammo', 'engine', 'gun', 'fuel', 'turret'];
 const hpOf = t => Object.fromEntries(HP_KEYS.map(k => [k, t.hp[k]]));
 
+// planes: what the other machine must know besides the pose (sent when it changes)
+const planeState = p => ({ key: p.key, hp: Math.round(p.hp), e: Math.round(p.engineHp), f: Math.round(p.fuel), a: p.ammo.map(Math.round),
+                           s: p.shells.map(Math.round), b: p.bombs, u: p.used ? 1 : 0, h: p.home ?? null, w: p.wrecked ? 1 : 0 });
+function applyPlaneState(p, st) {
+  p.hp = st.hp; p.engineHp = st.e; p.fuel = st.f;
+  p.ammo = [...st.a]; p.shells = [...st.s];
+  p.setBombs(st.b);
+  p.used = !!st.u;
+  if (st.h != null) p.home = st.h;
+}
+// put a plane exactly at a pose (netPose array)
+function placePlane(p, pose) {
+  p.root.position.set(pose[0], pose[1], pose[2]);
+  p.q.set(pose[3], pose[4], pose[5], pose[6]);
+  p.vel.set(pose[7], pose[8], pose[9]);
+  p.setNetPose(pose);
+  p.root.updateMatrixWorld();
+}
+
 // ===================================================================== the game side
 // G: what the game gives: { state, player, playerVel, camera, scene, world, tanks, items, combat, guns, infantry,
 //   director, fx, sfx, sky, MODE, SEED, CFG, spawnTank, spawnVehicle, removeTank, msg, showHit, describeHit, damagePlayer,
@@ -262,6 +282,9 @@ export class Net {
     this.applying = false;
     this.ui = G.ui;
     this.stats = { in: 0, out: 0 };
+    this.released = null;           // host: the plane the guest left last ({ id, at })
+    this.myPlane = null;            // guest: the plane it flies (its own while it sits in it)
+    this.rowTick = 0;
     this.hook();
   }
 
@@ -332,6 +355,7 @@ export class Net {
     if (this.host) {
       G.msg('Второй игрок отключился', '#ff9a7a');
       for (const t of G.tanks) if (t.netOwner === 'guest') { t.netOwner = 'host'; t.remote = false; t.remoteInside = false; }
+      for (const p of G.planes) if (p.netOwner === 'guest') this.takePlane(p, null);
       this.remote = null;
       this.ui.status('Сеть: второй игрок отключился — новое приглашение в меню паузы (ESC)');
       this.startHosting();
@@ -401,6 +425,18 @@ export class Net {
     world.onHouse = (kind, rec, point, dmg) => {
       if (this.connected && !this.applying) this.send({ k: 'house', id: rec.id, kind, p: point ? v3(point) : null, dmg });
     };
+    // planes: a crash of a plane run here is done on the other machine too; the host's planes leaving the guest's
+    // surroundings are taken away there
+    Plane.onCrash = (p, how, speed) => {
+      if (!this.connected || this.applying || p.remote) return;
+      this.send({ k: 'pcrash', id: p.id, how, v: r2(speed), p: v3(p.root.position), q: p.q.toArray().map(r3) });
+    };
+    const rmPlane0 = G.flight.removePlane;
+    G.flight.removePlane = p => {
+      if (p === this.myPlane) this.myPlane = null;
+      if (this.host && this.connected && p.netSent) this.send({ k: 'pgone', id: p.id });
+      rmPlane0(p);
+    };
     // host: the other player can be shot, blasted; its kills are counted for it
     guns.onRemoteHit = dmg => this.send({ k: 'hurt', n: r2(dmg), b: 1 });
   }
@@ -423,6 +459,7 @@ export class Net {
     if (this.host) for (const t of G.tanks) if (!t.nid) this.register(t);
     this.updateAvatar(dt);
     if (!this.connected) return;
+    if (!this.host) this.guestPlanes();
     for (const [n, a] of this.pushes) this.send({ k: 'push', n, d: [r3(a[0]), r3(a[1]), r3(a[2])] });
     this.pushes.clear();
     this.snapT -= dt;
@@ -467,7 +504,17 @@ export class Net {
               (s.alive ? 1 : 0) | (s.reloadT > 0 ? 2 : 0) | (s.throwAnim > 0 ? 4 : 0) | (s.state === 'combat' || s.state === 'retreat' || s.state === 'alert' ? 8 : 0),
               r2(s.lookYaw || 0), r2(s.fallDir || 0)]);
     }
-    const m = { k: 's', T, S, P: this.mePose(), H: r2(G.sky.time.tod) };
+    // planes (the host's: parked, flown, flying without a pilot): those changed, all of them once a second
+    const A = [];
+    const every = ++this.rowTick % 15 === 0;
+    for (const p of G.planes) {
+      if (!p.netSent || p.netOwner === 'guest' || p.wrecked) continue;
+      const pose = p.netPose(), js = JSON.stringify(pose);
+      if (!every && js === p.netRow) continue;
+      p.netRow = js;
+      A.push([p.id, ...pose]);
+    }
+    const m = { k: 's', T, S, A, P: this.mePose(), H: r2(G.sky.time.tod) };
     if (G.trains && G.trains.list.length) m.R = G.trains.netRows(a || G.player.position);
     if (G.state.duel) { const st = G.duelStatus(); if (st) m.D = [st.left, st.total]; }
     this.send(m, true);
@@ -497,6 +544,14 @@ export class Net {
         if (t.netOwner === 'guest') continue;
         this.sendState(t);
       }
+      for (const p of G.planes) {
+        const near = Math.hypot(p.root.position.x - a.x, p.root.position.z - a.z) < REL_R;
+        if (!near) {
+          if (p.netSent) { this.send({ k: 'pgone', id: p.id }); p.netSent = false; p.netLast = null; }
+          continue;
+        }
+        if (p.netOwner !== 'guest') this.sendPlane(p);
+      }
     } else {
       for (const t of G.tanks) if (t.nid && t.netOwner === 'guest' && !t.remote) this.sendState(t);
     }
@@ -508,6 +563,14 @@ export class Net {
     t.netLast = js;
     t.netSent = true;
     this.send({ k: 'tank', n: t.nid, st, pose: t.netPose() });
+  }
+  sendPlane(p, force = false) {
+    const st = planeState(p), js = JSON.stringify(st);
+    if (!force && js === p.netLast && p.netSent) return;
+    p.netLast = js;
+    p.netSent = true;
+    p.netRow = null;
+    this.send({ k: 'pstate', id: p.id, st, pose: p.netPose() });
   }
   remoteAnchor() {
     const r = this.remote;
@@ -569,6 +632,7 @@ export class Net {
       craters: G.world.craters.data().filter(c => Math.hypot(c[0] - pos[0], c[1] - pos[2]) < REL_R),
     });
     for (const t of G.tanks) { this.register(t); if (near(t.root.position)) { t.netSent = false; this.sendState(t, true); } }
+    for (const p of G.planes) { p.netSent = false; p.netLast = null; if (near(p.root.position) && p.netOwner !== 'guest') this.sendPlane(p, true); }
     this.send({ k: 'welcome', pos, yaw: hd, tank: tank ? tank.nid : 0, nid: this.nid });
     G.msg('Второй игрок в игре!', '#9fe07f');
     this.ui.status('Сеть: второй игрок в игре');
@@ -697,6 +761,10 @@ export class Net {
       this.puppetMap.delete(id);
       const i = G.infantry.soldiers.indexOf(s);
       if (i >= 0) G.infantry.soldiers.splice(i, 1);
+    }
+    for (const row of m.A || []) {
+      const p = G.planes.find(q => q.id === row[0]);
+      if (p && p.remote && !p.wrecked) p.setNetPose(row.slice(1));
     }
     if (G.trains) G.trains.netApply(m.R || []);           // the host's trains (copies here)
     this.setRemote(m.P);
@@ -1005,25 +1073,69 @@ export class Net {
     a.root.rotation.y = r.yaw;
   }
 
-  // the other player's plane: a puppet following its pose; when the player leaves it, it flies on (or stands) here
+  // the plane the other player flies: its pose comes with the player's pose (P[13]); the guest's plane is flown on the
+  // guest's machine (a puppet on the host until the guest leaves it: 'prel'), the host's one is the host's anyway
   updateRemotePlane() {
     const G = this.G, r = this.remote;
-    const info = this.connected && r && r.plane;
+    const info = this.connected && r && !r.dead && r.plane;
+    let cur = null;
     if (info) {
       const [id, key, ...pose] = info;
-      let p = G.planes.find(q => q.id === id);
-      if (!p) p = G.flight.spawnPlane(key, pose[0], pose[2], 0, { id, air: true, pos: [pose[0], pose[1], pose[2]], quat: pose.slice(3, 7), vel: pose.slice(7, 10) });
-      if (!p) return;
-      p.remote = true; p.remoteUse = true; p.used = true;
-      p.setNetPose(pose);
-      this.remotePlane = p;
-    } else if (this.remotePlane) {
-      const p = this.remotePlane;
-      this.remotePlane = null;
-      p.remote = false; p.remoteUse = false;
-      if (p.speed < 3) { p.onGround = true; p.setGroundPose(p.heading, G.world); }
-      else { p.onGround = false; p.abandoned = true; p.ctl.sy = -0.3; p.ctl.throttle = 0.3; }
+      cur = G.planes.find(q => q.id === id) || null;
+      if (!cur && (!this.host || !this.released || this.released.id !== id)) {
+        cur = G.flight.spawnPlane(key, pose[0], pose[2], 0, { id, air: !(pose[13] & 8), pos: [pose[0], pose[1], pose[2]], quat: pose.slice(3, 7), vel: pose.slice(7, 10) });
+        if (cur) { cur.used = true; cur.remote = true; cur.netOwner = this.host ? 'guest' : 'host'; }
+      }
+      if (cur && cur.remote && !cur.wrecked && (!this.host || cur.netOwner === 'guest')) cur.setNetPose(pose);
     }
+    for (const p of G.planes) p.remoteUse = p === cur && p !== G.state.plane && (!this.host || p.netOwner === 'guest');
+    this.remotePlane = this.host && cur && cur.remoteUse ? cur : null;
+  }
+  // guest: every plane but the one it flies follows the host
+  guestPlanes() {
+    const G = this.G, mine = this.myPlane;
+    if (mine && G.state.plane !== mine) this.releasePlane();
+    for (const p of G.planes) {
+      if (p === this.myPlane || p.remote) continue;
+      p.remote = true;
+      p.netOwner = 'host';
+      p.net = null;
+      p.pilot = false;
+    }
+  }
+  // guest: out of its plane (landed and got out, jumped, killed, crashed): the host flies it on (or it stands there)
+  releasePlane() {
+    const p = this.myPlane;
+    this.myPlane = null;
+    if (!p) return;
+    const c = p.ctl;
+    this.send({ k: 'prel', id: p.id, st: planeState(p), pose: p.netPose(), c: [c.throttle, c.sx, c.sy, c.rud, c.brake].map(r3),
+                bu: r2(p.burning), br: p.broken ? 1 : 0, ab: p.abandoned ? 1 : 0 });
+    p.remote = true;
+    p.netOwner = 'host';
+    p.pilot = false;
+    p.setNetPose(p.netPose());
+  }
+  // host: a plane of the guest becomes the host's (m: the 'prel' message, null - the guest is gone)
+  takePlane(p, m) {
+    const G = this.G;
+    if (m) {
+      applyPlaneState(p, m.st);
+      placePlane(p, m.pose);
+      const [throttle, sx, sy, rud, brake] = m.c;
+      Object.assign(p.ctl, { throttle, sx, sy, rud, brake });
+      p.burning = m.bu; p.broken = !!m.br; p.abandoned = !!m.ab;
+      p.gearDown = !!m.pose[11]; p.gearK = p.gearDown ? 1 : 0;
+    }
+    p.net = null;
+    p.netOwner = 'host';
+    p.remote = false;
+    p.remoteUse = false;
+    p.pilot = false;
+    p.netLast = null;
+    if (p.wrecked) return;
+    if (p.onGround && p.speed < 3) { p.vel.set(0, 0, 0); p.setGroundPose(p.heading, G.world); }
+    else if (!p.onGround && !m) { p.abandoned = true; p.ctl.sy = -0.3; p.ctl.throttle = 0.3; p.ctl.brake = 0; }
   }
   setRemoteCanopy(on) {
     const G = this.G;
@@ -1035,8 +1147,85 @@ export class Net {
     } else if (!on && this.remoteCanopy) { G.scene.remove(this.remoteCanopy); this.remoteCanopy = null; }
     if (this.remoteCanopy && this.avatar) this.remoteCanopy.position.copy(this.avatar.pos).setY(this.avatar.pos.y + 7);
   }
-  // a hit on the plane the other player flies: it is told (its plane takes the damage there)
-  on_phit(m) { const p = this.G.state.plane; if (p) p.damage(m.n); }
+  // a hit on a plane run on this machine, scored on the other one
+  on_phit(m) {
+    const p = m.id ? this.G.planes.find(q => q.id === m.id) : this.G.state.plane;
+    if (p && !p.remote) p.damage(m.n);
+  }
+  // a plane crashed on the other machine: here too, at the same spot (on the host the blast does its damage)
+  on_pcrash(m) {
+    const G = this.G, p = G.planes.find(q => q.id === m.id);
+    if (!p || p.wrecked) return;
+    if (p === G.state.plane) return;                     // (flown here: this machine decides)
+    p.root.position.set(...m.p);
+    p.q.fromArray(m.q);
+    p.vel.set(0, 0, m.v);
+    p.net = null;
+    p.crash(G.world, m.how, true);                       // (the blast: flight's ctx.explosion, on the host only)
+    p.root.position.set(...m.p);
+    p.q.fromArray(m.q);
+    p.root.updateMatrixWorld();
+  }
+  // host: the guest spawns a plane (` menu)
+  on_pspawn(m) {
+    const p = this.G.flight.spawnPlane(m.key, m.x, m.z, m.h, { id: `sp${Date.now() % 1e7}` });
+    if (p) p.used = true;
+  }
+  // host: the guest gets into a plane (its machine flies it from now on)
+  on_pclaim(m) {
+    const G = this.G;
+    let p = G.planes.find(q => q.id === m.id);
+    if (!p) {
+      p = G.flight.spawnPlane(m.key, m.pose[0], m.pose[2], 0, { id: m.id, air: !(m.pose[13] & 8), pos: m.pose.slice(0, 3), quat: m.pose.slice(3, 7) });
+      if (!p) return;
+      applyPlaneState(p, m.st);
+    }
+    if (p === G.state.plane || p.wrecked) { this.send({ k: 'pown', id: p.id, deny: true }); if (p.netSent) this.sendPlane(p, true); return; }
+    p.netOwner = 'guest';
+    p.remote = true;
+    p.used = true;
+    p.pilot = false;
+    p.abandoned = false;
+    p.setNetPose(p.netPose());
+    this.released = null;
+  }
+  // host: the guest left its plane
+  on_prel(m) {
+    const p = this.G.planes.find(q => q.id === m.id);
+    this.released = { id: m.id, at: performance.now() };
+    if (!p || p.netOwner !== 'guest') return;
+    this.takePlane(p, m);
+    p.netSent = false;                                   // (the state goes back to the guest at once)
+  }
+  // guest: the host's planes - their state (made here when unknown), gone out of reach
+  on_pstate(m) {
+    const G = this.G, pose = m.pose;
+    let p = G.planes.find(q => q.id === m.id);
+    if (!p) {
+      p = G.flight.spawnPlane(m.st.key, pose[0], pose[2], 0, { id: m.id, air: !(pose[13] & 8), pos: pose.slice(0, 3), quat: pose.slice(3, 7), vel: pose.slice(7, 10) });
+      if (!p) return;
+      p.remote = true; p.netOwner = 'host';
+      placePlane(p, pose);
+    }
+    if (p === this.myPlane) return;
+    p.remote = true; p.netOwner = 'host';
+    applyPlaneState(p, m.st);
+    if (m.st.w && !p.wrecked) { placePlane(p, pose); p.makeWreck(); }
+    else if (!p.wrecked) p.setNetPose(pose);
+  }
+  on_pgone(m) {
+    const G = this.G, p = G.planes.find(q => q.id === m.id);
+    if (!p || p === this.myPlane || p === G.state.plane || !p.remote) return;
+    G.flight.removePlane(p);
+  }
+  // guest: the host refused the plane (it got into it first)
+  on_pown(m) {
+    const G = this.G, p = G.planes.find(q => q.id === m.id);
+    if (!p || !m.deny) return;
+    if (this.myPlane === p) this.myPlane = null;
+    if (G.state.plane === p) { G.flight.leave(); G.msg('В этом самолёте второй игрок', '#e8c96a'); }
+    p.remote = true; p.netOwner = 'host'; p.pilot = false;
+  }
 
   // ------------------------------------------------ helpers
   pickupFrom(type, d) {
@@ -1053,7 +1242,15 @@ export class Net {
   victory(text) { this.send({ k: 'victory', text }); }
   // a plane the local player wants to fly: not the one the other player sits in
   claimPlane(p) {
-    if (p.remoteUse) { this.G.msg('В этом самолёте второй игрок'); return false; }
+    if (!this.connected) return true;
+    if (p.remoteUse || (this.host && p.netOwner === 'guest')) { this.G.msg('В этом самолёте второй игрок'); return false; }
+    if (!this.host) {
+      p.remote = false;
+      p.net = null;
+      p.netOwner = 'guest';
+      this.myPlane = p;
+      this.send({ k: 'pclaim', id: p.id, key: p.key, st: planeState(p), pose: p.netPose() });
+    }
     return true;
   }
 }

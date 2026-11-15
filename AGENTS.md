@@ -261,8 +261,13 @@ rendering (handy for headless tests; `game.state.noLock = true` lets small arms 
   `combat.planes` (hit boxes `def.boxes`, `Plane.hitSegment`), `guns.onPlaneHit`; owner `{ player, plane }`, `dmgK` -
   one traced round for several. Bombs: `combat.launch({ bomb: kg, crater, life })`, light cannon shells `light: true`.
   Airfield planes: `s.planes` spots, ids `af{k}:{i}`, `planesGone` (taken) - not set out again; `home`, `used`.
-  Network: the pose rides in the player pose (`mePose()[13]`), remote planes are puppets (`remote`, `remoteUse`),
-  hits on them -> 'phit'; shells carry `b` (bomb) / `l` (light) / `c` (crater).
+  Network: the host owns every plane except the one the guest flies (`netOwner`, `remote` = follows the other
+  machine, `remoteUse` = the other player sits in it). Host -> guest: 'pstate' (planeState: hp, fuel, ammo, bombs,
+  wreck; makes unknown planes), pose rows `A` in the snapshot (netPose + flags broken / burning / abandoned / on the
+  ground), 'pgone'. The guest: 'pspawn' (spawn menu), 'pclaim' on getting in (host may 'pown' deny), its pose in
+  `mePose()[13]`, 'prel' with the full state on leaving (landed / jumped / killed / crashed: the host flies it on).
+  Crashes -> 'pcrash' (`Plane.onCrash`; the blast is done on the host only), hits on a remote plane -> 'phit' { id };
+  shells carry `b` (bomb) / `l` (light) / `c` (crater).
 - Tank types live in `web/js/tankdefs/<key>.js` (data + models); add a tank = add a file and list it in
   `tankdefs/index.js`. `models.hull()` returns `hullResult(...)` (root, wheels, ring, bay, box, fuelAt...),
   `models.turret()` returns { group, gunPos, sightY, mgPos, box, second? }, `models.gun()` { group, muzzleLen },
